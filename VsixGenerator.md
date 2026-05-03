@@ -3,7 +3,9 @@
 Run this from the project root:
 
 ```powershell
+cd .\amarillo
 npm run package:vsix
+
 ```
 
 The script reads the version from `vscode-extension/package.json` and generates the package in `dist/`.
