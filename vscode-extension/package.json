@@ -1,0 +1,206 @@
+{
+  "name": "amarillo-vscode",
+  "displayName": "Amarillo Bridge",
+  "description": "Installs the Amarillo plugin in Roblox Studio and controls the local bridge from VS Code.",
+  "version": "0.5.2",
+  "publisher": "amarillo",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "roblox",
+    "luau",
+    "mcp",
+    "studio",
+    "amarillo",
+    "sync",
+    "lua"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "workspaceContains:**/*.project.json",
+    "workspaceContains:.pluginroblox.json",
+    "workspaceContains:argon.toml",
+    "onView:amarillo.sidebar",
+    "onLanguage:lua",
+    "onLanguage:luau"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "amarillo.openMenu",
+        "title": "Amarillo: Open Menu",
+        "category": "Amarillo"
+      },
+      {
+        "command": "amarillo.installRobloxPlugin",
+        "title": "Amarillo: Install Roblox Studio Plugin"
+      },
+      {
+        "command": "amarillo.startBridge",
+        "title": "Amarillo: Start Bridge"
+      },
+      {
+        "command": "amarillo.stopBridge",
+        "title": "Amarillo: Stop Bridge"
+      },
+      {
+        "command": "amarillo.healthcheck",
+        "title": "Amarillo: Healthcheck"
+      },
+      {
+        "command": "amarillo.configureMcp",
+        "title": "Amarillo: Configure MCP for Workspace"
+      },
+      {
+        "command": "amarillo.openOutput",
+        "title": "Amarillo: Open Output"
+      },
+      {
+        "command": "amarillo.refreshSidebar",
+        "title": "Amarillo: Refresh Sidebar"
+      },
+      {
+        "command": "amarillo.sendFilesToStudio",
+        "title": "Amarillo: Send Files to Studio"
+      },
+      {
+        "command": "amarillo.receiveFilesFromStudio",
+        "title": "Amarillo: Receive Files from Studio"
+      },
+      {
+        "command": "amarillo.selectSession",
+        "title": "Amarillo: Select Studio Session"
+      },
+      {
+        "command": "amarillo.execCode",
+        "title": "Amarillo: Execute Code in Studio"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "amarillo.startBridge",
+        "when": "editorLangId == lua || editorLangId == luau",
+        "key": "f7"
+      },
+      {
+        "command": "amarillo.stopBridge",
+        "when": "editorLangId == lua || editorLangId == luau",
+        "key": "shift+f5"
+      },
+      {
+        "command": "amarillo.execCode",
+        "when": "editorLangId == lua || editorLangId == luau",
+        "key": "f6"
+      },
+      {
+        "command": "amarillo.openMenu",
+        "when": "editorLangId == lua || editorLangId == luau",
+        "key": "ctrl+shift+a"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "amarillo",
+          "title": "Amarillo",
+          "icon": "media/amarillo.svg"
+        }
+      ]
+    },
+    "views": {
+      "amarillo": [
+        {
+          "id": "amarillo.sidebar",
+          "name": "Bridge Control",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Amarillo",
+      "properties": {
+        "amarillo.autoConnect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically reconnect the last session when VS Code reopens.",
+          "order": 0
+        },
+        "amarillo.autoInstallPlugin": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically install/update the Amarillo plugin in Roblox Studio on extension activation.",
+          "order": 1
+        },
+        "amarillo.notificationLevel": {
+          "type": "string",
+          "default": "Info",
+          "description": "Level of notifications to show. Info shows all, Off disables all popup notifications.",
+          "enum": ["Info", "Warning", "Error", "Off"],
+          "order": 2
+        },
+        "amarillo.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "HTTP host for the Amarillo bridge.",
+          "order": 3
+        },
+        "amarillo.port": {
+          "type": "number",
+          "default": 8323,
+          "description": "HTTP port for the Amarillo bridge. Without a VS Code override, the extension uses daemonPort from .pluginroblox.json before falling back to 8323.",
+          "minimum": 0,
+          "maximum": 65535,
+          "order": 4
+        },
+        "amarillo.nodePath": {
+          "type": "string",
+          "default": "node",
+          "description": "Node executable used to start the bridge.",
+          "order": 5
+        },
+        "amarillo.autoGenerateSourcemap": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate sourcemap.json for Luau LSP on project load.",
+          "order": 6
+        },
+        "amarillo.autoSyncToStudio": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically send VS Code workspace changes to Roblox Studio after the initial truth-source sync.",
+          "order": 7
+        },
+        "amarillo.verbose": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log verbose daemon output to the Amarillo output panel.",
+          "order": 8
+        },
+        "amarillo.workspaceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Kept for compatibility. Amarillo uses the folder open in VS Code as the target workspace.",
+          "order": 9
+        }
+      }
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "*.project.json",
+        "url": "./schemas/project.json"
+      },
+      {
+        "fileMatch": "*.meta.json",
+        "url": "./schemas/meta.json"
+      },
+      {
+        "fileMatch": "*.data.json",
+        "url": "./schemas/meta.json"
+      }
+    ]
+  }
+}

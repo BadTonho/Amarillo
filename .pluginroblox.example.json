@@ -1,0 +1,5 @@
+{
+  "daemonPort": 8323,
+  "autoConnect": true,
+  "autoSyncToStudio": true
+}

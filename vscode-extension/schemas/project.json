@@ -1,0 +1,223 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Amarillo Project",
+  "description": "Amarillo/Rojo project file format — describes how the instance tree maps to the filesystem.",
+  "required": ["tree"],
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The name of the project, displayed in Amarillo and Rojo.",
+      "title": "Project Name"
+    },
+    "extends": {
+      "type": "string",
+      "title": "Extends Project",
+      "description": "Relative path to another .project.json used as the base for this project."
+    },
+    "abstract": {
+      "type": "boolean",
+      "title": "Abstract Project",
+      "description": "If true, this project can be inherited by others but is not selectable directly for sync.",
+      "default": false
+    },
+    "host": {
+      "type": "string",
+      "title": "Serve Host",
+      "description": "Set the host that the sync server should be running on.",
+      "default": "localhost"
+    },
+    "port": {
+      "type": "integer",
+      "title": "Serve Port",
+      "description": "Set the port that the sync server should be running on.",
+      "default": 8000,
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "serveAddress": {
+      "type": "string",
+      "title": "Serve Address (Rojo compat)",
+      "description": "Rojo-compatible alias for 'host'."
+    },
+    "servePort": {
+      "type": "integer",
+      "title": "Serve Port (Rojo compat)",
+      "description": "Rojo-compatible alias for 'port'.",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "gameId": {
+      "type": "integer",
+      "title": "Game ID",
+      "description": "Limit clients to only sync with this project when the game ID matches."
+    },
+    "placeId": {
+      "type": "integer",
+      "title": "Place ID (Rojo compat)",
+      "description": "Rojo-compatible single place ID."
+    },
+    "placeIds": {
+      "type": "array",
+      "title": "Place IDs",
+      "description": "Limit clients to only sync with this project when one of the place IDs matches.",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "servePlaceIds": {
+      "type": "array",
+      "title": "Serve Place IDs (Rojo compat)",
+      "description": "Rojo-compatible alias for 'placeIds'.",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "ignoreGlobs": {
+      "type": "array",
+      "title": "Ignore Globs",
+      "description": "Exclude files that match any of these globs from processing and syncing.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "globIgnorePaths": {
+      "type": "array",
+      "title": "Glob Ignore Paths (Rojo compat)",
+      "description": "Rojo-compatible alias for 'ignoreGlobs'.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "syncRules": {
+      "type": "array",
+      "title": "Sync Rules",
+      "description": "Replace the default sync rules with a custom set of user-defined sync rules.",
+      "items": {
+        "required": ["type"],
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "description": "The type of file this rule applies to.",
+            "enum": [
+              "Project",
+              "InstanceData",
+              "ServerScript",
+              "ClientScript",
+              "ModuleScript",
+              "StringValue",
+              "LocalizationTable",
+              "JsonModule",
+              "TomlModule",
+              "JsonModel",
+              "RbxmModel",
+              "RbxmxModel"
+            ]
+          },
+          "pattern": {
+            "type": "string",
+            "title": "Pattern",
+            "description": "A glob pattern that matches the file path."
+          },
+          "childPattern": {
+            "type": "string",
+            "title": "Child Pattern",
+            "description": "A glob pattern that matches folder-contained file path."
+          },
+          "exclude": {
+            "type": "array",
+            "title": "Exclude",
+            "description": "A list of glob patterns that exclude the file path from this rule.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suffix": {
+            "type": "string",
+            "title": "Suffix",
+            "description": "A suffix to strip from the file path to get the instance name."
+          }
+        }
+      }
+    },
+    "syncback": {
+      "type": "object",
+      "title": "Syncback Settings",
+      "description": "Customize how instances are synced back to the file system.",
+      "properties": {
+        "ignoreGlobs": {
+          "type": "array",
+          "title": "Ignore Globs",
+          "description": "Exclude files matching these globs from syncback processing.",
+          "items": { "type": "string" }
+        },
+        "ignoreNames": {
+          "type": "array",
+          "title": "Ignore Names",
+          "description": "Exclude instances with these names from syncback.",
+          "items": { "type": "string" }
+        },
+        "ignoreClasses": {
+          "type": "array",
+          "title": "Ignore Classes",
+          "description": "Exclude instances with these class names from syncback.",
+          "items": { "type": "string" }
+        },
+        "ignoreProperties": {
+          "type": "array",
+          "title": "Ignore Properties",
+          "description": "Exclude these properties from being saved to the file system.",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "legacyScripts": {
+      "type": "boolean",
+      "title": "Legacy Scripts",
+      "description": "Use legacy Script/LocalScript class names instead of RunContext-based scripts.",
+      "default": true
+    },
+    "emitLegacyScripts": {
+      "type": "boolean",
+      "title": "Emit Legacy Scripts (Rojo compat)",
+      "description": "Rojo-compatible alias for 'legacyScripts'."
+    },
+    "tree": {
+      "$ref": "#/$defs/tree"
+    }
+  },
+  "$defs": {
+    "tree": {
+      "type": "object",
+      "properties": {
+        "$path": {
+          "type": ["string", "object"],
+          "description": "The path on the filesystem to map this instance to."
+        },
+        "$className": {
+          "type": "string",
+          "description": "The ClassName of this instance."
+        },
+        "$properties": {
+          "type": "object",
+          "description": "Properties to apply to this instance.",
+          "properties": {
+            "Name": false,
+            "Parent": false
+          }
+        },
+        "$keepUnknowns": {
+          "type": "boolean",
+          "description": "If true, instances not described in this tree are kept (not deleted)."
+        }
+      },
+      "patternProperties": {
+        "^[^$].*": {
+          "$ref": "#/$defs/tree"
+        }
+      }
+    }
+  }
+}
