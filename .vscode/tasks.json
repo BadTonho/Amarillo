@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Amarillo Dev: Install Roblox Plugin",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\install-plugin.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Amarillo Dev: Start Example Daemon",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\start-daemon.ps1",
+        "-WorkspaceRoot",
+        "${workspaceFolder}\\examples\\roblox-workspace",
+        "-Port",
+        "8323"
+      ],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Amarillo Dev: Healthcheck Example",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\scripts\\healthcheck.ps1",
+        "-WorkspaceRoot",
+        "${workspaceFolder}\\examples\\roblox-workspace",
+        "-Port",
+        "8323"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "className": "ScreenGui",
+  "properties": {
+    "Enabled": true,
+    "DisplayOrder": 0,
+    "ResetOnSpawn": false,
+    "IgnoreGuiInset": true,
+    "ZIndexBehavior": "Global"
+  }
+}

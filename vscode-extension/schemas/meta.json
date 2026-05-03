@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Instance Metadata",
+  "description": "Metadata file for describing a Roblox instance (className, properties, keepUnknowns).",
+  "type": "object",
+  "properties": {
+    "className": {
+      "type": "string",
+      "description": "The ClassName of the instance this metadata describes."
+    },
+    "properties": {
+      "type": "object",
+      "description": "Properties to apply to this instance.",
+      "properties": {
+        "Name": false,
+        "Parent": false
+      }
+    },
+    "keepUnknowns": {
+      "type": "boolean",
+      "description": "If true, instances not described in the project tree are kept (not deleted)."
+    }
+  }
+}
