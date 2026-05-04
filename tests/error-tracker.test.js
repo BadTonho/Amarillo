@@ -13,7 +13,7 @@ function createTempWorkspace() {
 
 test("ErrorTracker writes daily error files under .amarillo/errors", () => {
   const workspace = createTempWorkspace();
-  const tracker = new ErrorTracker({ workspaceRoot: workspace });
+  const tracker = new ErrorTracker({ workspaceRoot: workspace, timeZone: "America/Sao_Paulo" });
   const record = tracker.add({
     component: "plugin",
     severity: "error",
@@ -26,6 +26,9 @@ test("ErrorTracker writes daily error files under .amarillo/errors", () => {
   assert.equal(fs.existsSync(dailyPath), true);
   assert.equal(fs.existsSync(path.join(workspace, ".amarillo", "error-tracker.json")), false);
   const parsed = JSON.parse(fs.readFileSync(dailyPath, "utf8"));
+  assert.equal(parsed.timeZone, "America/Sao_Paulo");
+  assert.match(parsed.generatedAt, /-03:00$/);
+  assert.match(parsed.entries[0].timestamp, /-03:00$/);
   assert.equal(parsed.entries[0].code, "PLUGIN-TEST");
 });
 
