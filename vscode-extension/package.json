@@ -2,7 +2,7 @@
   "name": "amarillo-vscode",
   "displayName": "Amarillo Bridge",
   "description": "Installs the Amarillo plugin in Roblox Studio and controls the local bridge from VS Code.",
-  "version": "1.0.0",
+  "version": "1.0.",
   "publisher": "amarillo",
   "engines": {
     "vscode": "^1.90.0"
@@ -139,7 +139,12 @@
           "type": "string",
           "default": "Info",
           "description": "Level of notifications to show. Info shows all, Off disables all popup notifications.",
-          "enum": ["Info", "Warning", "Error", "Off"],
+          "enum": [
+            "Info",
+            "Warning",
+            "Error",
+            "Off"
+          ],
           "order": 2
         },
         "amarillo.host": {

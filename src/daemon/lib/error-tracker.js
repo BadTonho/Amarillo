@@ -18,6 +18,23 @@ const path = require("node:path");
 
 const DEFAULT_MAX_ENTRIES = 500;
 const DEFAULT_LOG_FILE = "error-tracker.json";
+const DEFAULT_LOG_DIRECTORY = "errors";
+
+function dateKeyFromTimestamp(timestamp) {
+  const parsed = new Date(timestamp);
+  if (!Number.isFinite(parsed.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function readEntriesFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  return Array.isArray(parsed.entries) ? parsed.entries : [];
+}
 
 class ErrorTracker {
   /**
@@ -31,6 +48,7 @@ class ErrorTracker {
     this.workspaceRoot = options.workspaceRoot || process.cwd();
     this.maxEntries = options.maxEntries || DEFAULT_MAX_ENTRIES;
     this.logFileName = options.logFileName || DEFAULT_LOG_FILE;
+    this.logDirectoryName = options.logDirectoryName || DEFAULT_LOG_DIRECTORY;
     this.persistOnAdd = options.persistOnAdd !== false;
     this.entries = [];
     this._listeners = [];
@@ -41,7 +59,40 @@ class ErrorTracker {
    * Caminho completo do arquivo de log.
    */
   get logFilePath() {
+    return path.join(this.dailyDirectoryPath(), this.logFileName);
+  }
+
+  get legacyLogFilePath() {
     return path.join(this.workspaceRoot, ".amarillo", this.logFileName);
+  }
+
+  get logRootPath() {
+    return path.join(this.workspaceRoot, ".amarillo", this.logDirectoryName);
+  }
+
+  dailyDirectoryPath(timestamp = new Date().toISOString()) {
+    return path.join(this.logRootPath, dateKeyFromTimestamp(timestamp));
+  }
+
+  logFilePathForTimestamp(timestamp) {
+    return path.join(this.dailyDirectoryPath(timestamp), this.logFileName);
+  }
+
+  collectDailyLogFilePaths() {
+    if (!fs.existsSync(this.logRootPath)) {
+      return [];
+    }
+    const paths = [];
+    for (const dayEntry of fs.readdirSync(this.logRootPath, { withFileTypes: true })) {
+      if (!dayEntry.isDirectory()) {
+        continue;
+      }
+      const filePath = path.join(this.logRootPath, dayEntry.name, this.logFileName);
+      if (fs.existsSync(filePath)) {
+        paths.push(filePath);
+      }
+    }
+    return paths;
   }
 
   /**
@@ -269,13 +320,27 @@ class ErrorTracker {
 
   _loadExisting() {
     try {
-      if (fs.existsSync(this.logFilePath)) {
-        const raw = fs.readFileSync(this.logFilePath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed.entries)) {
-          this.entries = parsed.entries.slice(0, this.maxEntries);
+      const dailyFiles = this.collectDailyLogFilePaths();
+      const entries = [];
+      const seenIds = new Set();
+      const loadFile = (filePath) => {
+        for (const entry of readEntriesFile(filePath)) {
+          if (entry && entry.id && !seenIds.has(entry.id)) {
+            seenIds.add(entry.id);
+            entries.push(entry);
+          }
         }
+      };
+
+      for (const filePath of dailyFiles) {
+        loadFile(filePath);
       }
+      if (fs.existsSync(this.legacyLogFilePath)) {
+        loadFile(this.legacyLogFilePath);
+      }
+      this.entries = entries
+        .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0))
+        .slice(0, this.maxEntries);
     } catch (_error) {
       // Arquivo corrompido ou inexistente — começar vazio
       this.entries = [];
@@ -284,18 +349,43 @@ class ErrorTracker {
 
   _persist() {
     try {
-      const dir = path.dirname(this.logFilePath);
-      fs.mkdirSync(dir, { recursive: true });
-      const data = {
-        version: 1,
-        generatedAt: new Date().toISOString(),
-        totalEntries: this.entries.length,
-        entries: this.entries
-      };
-      fs.writeFileSync(this.logFilePath, JSON.stringify(data, null, 2), "utf8");
+      fs.mkdirSync(this.logRootPath, { recursive: true });
+      const grouped = new Map();
+      for (const entry of this.entries) {
+        const day = dateKeyFromTimestamp(entry.timestamp);
+        const bucket = grouped.get(day) || [];
+        bucket.push(entry);
+        grouped.set(day, bucket);
+      }
+
+      for (const filePath of this.collectDailyLogFilePaths()) {
+        const day = path.basename(path.dirname(filePath));
+        if (!grouped.has(day)) {
+          this._writeEntriesFile(filePath, []);
+        }
+      }
+
+      if (grouped.size === 0) {
+        this._writeEntriesFile(this.logFilePath, []);
+      }
+
+      for (const [day, entries] of grouped.entries()) {
+        this._writeEntriesFile(path.join(this.logRootPath, day, this.logFileName), entries);
+      }
     } catch (_error) {
       // Falha silenciosa na persistência — não crashar o daemon
     }
+  }
+
+  _writeEntriesFile(filePath, entries) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const data = {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      totalEntries: entries.length,
+      entries
+    };
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), "utf8");
   }
 }
 

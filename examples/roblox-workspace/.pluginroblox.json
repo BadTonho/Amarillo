@@ -1,8 +1,0 @@
-{
-  "daemonPort": 8323,
-  "mcp": {
-    "enabled": true
-  },
-  "autoConnect": true,
-  "autoSyncToStudio": true
-}

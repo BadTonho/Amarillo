@@ -5,6 +5,7 @@ local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local LogService = game:GetService("LogService")
+local Players = game:GetService("Players")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
@@ -46,6 +47,8 @@ local state = {
 	treeCache = nil,
 	pendingScriptPatches = {},
 	openDocumentCache = {},
+	pendingPropertyCommand = nil,
+	confirmPropertyChanges = true,
 	ui = {}
 }
 
@@ -202,7 +205,8 @@ local function saveSettings()
 		host = state.host,
 		port = state.port,
 		projectId = state.selectedProjectId,
-		portCustomized = state.portCustomized
+		portCustomized = state.portCustomized,
+		confirmPropertyChanges = state.confirmPropertyChanges
 	})
 end
 
@@ -222,6 +226,9 @@ local function loadSettings()
 			end
 		end
 		state.selectedProjectId = saved.projectId
+		if saved.confirmPropertyChanges ~= nil then
+			state.confirmPropertyChanges = saved.confirmPropertyChanges
+		end
 		if migratedLegacyPort then
 			saveSettings()
 			appendLog("Old default port migrated to 8323. Adjust it in Settings if you want a different port.")
@@ -272,6 +279,23 @@ end
 
 local function request(method, route, body)
 	return requestWithBase(baseUrl(), method, route, body)
+end
+
+local function reportPluginError(message, code, context, severity)
+	if not message or message == "" then
+		return
+	end
+	pcall(function()
+		request("POST", "/errors/add", {
+			component = "plugin",
+			severity = severity or "error",
+			code = code or "PLUGIN",
+			message = tostring(message),
+			sessionId = state.sessionId,
+			projectId = state.selectedProjectId,
+			context = context
+		})
+	end)
 end
 
 -- OPT-005: Send pre-serialized JSON body to avoid double JSONEncode
@@ -674,21 +698,86 @@ end
 local function indexDesiredChildren(children)
 	local indexed = {}
 	for _, child in ipairs(children or {}) do
-		indexed[child.name] = child
+		local bucket = indexed[child.name]
+		if bucket then
+			table.insert(bucket, child)
+		else
+			indexed[child.name] = { child }
+		end
 	end
 	return indexed
 end
 
--- Terrain is engine-owned inside Workspace and cannot be destroyed.
+local function findDesiredChildForInstance(instance, desiredChildIndex)
+	local bucket = desiredChildIndex and desiredChildIndex[instance.Name]
+	if not bucket then
+		return nil
+	end
+	for _, desiredChild in ipairs(bucket) do
+		if desiredChild.className == instance.ClassName then
+			return desiredChild
+		end
+	end
+	return bucket[1]
+end
+
+local function hasDesiredChildNamed(desiredChildIndex, name)
+	return desiredChildIndex ~= nil and desiredChildIndex[name] ~= nil
+end
+
+-- Engine/player-owned instances cannot be safely rewritten by plugin threads.
+local function isPlayerControlledInstance(instance)
+	if not instance then
+		return false
+	end
+	if instance:IsA("Player") then
+		return true
+	end
+	local okPlayersDescendant, playersDescendant = pcall(function()
+		return instance:IsDescendantOf(Players)
+	end)
+	if okPlayersDescendant and playersDescendant then
+		return true
+	end
+
+	local okPlayers, playerList = pcall(function()
+		return Players:GetPlayers()
+	end)
+	if not okPlayers then
+		return false
+	end
+	for _, player in ipairs(playerList) do
+		local character = nil
+		pcall(function()
+			character = player.Character
+		end)
+		if character then
+			if instance == character then
+				return true
+			end
+			local okCharacterDescendant, characterDescendant = pcall(function()
+				return instance:IsDescendantOf(character)
+			end)
+			if okCharacterDescendant and characterDescendant then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 local function isProtectedSyncInstance(instance)
-	return instance and instance:IsA("Terrain")
+	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
 local function shouldIncludeSnapshotChild(instance, desiredChildIndex)
+	if isPlayerControlledInstance(instance) then
+		return false
+	end
 	if not isProtectedSyncInstance(instance) then
 		return true
 	end
-	return desiredChildIndex ~= nil and desiredChildIndex[instance.Name] ~= nil
+	return hasDesiredChildNamed(desiredChildIndex, instance.Name)
 end
 
 local function destroyUnexpectedChild(instance, contextLabel)
@@ -721,6 +810,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode)
 	local node = {
 		name = instance.Name,
 		className = instance.ClassName,
+		classNameSource = "studio",
 		properties = collectProperties(instance),
 		children = {}
 	}
@@ -740,7 +830,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode)
 	local desiredChildIndex = indexDesiredChildren(desiredNode and desiredNode.children or nil)
 	for _, child in ipairs(instance:GetChildren()) do
 		if shouldIncludeSnapshotChild(child, desiredChildIndex) then
-			table.insert(node.children, snapshotNode(child, openDocumentSources, desiredChildIndex[child.Name]))
+			table.insert(node.children, snapshotNode(child, openDocumentSources, findDesiredChildForInstance(child, desiredChildIndex)))
 		end
 	end
 	table.sort(node.children, function(left, right)
@@ -790,7 +880,7 @@ local function snapshotCurrentProject()
 			local desiredChildIndex = indexDesiredChildren(desiredMount and desiredMount.children or nil)
 			for _, child in ipairs(container:GetChildren()) do
 				if shouldIncludeSnapshotChild(child, desiredChildIndex) then
-					table.insert(children, snapshotNode(child, openDocumentSources, desiredChildIndex[child.Name]))
+					table.insert(children, snapshotNode(child, openDocumentSources, findDesiredChildForInstance(child, desiredChildIndex)))
 				end
 			end
 			table.sort(children, function(left, right)
@@ -848,15 +938,108 @@ local function applyProperties(instance, properties)
 	end
 end
 
+local function isImplicitFolderNode(desiredNode)
+	return desiredNode
+		and desiredNode.className == "Folder"
+		and desiredNode.classNameSource == "defaultFolder"
+end
+
+-- Returns true if the desired node may contain Studio-only descendants
+-- that the daemon cannot fully represent on disk.
+local function mayContainStudioOnlyChildren(desiredNode)
+	if desiredNode.keepUnknowns == true then
+		return true
+	end
+	-- Implicit folders never come from explicit declarations;
+	-- the daemon simply didn't know the real class, so it can't
+	-- know about non-script children either.
+	if isImplicitFolderNode(desiredNode) then
+		return true
+	end
+	-- Nodes whose class was preserved from Studio (corrected during
+	-- a prior apply) also cannot list non-script children.
+	if desiredNode.classNameSource == "studio" then
+		return true
+	end
+	return false
+end
+
+-- Returns true if a Studio instance class cannot be represented as a file
+-- on disk (i.e. the daemon would never produce a node for it).
+local NON_SYNCABLE_BASE_CLASSES = {
+	"GuiObject", "GuiBase2d", "UIBase", "UIComponent",
+	"BasePart", "Model", "Camera", "Light",
+	"Humanoid", "Attachment", "Constraint",
+	"Sound", "ParticleEmitter", "Beam", "Trail",
+	"ValueBase", "BodyMover", "JointInstance"
+}
+local function isNonSyncableInstance(instance)
+	for _, baseClass in ipairs(NON_SYNCABLE_BASE_CLASSES) do
+		if instance:IsA(baseClass) then
+			return true
+		end
+	end
+	return false
+end
+
+local function hasNonSyncableDescendant(instance)
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if isProtectedSyncInstance(descendant) or isNonSyncableInstance(descendant) then
+			return true
+		end
+	end
+	return false
+end
+
+local function shouldDestroyUnexpectedChild(child, desiredNode)
+	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) then
+		return false
+	end
+	if mayContainStudioOnlyChildren(desiredNode) and hasNonSyncableDescendant(child) then
+		return false
+	end
+	return true
+end
+
+local function findExistingChildForDesired(parent, desiredNode)
+	local sameName = nil
+	for _, child in ipairs(parent:GetChildren()) do
+		if child.Name == desiredNode.name then
+			if child.ClassName == desiredNode.className then
+				return child
+			end
+			sameName = sameName or child
+		end
+	end
+	return sameName
+end
+
 local function ensureInstance(parent, desiredNode)
-	local existing = parent:FindFirstChild(desiredNode.name)
+	local existing = findExistingChildForDesired(parent, desiredNode)
+	local corrected = false
+	if isPlayerControlledInstance(existing) then
+		appendLog("Sync ignored player-controlled instance: " .. describeInstanceForLog(existing))
+		return nil, true
+	end
 	if existing and existing.ClassName ~= desiredNode.className then
 		if isProtectedSyncInstance(existing) then
 			appendLog("Sync ignorou substituicao de instancia protegida: " .. describeInstanceForLog(existing) .. " (" .. existing.ClassName .. " -> " .. tostring(desiredNode.className) .. ")")
-			return nil
+			return nil, corrected
+		end
+		if isImplicitFolderNode(desiredNode) and existing.ClassName ~= "Folder" then
+			appendLog("Preserved Studio class for implicit Folder: " .. describeInstanceForLog(existing) .. " (" .. existing.ClassName .. ")")
+			return existing, true
+		end
+		-- Never destroy non-syncable Studio instances (GUIs, Parts, Models,
+		-- etc.) due to class mismatch. The daemon may produce an approximate
+		-- class that doesn't match the real Studio class. Preserve what
+		-- Studio already has to avoid duplicating/losing instances.
+		if isNonSyncableInstance(existing) then
+			appendLog("Preserved non-syncable Studio instance: " .. describeInstanceForLog(existing) .. " (" .. existing.ClassName .. " vs desired " .. tostring(desiredNode.className) .. ")")
+			return existing, true
 		end
 		if not destroyUnexpectedChild(existing, "class mismatch replacement") then
-			return nil
+			return nil, corrected
 		end
 		existing = nil
 	end
@@ -867,14 +1050,22 @@ local function ensureInstance(parent, desiredNode)
 		existing.Parent = parent
 	end
 
-	existing.Name = desiredNode.name
-	return existing
+	if existing.Name ~= desiredNode.name then
+		local okRename, renameErr = pcall(function()
+			existing.Name = desiredNode.name
+		end)
+		if not okRename then
+			appendLog("Failed to rename during sync: " .. describeInstanceForLog(existing) .. " -> " .. tostring(renameErr))
+			return nil, true
+		end
+	end
+	return existing, corrected
 end
 
 local function applyNode(parent, desiredNode, openDocumentSources)
-	local instance = ensureInstance(parent, desiredNode)
+	local instance, corrected = ensureInstance(parent, desiredNode)
 	if not instance then
-		return
+		return corrected
 	end
 	applyProperties(instance, desiredNode.properties)
 
@@ -885,16 +1076,23 @@ local function applyNode(parent, desiredNode, openDocumentSources)
 	local desiredChildren = {}
 	for _, child in ipairs(desiredNode.children or {}) do
 		desiredChildren[child.name] = true
-		applyNode(instance, child, openDocumentSources)
+		if applyNode(instance, child, openDocumentSources) then
+			corrected = true
+		end
 	end
 
 	if desiredNode.keepUnknowns ~= true then
 		for _, child in ipairs(instance:GetChildren()) do
 			if not desiredChildren[child.Name] then
-				destroyUnexpectedChild(child, "node cleanup")
+				-- Preserve Studio-only objects, but remove syncable scripts/folders
+				-- that disappeared from the desired tree so moves do not duplicate.
+				if shouldDestroyUnexpectedChild(child, desiredNode) then
+					destroyUnexpectedChild(child, "node cleanup")
+				end
 			end
 		end
 	end
+	return corrected
 end
 
 local function normalizeProjectSnapshotForCache(projectSnapshot)
@@ -919,43 +1117,72 @@ local function applyProjectSnapshot(projectSnapshot)
 
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
-	ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
-	local openDocumentSources = collectOpenDocumentSources()
+	local correctedDuringApply = false
+	local correctedSnapshot = nil
 
-	for _, mount in ipairs(projectSnapshot.mounts or {}) do
-		local container = resolveMountContainer(mount.segments or {})
-		if container then
-			local desiredChildren = {}
-			for _, child in ipairs(mount.children or {}) do
-				desiredChildren[child.name] = true
-				applyNode(container, child, openDocumentSources)
-			end
-			if mount.keepUnknowns ~= true then
-				for _, child in ipairs(container:GetChildren()) do
-					if not desiredChildren[child.Name] then
-						destroyUnexpectedChild(child, "mount cleanup")
+	local okApply, applyError = xpcall(function()
+		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
+		local openDocumentSources = collectOpenDocumentSources()
+
+		for _, mount in ipairs(projectSnapshot.mounts or {}) do
+			local container = resolveMountContainer(mount.segments or {})
+			if container then
+				local desiredChildren = {}
+				for _, child in ipairs(mount.children or {}) do
+					desiredChildren[child.name] = true
+					if applyNode(container, child, openDocumentSources) then
+						correctedDuringApply = true
 					end
 				end
+				if mount.keepUnknowns ~= true then
+					for _, child in ipairs(container:GetChildren()) do
+						if not desiredChildren[child.Name] then
+							-- Never destroy non-syncable instances (GUIs, Parts,
+							-- Cameras, etc.) during mount cleanup. The daemon
+							-- cannot represent these in the filesystem.
+							if not isNonSyncableInstance(child) then
+								destroyUnexpectedChild(child, "mount cleanup")
+							end
+						end
+					end
+				end
+			else
+				appendLog("Mount not found: " .. table.concat(mount.segments or {}, "."))
 			end
-		else
-			appendLog("Mount not found: " .. table.concat(mount.segments or {}, "."))
 		end
+
+		ChangeHistoryService:SetWaypoint("Amarillo Sync End")
+		
+		if correctedDuringApply then
+			correctedSnapshot = snapshotCurrentProject()
+			appendLog("Studio classes preserved; sending corrected snapshot to daemon.")
+		end
+
+		state.treeCache = normalizeProjectSnapshotForCache(correctedSnapshot or projectSnapshot)
+		if state.treeCache then
+			state.lastSnapshotJson = HttpService:JSONEncode(state.treeCache)
+		end
+	end, function(err)
+		return tostring(err)
+	end)
+
+	state.isApplyingRemote = false
+	if not okApply then
+		appendLog("Apply project snapshot failed: " .. tostring(applyError))
+		return false, tostring(applyError)
 	end
 
-	ChangeHistoryService:SetWaypoint("Amarillo Sync End")
-	
-	state.treeCache = normalizeProjectSnapshotForCache(projectSnapshot)
-	if state.treeCache then
-		state.lastSnapshotJson = HttpService:JSONEncode(state.treeCache)
-	end
-	
-	state.isApplyingRemote = false
-	return true, "Snapshot aplicado"
+	return true, "Snapshot aplicado", correctedSnapshot
 end
 
 local function postCommandResult(commandId, okValue, payload)
 	if not state.sessionId then
 		return
+	end
+	if okValue ~= true and payload and payload.error then
+		reportPluginError(payload.error, "PLUGIN-COMMAND", {
+			commandId = commandId
+		}, "error")
 	end
 	local body = {
 		sessionId = state.sessionId,
@@ -1142,7 +1369,7 @@ end
 
 local function handleCommand(command)
 	if command.type == "apply_project_tree" then
-		local ok, message = applyProjectSnapshot(command.payload.project)
+		local ok, message, correctedSnapshot = applyProjectSnapshot(command.payload.project)
 		if ok and state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth" then
 			state.awaitingInitialSync = false
 			pcall(startWatcher)
@@ -1151,6 +1378,7 @@ local function handleCommand(command)
 		end
 		postCommandResult(command.id, ok, {
 			result = message,
+			snapshot = correctedSnapshot,
 			error = ok and nil or message
 		})
 		appendLog(ok and "Local snapshot applied in Studio." or ("Apply failed: " .. tostring(message)))
@@ -1437,44 +1665,22 @@ local function handleCommand(command)
 			return
 		end
 
-		local propName = command.payload.property
-		local rawValue = command.payload.value
-
-		-- Verificacao: ler valor atual primeiro
-		local currentValue = safeGetProperty(instance, propName)
-		if currentValue == nil and propName ~= "Value" then
-			-- Tenta verificar se eh atributo
-			local attrValue = instance:GetAttribute(propName)
-			if attrValue ~= nil then
-				-- Eh um atributo, setar como atributo
-				local ok, err = pcall(function()
-					ChangeHistoryService:SetWaypoint("MCP modify attribute: " .. propName)
-					instance:SetAttribute(propName, rawValue)
-					ChangeHistoryService:SetWaypoint("MCP modify attribute done")
-				end)
-				postCommandResult(command.id, ok, {
-					result = ok and "Attribute changed successfully" or nil,
-					error = ok and nil or tostring(err),
-					path = command.payload.path,
-					property = propName
+		-- Se confirmacao esta ativa, mostrar overlay de confirmacao
+		if state.confirmPropertyChanges then
+			-- Se ja existe um comando pendente, rejeitar o novo
+			if state.pendingPropertyCommand then
+				postCommandResult(command.id, false, {
+					error = "Another property change is already awaiting confirmation."
 				})
-				appendLog(ok and ("Attribute " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
+				appendLog("modify_property rejeitado: ja existe uma confirmacao pendente.")
 				return
 			end
+			showPropertyConfirmation(command)
+			return
 		end
 
-		local ok, err = pcall(function()
-			ChangeHistoryService:SetWaypoint("MCP modify property: " .. propName)
-			setProperty(instance, propName, rawValue)
-			ChangeHistoryService:SetWaypoint("MCP modify property done")
-		end)
-		postCommandResult(command.id, ok, {
-			result = ok and "Property changed successfully" or nil,
-			error = ok and nil or tostring(err),
-			path = command.payload.path,
-			property = propName
-		})
-		appendLog(ok and ("Property " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
+		-- Sem confirmacao, executar diretamente
+		executeModifyProperty(command)
 		return
 	end
 
@@ -1539,7 +1745,7 @@ local function handleCommand(command)
 		end
 		if isProtectedSyncInstance(instance) then
 			postCommandResult(command.id, false, {
-				error = "Deleting protected instances such as Workspace.Terrain is not allowed."
+				error = "Deleting protected instances such as Workspace.Terrain or player characters is not allowed."
 			})
 			appendLog("delete_instance bloqueado: tentativa de deletar instancia protegida.")
 			return
@@ -1564,6 +1770,31 @@ local function handleCommand(command)
 	postCommandResult(command.id, false, {
 		error = "Comando desconhecido: " .. tostring(command.type)
 	})
+end
+
+local function handleCommandSafely(command)
+	local ok, err = xpcall(function()
+		handleCommand(command)
+	end, function(errorValue)
+		return tostring(errorValue)
+	end)
+	if ok then
+		return
+	end
+
+	state.isApplyingRemote = false
+	local commandId = command and command.id or nil
+	local commandType = command and command.type or "unknown"
+	appendLog("Command failed: " .. tostring(commandType) .. " -> " .. tostring(err))
+	reportPluginError(err, "PLUGIN-COMMAND", {
+		commandId = commandId,
+		commandType = commandType
+	}, "error")
+	if commandId then
+		postCommandResult(commandId, false, {
+			error = tostring(err)
+		})
+	end
 end
 
 local function syncSnapshot(reason)
@@ -1636,6 +1867,118 @@ local function hideConnectionPrompt()
 		state.ui.connectionPromptOverlay.Visible = false
 	end
 	state.pendingConnectionContext = nil
+end
+
+-- ===== Property Change Confirmation System =====
+local function formatValueForDisplay(value)
+	if type(value) == "table" then
+		local okEncode, encoded = pcall(function()
+			return HttpService:JSONEncode(value)
+		end)
+		if okEncode then
+			if #encoded > 80 then
+				return string.sub(encoded, 1, 77) .. "..."
+			end
+			return encoded
+		end
+	end
+	return tostring(value)
+end
+
+local function executeModifyProperty(command)
+	local instance = resolveInstanceByPath(command.payload.path)
+	if not instance then
+		postCommandResult(command.id, false, {
+			error = "Instance not found: " .. tostring(command.payload.path)
+		})
+		appendLog("modify_property falhou: caminho invalido.")
+		return
+	end
+
+	local propName = command.payload.property
+	local rawValue = command.payload.value
+
+	-- Verificacao: ler valor atual primeiro
+	local currentValue = safeGetProperty(instance, propName)
+	if currentValue == nil and propName ~= "Value" then
+		-- Tenta verificar se eh atributo
+		local attrValue = instance:GetAttribute(propName)
+		if attrValue ~= nil then
+			-- Eh um atributo, setar como atributo
+			local ok, err = pcall(function()
+				ChangeHistoryService:SetWaypoint("MCP modify attribute: " .. propName)
+				instance:SetAttribute(propName, rawValue)
+				ChangeHistoryService:SetWaypoint("MCP modify attribute done")
+			end)
+			postCommandResult(command.id, ok, {
+				result = ok and "Attribute changed successfully" or nil,
+				error = ok and nil or tostring(err),
+				path = command.payload.path,
+				property = propName
+			})
+			appendLog(ok and ("Attribute " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
+			return
+		end
+	end
+
+	local ok, err = pcall(function()
+		ChangeHistoryService:SetWaypoint("MCP modify property: " .. propName)
+		setProperty(instance, propName, rawValue)
+		ChangeHistoryService:SetWaypoint("MCP modify property done")
+	end)
+	postCommandResult(command.id, ok, {
+		result = ok and "Property changed successfully" or nil,
+		error = ok and nil or tostring(err),
+		path = command.payload.path,
+		property = propName
+	})
+	appendLog(ok and ("Property " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
+end
+
+local function showPropertyConfirmation(command)
+	state.pendingPropertyCommand = command
+	if state.ui.propertyConfirmOverlay then
+		local propName = tostring(command.payload.property or "?")
+		local instancePath = tostring(command.payload.path or "?")
+		local valueDisplay = formatValueForDisplay(command.payload.value)
+
+		setTextIfPresent(state.ui.propertyConfirmTitle, "Confirm Property Change")
+		setTextIfPresent(state.ui.propertyConfirmBody, "Instance: " .. instancePath)
+		setTextIfPresent(state.ui.propertyConfirmDetail, "Property: " .. propName .. "\nNew value: " .. valueDisplay)
+		state.ui.propertyConfirmOverlay.Visible = true
+	end
+	widget.Enabled = true
+	appendLog("Property change awaiting confirmation: " .. tostring(command.payload.property) .. " at " .. tostring(command.payload.path))
+end
+
+local function hidePropertyConfirmation()
+	if state.ui.propertyConfirmOverlay then
+		state.ui.propertyConfirmOverlay.Visible = false
+	end
+	state.pendingPropertyCommand = nil
+end
+
+local function acceptPropertyChange()
+	local command = state.pendingPropertyCommand
+	if not command then
+		return
+	end
+	state.pendingPropertyCommand = nil
+	hidePropertyConfirmation()
+	executeModifyProperty(command)
+end
+
+local function declinePropertyChange()
+	local command = state.pendingPropertyCommand
+	if not command then
+		return
+	end
+	state.pendingPropertyCommand = nil
+	hidePropertyConfirmation()
+	postCommandResult(command.id, false, {
+		error = "Property change declined by user."
+	})
+	appendLog("Property change declined: " .. tostring(command.payload.property) .. " at " .. tostring(command.payload.path))
 end
 
 local function openConnectionPrompt(context)
@@ -1790,12 +2133,99 @@ local function confirmPendingConnection()
 	showTruthSourcePrompt()
 end
 
+local function handleDiffConfirm(truthSource)
+	if state.ui.diffOverlay then
+		state.ui.diffOverlay.Visible = false
+	end
+	acceptPendingConnection(truthSource)
+end
+
+local function cancelDiff()
+	if state.ui.diffOverlay then
+		state.ui.diffOverlay.Visible = false
+	end
+	showTruthSourcePrompt()
+end
+
+local function showDiffOverlay(truthSource, changes)
+	if state.ui.connectionPromptOverlay then
+		state.ui.connectionPromptOverlay.Visible = false
+	end
+	if not state.ui.diffOverlay then
+		return
+	end
+	
+	for _, child in ipairs(state.ui.diffList:GetChildren()) do
+		if not child:IsA("UIListLayout") and not child:IsA("UIPadding") then
+			child:Destroy()
+		end
+	end
+
+	for _, changeMsg in ipairs(changes or {}) do
+		local label = makeTextLabel(state.ui.diffList, changeMsg, UDim2.new(1, -8, 0, 16), UDim2.new(0, 4, 0, 0), 12)
+		if changeMsg:sub(1, 1) == "+" then
+			label.TextColor3 = Color3.fromRGB(120, 214, 140)
+		elseif changeMsg:sub(1, 1) == "-" then
+			label.TextColor3 = Color3.fromRGB(214, 120, 120)
+		elseif changeMsg:sub(1, 1) == "~" then
+			label.TextColor3 = Color3.fromRGB(214, 183, 120)
+		else
+			label.TextColor3 = Color3.fromRGB(180, 186, 196)
+		end
+	end
+
+	local layout = state.ui.diffList:FindFirstChildOfClass("UIListLayout")
+	if layout then
+		state.ui.diffListCanvas.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 8)
+	end
+
+	if state.ui.diffConfirmConnection then
+		state.ui.diffConfirmConnection:Disconnect()
+		state.ui.diffConfirmConnection = nil
+	end
+
+	if state.ui.diffConfirmBtn then
+		state.ui.diffConfirmConnection = state.ui.diffConfirmBtn.MouseButton1Click:Connect(function()
+			handleDiffConfirm(truthSource)
+		end)
+	end
+
+	state.ui.diffOverlay.Visible = true
+end
+
+local function fetchAndShowDiff(truthSource)
+	if state.ui.connectionPromptBody then
+		state.ui.connectionPromptBody.Text = "Calculating changes..."
+		state.ui.connectionPromptChoosePc.Visible = false
+		state.ui.connectionPromptChooseStudio.Visible = false
+	end
+
+	local studioSnapshot = { mounts = {} }
+	local okSnapshot, projectOrErr = pcall(snapshotCurrentProject)
+	if okSnapshot and projectOrErr then
+		studioSnapshot = projectOrErr
+	end
+	
+	local ok, response = request("POST", "/connection/diff", {
+		projectId = state.selectedProjectId,
+		truthSource = truthSource,
+		studioSnapshot = studioSnapshot
+	})
+
+	if ok and response and response.changes then
+		showDiffOverlay(truthSource, response.changes)
+	else
+		appendLog("Failed to calculate diff. Proceeding without preview.")
+		acceptPendingConnection(truthSource)
+	end
+end
+
 local function choosePcTruth()
-	acceptPendingConnection("pc")
+	fetchAndShowDiff("pc")
 end
 
 local function chooseStudioTruth()
-	acceptPendingConnection("studio")
+	fetchAndShowDiff("studio")
 end
 
 local function pollConnectionOffer()
@@ -1829,20 +2259,20 @@ end
 
 local function manualPull()
 	if not state.sessionId then
-		appendLog("Connect the plugin before pulling from disk.")
+		appendLog("Connect the plugin before receiving from PC.")
 		return
 	end
 	local ok, response = request("POST", "/session/" .. state.sessionId .. "/pull", {})
-	appendLog(ok and "Pull requested from the daemon." or ("Pull failed: " .. tostring(response)))
+	appendLog(ok and "Receiving files from PC..." or ("Receive from PC failed: " .. tostring(response)))
 end
 
 local function manualPush()
 	if not state.sessionId then
-		appendLog("Connect the plugin before sending to disk.")
+		appendLog("Connect the plugin before sending to PC.")
 		return
 	end
 	local ok, response = syncSnapshot("manual")
-	appendLog(ok and "Push sent to the daemon." or ("Push failed: " .. tostring(response)))
+	appendLog(ok and "Sending files to PC..." or ("Send to PC failed: " .. tostring(response)))
 end
 
 local function manualRunCode()
@@ -2199,8 +2629,8 @@ local homeActions = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 144), UDim2
 local connectButton = makeButton(homeActions, "Connect", UDim2.fromOffset(136, 36), UDim2.fromOffset(16, 18), connectSession)
 local disconnectButton = makeButton(homeActions, "Disconnect", UDim2.fromOffset(136, 36), UDim2.fromOffset(160, 18), disconnectSession)
 setButtonStyle(disconnectButton, "secondary")
-local sendButton = makeButton(homeActions, "Send to Studio", UDim2.fromOffset(200, 36), UDim2.fromOffset(16, 72), manualPull)
-local receiveButton = makeButton(homeActions, "Receive from Studio", UDim2.fromOffset(200, 36), UDim2.fromOffset(224, 72), manualPush)
+local sendButton = makeButton(homeActions, "Receive from PC", UDim2.fromOffset(200, 36), UDim2.fromOffset(16, 72), manualPull)
+local receiveButton = makeButton(homeActions, "Send to PC", UDim2.fromOffset(200, 36), UDim2.fromOffset(224, 72), manualPush)
 setButtonStyle(receiveButton, "secondary")
 local homeHint = makeTextLabel(homeActions, "Use Advanced for tree, selection, playtest, and Luau.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 118), 12)
 homeHint.TextColor3 = Color3.fromRGB(152, 158, 168)
@@ -2258,7 +2688,30 @@ projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(functi
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 12)
+-- Confirm property changes toggle
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Property change confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+confirmPropTitle.Font = Enum.Font.GothamSemibold
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, a confirmation dialog is shown before any property modification via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
+confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPropertyChanges and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
+	state.confirmPropertyChanges = not state.confirmPropertyChanges
+	state.ui.confirmPropToggle.Text = state.confirmPropertyChanges and "Enabled" or "Disabled"
+	if state.confirmPropertyChanges then
+		setButtonStyle(state.ui.confirmPropToggle, "primary")
+	else
+		setButtonStyle(state.ui.confirmPropToggle, "secondary")
+	end
+	saveSettings()
+	appendLog("Property confirmation " .. (state.confirmPropertyChanges and "enabled" or "disabled") .. ".")
+end)
+if state.confirmPropertyChanges then
+	setButtonStyle(state.ui.confirmPropToggle, "primary")
+else
+	setButtonStyle(state.ui.confirmPropToggle, "secondary")
+end
+
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 648), 12)
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
 local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
@@ -2289,8 +2742,8 @@ local playStopButton = makeButton(advancedActions, "Play Stop", UDim2.fromOffset
 	sendPlaytest("stop")
 end)
 setButtonStyle(playStopButton, "secondary")
-local advancedSendButton = makeButton(advancedActions, "Send to Studio", UDim2.fromOffset(150, 30), UDim2.fromOffset(16, 50), manualPull)
-local advancedReceiveButton = makeButton(advancedActions, "Receive from Studio", UDim2.fromOffset(150, 30), UDim2.fromOffset(176, 50), manualPush)
+local advancedSendButton = makeButton(advancedActions, "Receive from PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(16, 50), manualPull)
+local advancedReceiveButton = makeButton(advancedActions, "Send to PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(176, 50), manualPush)
 setButtonStyle(advancedReceiveButton, "secondary")
 
 state.ui.codeBox = makeTextBox(state.ui.advancedPage, "Paste Luau here to execute in Studio...", UDim2.new(1, -20, 0, 112), UDim2.fromOffset(10, 312), true)
@@ -2332,6 +2785,100 @@ state.ui.connectionPromptChooseStudio = makeButton(connectionPromptCard, "Keep R
 setButtonStyle(state.ui.connectionPromptChooseStudio, "secondary")
 state.ui.connectionPromptChooseStudio.Visible = false
 state.ui.connectionPromptChooseStudio.ZIndex = 22
+
+-- ===== Property Confirmation Overlay =====
+state.ui.propertyConfirmOverlay = Instance.new("Frame")
+state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+state.ui.propertyConfirmOverlay.BackgroundTransparency = 0.28
+state.ui.propertyConfirmOverlay.BorderSizePixel = 0
+state.ui.propertyConfirmOverlay.Size = UDim2.fromScale(1, 1)
+state.ui.propertyConfirmOverlay.Visible = false
+state.ui.propertyConfirmOverlay.ZIndex = 30
+state.ui.propertyConfirmOverlay.Parent = root
+
+local propertyConfirmCard = makeCard(state.ui.propertyConfirmOverlay, UDim2.new(1, -48, 0, 250), UDim2.fromOffset(24, 150), Color3.fromRGB(24, 27, 33))
+propertyConfirmCard.ZIndex = 31
+
+state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Property Change", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
+state.ui.propertyConfirmTitle.Font = Enum.Font.GothamBold
+state.ui.propertyConfirmTitle.ZIndex = 32
+
+local propertyConfirmIcon = makeTextLabel(propertyConfirmCard, "⚠", UDim2.fromOffset(28, 28), UDim2.new(1, -44, 0, 14), 20)
+propertyConfirmIcon.TextXAlignment = Enum.TextXAlignment.Right
+propertyConfirmIcon.TextColor3 = Color3.fromRGB(214, 183, 120)
+propertyConfirmIcon.ZIndex = 32
+
+state.ui.propertyConfirmBody = makeTextLabel(propertyConfirmCard, "Instance: ?", UDim2.new(1, -32, 0, 42), UDim2.fromOffset(16, 54), 14)
+state.ui.propertyConfirmBody.ZIndex = 32
+state.ui.propertyConfirmBody.TextColor3 = Color3.fromRGB(200, 205, 215)
+
+state.ui.propertyConfirmDetail = makeTextLabel(propertyConfirmCard, "Property: ?\nNew value: ?", UDim2.new(1, -32, 0, 60), UDim2.fromOffset(16, 100), 13)
+state.ui.propertyConfirmDetail.ZIndex = 32
+state.ui.propertyConfirmDetail.TextColor3 = Color3.fromRGB(166, 172, 184)
+state.ui.propertyConfirmDetail.Font = Enum.Font.Code
+
+local propertyConfirmHint = makeTextLabel(propertyConfirmCard, "Accept to apply the change or decline to cancel.", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 168), 11)
+propertyConfirmHint.TextColor3 = Color3.fromRGB(140, 146, 156)
+propertyConfirmHint.ZIndex = 32
+
+local propertyAcceptBtn = makeButton(propertyConfirmCard, "Accept", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 198), acceptPropertyChange)
+propertyAcceptBtn.ZIndex = 32
+local propertyDeclineBtn = makeButton(propertyConfirmCard, "Decline", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 198), declinePropertyChange)
+setButtonStyle(propertyDeclineBtn, "secondary")
+propertyDeclineBtn.ZIndex = 32
+
+-- ===== Diff Confirmation Overlay =====
+state.ui.diffOverlay = Instance.new("Frame")
+state.ui.diffOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+state.ui.diffOverlay.BackgroundTransparency = 0.28
+state.ui.diffOverlay.BorderSizePixel = 0
+state.ui.diffOverlay.Size = UDim2.fromScale(1, 1)
+state.ui.diffOverlay.Visible = false
+state.ui.diffOverlay.ZIndex = 40
+state.ui.diffOverlay.Parent = root
+
+local diffCard = makeCard(state.ui.diffOverlay, UDim2.new(1, -48, 0, 400), UDim2.fromOffset(24, 80), Color3.fromRGB(24, 27, 33))
+diffCard.ZIndex = 41
+
+local diffTitle = makeTextLabel(diffCard, "Review Changes", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
+diffTitle.Font = Enum.Font.GothamBold
+diffTitle.ZIndex = 42
+
+local diffHint = makeTextLabel(diffCard, "The following changes will occur after connecting:", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 44), 12)
+diffHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+diffHint.ZIndex = 42
+
+state.ui.diffListCanvas = Instance.new("ScrollingFrame")
+state.ui.diffListCanvas.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
+state.ui.diffListCanvas.BorderSizePixel = 0
+state.ui.diffListCanvas.ScrollBarThickness = 6
+state.ui.diffListCanvas.Size = UDim2.new(1, -32, 0, 260)
+state.ui.diffListCanvas.Position = UDim2.fromOffset(16, 72)
+state.ui.diffListCanvas.ZIndex = 42
+state.ui.diffListCanvas.Parent = diffCard
+addCorner(state.ui.diffListCanvas)
+
+state.ui.diffList = Instance.new("Frame")
+state.ui.diffList.BackgroundTransparency = 1
+state.ui.diffList.Size = UDim2.new(1, -6, 0, 0)
+state.ui.diffList.ZIndex = 42
+state.ui.diffList.Parent = state.ui.diffListCanvas
+
+local diffListPadding = Instance.new("UIPadding")
+diffListPadding.PaddingTop = UDim.new(0, 4)
+diffListPadding.PaddingBottom = UDim.new(0, 4)
+diffListPadding.Parent = state.ui.diffList
+
+local diffListLayout = Instance.new("UIListLayout")
+diffListLayout.Padding = UDim.new(0, 4)
+diffListLayout.Parent = state.ui.diffList
+
+state.ui.diffConfirmBtn = makeButton(diffCard, "Confirm", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 348), function() end) -- Connected later
+state.ui.diffConfirmBtn.ZIndex = 42
+
+local diffCancelBtn = makeButton(diffCard, "Cancel", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 348), cancelDiff)
+setButtonStyle(diffCancelBtn, "secondary")
+diffCancelBtn.ZIndex = 42
 
 toolbarButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
@@ -2379,6 +2926,7 @@ local function sendScriptPatch(path, source)
 	if not state.sessionId or state.isApplyingRemote or state.awaitingInitialSync then
 		return false
 	end
+	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
 	local callOk, requestOk, response = pcall(function()
 		return request("POST", "/studio/patch-source", {
 			sessionId = state.sessionId,
@@ -2388,14 +2936,17 @@ local function sendScriptPatch(path, source)
 	end)
 	if not callOk then
 		appendLog("Error sending patch: " .. tostring(requestOk))
+		reportPluginError(requestOk, "PLUGIN-PATCH", { path = pathLabel }, "warning")
 		return false
 	end
 	if not requestOk then
 		appendLog("Error sending patch: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-PATCH", { path = pathLabel }, "warning")
 		return false
 	end
 	if not response or response.ok ~= true then
 		appendLog("Fast patch rejected; using the full snapshot." .. (response and response.error and (" " .. tostring(response.error)) or ""))
+		reportPluginError((response and response.error) or "Fast patch rejected", "PLUGIN-PATCH", { path = pathLabel }, "warning")
 		return false
 	end
 	return true
@@ -2444,9 +2995,7 @@ local function connectMountWatcher(container)
 
 	-- Listen for direct property changes on the container itself
 	table.insert(conns, container.Changed:Connect(function(property)
-		if property ~= "Parent" then
-			markDirty()
-		end
+		markDirty()
 	end))
 
 	-- For existing descendants, we only need Changed on scripts (where Source matters)
@@ -2457,9 +3006,7 @@ local function connectMountWatcher(container)
 			local descConns = {}
 			pcall(function()
 				table.insert(descConns, descendant.Changed:Connect(function(property)
-					if property ~= "Parent" then
-						markDirty()
-					end
+					markDirty()
 				end))
 			end)
 			-- Also connect Changed for new descendants going forward
@@ -2468,9 +3015,7 @@ local function connectMountWatcher(container)
 					pcall(function()
 						local newConns = {}
 						table.insert(newConns, newDesc.Changed:Connect(function(prop)
-							if prop ~= "Parent" then
-								markDirty()
-							end
+							markDirty()
 						end))
 						watcherConnections[newDesc] = newConns
 					end)
@@ -2551,40 +3096,64 @@ startWatcher = function()
 end
 
 -- ===== Offer poll loop while disconnected =====
+local consecutiveOfferFailures = 0
+
 task.spawn(function()
 	while true do
 		if not state.connected then
-			pcall(fetchDaemonHealth)
-			local reqOk, reqResponse = pollConnectionOffer()
-			if not reqOk then
-				task.wait(2)
-			else
-				if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
-					updateStatus("waiting for confirmation")
+			local healthOk = pcall(fetchDaemonHealth)
+			if healthOk then
+				consecutiveOfferFailures = 0
+				local reqOk, reqResponse = pollConnectionOffer()
+				if reqOk then
+					if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
+						updateStatus("waiting for confirmation")
+					end
+					task.wait(0.5)
+				else
+					task.wait(1)
 				end
-				task.wait(1)
+			else
+				consecutiveOfferFailures = consecutiveOfferFailures + 1
+				updateStatus("daemon offline")
+				-- Back off gradually: 1s, 2s, 3s, max 5s
+				task.wait(math.min(consecutiveOfferFailures, 5))
 			end
 		else
-			task.wait(0.5)
+			task.wait(1)
 		end
 	end
 end)
 
 -- ===== Long-poll loop for receiving commands from daemon =====
+local consecutivePollFailures = 0
+
 task.spawn(function()
 	while true do
 		if state.connected and state.sessionId then
 			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId)
 			if reqOk then
+				consecutivePollFailures = 0
 				updateStatus(state.awaitingInitialSync and "syncing from PC" or "connected")
 				local commands = reqResponse.commands or {}
 				updateQueue(tostring(#commands))
 				for _, command in ipairs(commands) do
-					task.spawn(handleCommand, command)
+					task.spawn(handleCommandSafely, command)
 				end
 			else
-				updateStatus("daemon offline")
-				task.wait(2)
+				consecutivePollFailures = consecutivePollFailures + 1
+				updateStatus("reconnecting (" .. consecutivePollFailures .. ")")
+				appendLog("Connection lost, attempting to reconnect... (" .. consecutivePollFailures .. ")")
+
+				-- After 15 consecutive failures (~30s), give up and disconnect
+				if consecutivePollFailures >= 15 then
+					appendLog("Too many failed reconnect attempts. Disconnecting.")
+					pcall(disconnectWatcher)
+					resetSessionState("disconnected (timeout)")
+					consecutivePollFailures = 0
+				else
+					task.wait(2)
+				end
 			end
 		else
 			task.wait(0.5)

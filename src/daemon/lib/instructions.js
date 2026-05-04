@@ -1,0 +1,207 @@
+"use strict";
+
+const fs = require("node:fs");
+const path = require("node:path");
+const { TOOL_DEFINITIONS } = require("../mcp-tools");
+
+const INSTRUCTIONS_FILE_NAME = "plugin-instructions.md";
+
+const PLUGIN_COMMANDS = [
+  {
+    name: "apply_project_tree",
+    purpose: "Applies the local project snapshot in Roblox Studio.",
+    notes: "Used by pull/sync flows. May return a corrected snapshot when Studio preserves classes."
+  },
+  {
+    name: "apply_file_patch",
+    purpose: "Updates a script source directly in Studio.",
+    notes: "Used for fast script edits when the instance already exists."
+  },
+  {
+    name: "run_code",
+    purpose: "Runs Luau code through the plugin thread.",
+    notes: "Requires a connected Studio session."
+  },
+  {
+    name: "get_tree",
+    purpose: "Returns the current synced Studio tree snapshot.",
+    notes: "Includes mounts, children, script sources, selected properties, and metadata."
+  },
+  {
+    name: "get_selection",
+    purpose: "Returns the current Roblox Studio selection.",
+    notes: "Useful before inspecting or editing instances."
+  },
+  {
+    name: "playtest",
+    purpose: "Starts or stops playtest from the plugin.",
+    notes: "Payload mode is start or stop."
+  },
+  {
+    name: "get_properties",
+    purpose: "Reads all supported properties and attributes from an instance.",
+    notes: "The path is resolved from game/service names."
+  },
+  {
+    name: "get_descendants",
+    purpose: "Lists descendants under a root instance.",
+    notes: "Supports maxDepth and classFilter."
+  },
+  {
+    name: "search_instances",
+    purpose: "Searches instances by name, className, or both.",
+    notes: "Can run globally or within a scope."
+  },
+  {
+    name: "get_services",
+    purpose: "Lists DataModel services visible to the plugin.",
+    notes: "Includes direct child counts where readable."
+  },
+  {
+    name: "get_instance_info",
+    purpose: "Returns class, parent, children, attributes, tags, and readable properties for an instance.",
+    notes: "Useful for detailed inspection."
+  },
+  {
+    name: "get_output_log",
+    purpose: "Returns recent Roblox Studio Output entries.",
+    notes: "Count defaults to 50 and is capped by the daemon."
+  },
+  {
+    name: "modify_property",
+    purpose: "Changes a property or attribute on an instance.",
+    notes: "Destructive. The plugin can require confirmation before applying."
+  },
+  {
+    name: "create_instance",
+    purpose: "Creates a child instance under a parent path.",
+    notes: "Destructive. Initial properties are applied after creation."
+  },
+  {
+    name: "delete_instance",
+    purpose: "Deletes an instance by path.",
+    notes: "Destructive. Services, Terrain, and player-controlled instances are protected."
+  }
+];
+
+const LOCAL_FILES = [
+  {
+    path: ".amarillo/errors/YYYY-MM-DD/error-tracker.json",
+    purpose: "Structured daily error reports used by the daemon, plugin, and VS Code extension."
+  },
+  {
+    path: ".amarillo/activity/YYYY-MM-DD/activity.jsonl",
+    purpose: "Append-only daily machine-readable history of mounted file create/modify/delete events."
+  },
+  {
+    path: ".amarillo/activity/YYYY-MM-DD/activity.md",
+    purpose: "Human-readable daily timeline for mounted file create/modify/delete events."
+  },
+  {
+    path: ".amarillo/plugin-instructions.md",
+    purpose: "This generated reference file for plugin commands and MCP tools."
+  }
+];
+
+function schemaSummary(schema) {
+  if (!schema || typeof schema !== "object") {
+    return "No input schema.";
+  }
+  const required = Array.isArray(schema.required) && schema.required.length > 0
+    ? schema.required.join(", ")
+    : "none";
+  const properties = Object.entries(schema.properties || {}).map(([name, value]) => {
+    const type = value && value.type ? value.type : "any";
+    const description = value && value.description ? ` - ${value.description}` : "";
+    return `    - \`${name}\` (${type})${description}`;
+  });
+  return [
+    `  - Required: ${required}`,
+    properties.length > 0 ? "  - Inputs:" : "  - Inputs: none",
+    ...properties
+  ].join("\n");
+}
+
+function buildInstructionsMarkdown(context = {}) {
+  const generatedAt = new Date().toISOString();
+  const workspaceRoot = context.workspaceRoot || process.cwd();
+  const projectLines = (context.projects || []).map((project) => (
+    `- \`${project.id}\` (${project.name || "unnamed"})`
+  ));
+
+  const commandLines = PLUGIN_COMMANDS.flatMap((command) => [
+    `### ${command.name}`,
+    `- Purpose: ${command.purpose}`,
+    `- Notes: ${command.notes}`,
+    ""
+  ]);
+
+  const toolLines = TOOL_DEFINITIONS.flatMap((tool) => [
+    `### ${tool.name}`,
+    `- Description: ${tool.description}`,
+    schemaSummary(tool.inputSchema),
+    ""
+  ]);
+
+  const localFileLines = LOCAL_FILES.map((file) => `- \`${file.path}\`: ${file.purpose}`);
+
+  return [
+    "# Amarillo Plugin Instructions",
+    "",
+    "> Generated automatically. Do not edit this file by hand; restart the bridge/plugin to refresh it.",
+    "",
+    `Generated at: ${generatedAt}`,
+    `Workspace: \`${workspaceRoot}\``,
+    "",
+    "## How To Use",
+    "",
+    "- Start the Amarillo bridge from VS Code.",
+    "- Open Roblox Studio, reload the Amarillo plugin if needed, and connect it to the workspace.",
+    "- Use the MCP tools through your AI client, or use the plugin UI for connect, sync, selection, playtest, logs, and Luau execution.",
+    "- Destructive operations are `modify_property`, `create_instance`, and `delete_instance`; property changes may require confirmation in the plugin.",
+    "",
+    "## Local Diagnostic Files",
+    "",
+    ...localFileLines,
+    "",
+    "## Active Projects",
+    "",
+    ...(projectLines.length > 0 ? projectLines : ["- No project discovered yet."]),
+    "",
+    "## Studio Plugin Commands",
+    "",
+    ...commandLines,
+    "## MCP Tools",
+    "",
+    ...toolLines
+  ].join("\n");
+}
+
+function ensurePluginInstructionsFile(options = {}) {
+  const workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
+  const outputDir = path.join(workspaceRoot, ".amarillo");
+  const outputPath = path.join(outputDir, INSTRUCTIONS_FILE_NAME);
+  const markdown = buildInstructionsMarkdown({
+    workspaceRoot,
+    projects: options.projects || []
+  });
+
+  fs.mkdirSync(outputDir, { recursive: true });
+  if (fs.existsSync(outputPath) && fs.readFileSync(outputPath, "utf8") === markdown) {
+    return {
+      path: outputPath,
+      changed: false
+    };
+  }
+  fs.writeFileSync(outputPath, markdown, "utf8");
+  return {
+    path: outputPath,
+    changed: true
+  };
+}
+
+module.exports = {
+  INSTRUCTIONS_FILE_NAME,
+  buildInstructionsMarkdown,
+  ensurePluginInstructionsFile
+};

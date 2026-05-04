@@ -6,8 +6,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  buildNodeFromDirectory,
   loadWorkspaceProjectCatalog,
   loadWorkspaceProjects,
+  moveOrphanScriptMetaForFile,
   parseProjectFile,
   patchStudioFileSource,
   readLocalProjectState,
@@ -351,6 +353,202 @@ test("local state roundtrip writes scripts and metadata", () => {
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(workspace, "sync", "ReplicatedStorage", "Shared", "Hello.meta.json"), "utf8")).properties.Attributes.Demo,
     true
+  );
+});
+
+test("studio snapshot moves scripts between implicit folders on disk", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ServerScriptService");
+  fs.mkdirSync(path.join(syncRoot, "OldFolder"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "NewFolder"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "sync/ServerScriptService"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "OldFolder", "Hello.server.luau"), "return 'old'", "utf8");
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        children: [
+          {
+            name: "OldFolder",
+            className: "Folder",
+            classNameSource: "defaultFolder",
+            properties: {},
+            children: []
+          },
+          {
+            name: "NewFolder",
+            className: "Folder",
+            classNameSource: "defaultFolder",
+            properties: {},
+            children: [
+              {
+                name: "Hello",
+                className: "Script",
+                fileKind: "server",
+                ext: ".server.luau",
+                source: "return 'new'",
+                properties: {},
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(fs.existsSync(path.join(syncRoot, "OldFolder", "Hello.server.luau")), false);
+  assert.equal(fs.readFileSync(path.join(syncRoot, "NewFolder", "Hello.server.luau"), "utf8"), "return 'new'");
+});
+
+test("script moves repair orphaned sidecar metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ServerScriptService");
+  fs.mkdirSync(path.join(syncRoot, "OldFolder"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "NewFolder"), { recursive: true });
+  const oldMetaPath = path.join(syncRoot, "OldFolder", "Hello.meta.json");
+  const newScriptPath = path.join(syncRoot, "NewFolder", "Hello.server.luau");
+  fs.writeFileSync(oldMetaPath, JSON.stringify({
+    properties: {
+      Disabled: true
+    }
+  }, null, 2));
+  fs.writeFileSync(newScriptPath, "return 1", "utf8");
+
+  const result = moveOrphanScriptMetaForFile({ id: "ServerScriptService", absolutePath: syncRoot }, newScriptPath);
+
+  assert.equal(result.moved, true);
+  assert.equal(fs.existsSync(oldMetaPath), false);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(syncRoot, "NewFolder", "Hello.meta.json"), "utf8")).properties.Disabled,
+    true
+  );
+});
+
+test("project reads can repair existing orphaned sidecar metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ServerScriptService");
+  fs.mkdirSync(path.join(syncRoot, "OldFolder"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "NewFolder"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "sync/ServerScriptService"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "OldFolder", "Hello.meta.json"), JSON.stringify({
+    properties: {
+      Disabled: true
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "NewFolder", "Hello.server.luau"), "return 1", "utf8");
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const snapshot = readLocalProjectState(project, { repairOrphanScriptMetas: true });
+  const mount = snapshot.mounts[0];
+  const newFolder = mount.children.find((child) => child.name === "NewFolder");
+  const movedScript = newFolder.children.find((child) => child.name === "Hello");
+
+  assert.equal(fs.existsSync(path.join(syncRoot, "OldFolder", "Hello.meta.json")), false);
+  assert.equal(fs.existsSync(path.join(syncRoot, "NewFolder", "Hello.meta.json")), true);
+  assert.equal(movedScript.properties.Disabled, true);
+});
+
+test("directory classNameSource separates implicit folders from explicit metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(path.join(syncRoot, "Implicit"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "ExplicitGui"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "ExplicitFolder"), { recursive: true });
+  fs.writeFileSync(path.join(syncRoot, "ExplicitGui", "init.meta.json"), JSON.stringify({
+    className: "ScreenGui"
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "ExplicitFolder", "init.meta.json"), JSON.stringify({
+    className: "Folder"
+  }, null, 2));
+
+  const implicit = buildNodeFromDirectory(path.join(syncRoot, "Implicit"));
+  const explicitGui = buildNodeFromDirectory(path.join(syncRoot, "ExplicitGui"));
+  const explicitFolder = buildNodeFromDirectory(path.join(syncRoot, "ExplicitFolder"));
+
+  assert.equal(implicit.className, "Folder");
+  assert.equal(implicit.classNameSource, "defaultFolder");
+  assert.equal(explicitGui.className, "ScreenGui");
+  assert.equal(explicitGui.classNameSource, "meta");
+  assert.equal(explicitFolder.className, "Folder");
+  assert.equal(explicitFolder.classNameSource, "meta");
+});
+
+test("studio snapshot writes metadata for non-Folder instance classes", () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "StarterGui"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $path: "sync/StarterGui"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "StarterGui",
+        children: [
+          {
+            name: "DemoGui",
+            className: "ScreenGui",
+            classNameSource: "studio",
+            properties: {},
+            children: [
+              {
+                name: "Main",
+                className: "Frame",
+                classNameSource: "studio",
+                properties: {},
+                children: []
+              },
+              {
+                name: "Stack",
+                className: "UIListLayout",
+                classNameSource: "studio",
+                properties: {},
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(workspace, "sync", "StarterGui", "DemoGui", "init.meta.json"), "utf8")).className,
+    "ScreenGui"
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(workspace, "sync", "StarterGui", "DemoGui", "Main", "init.meta.json"), "utf8")).className,
+    "Frame"
+  );
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(workspace, "sync", "StarterGui", "DemoGui", "Stack", "init.meta.json"), "utf8")).className,
+    "UIListLayout"
   );
 });
 

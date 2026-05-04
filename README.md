@@ -142,3 +142,4 @@ The final file will be created in `dist/`.
 - The project is still `Windows-first`.
 - The Studio plugin remains a single file to make installation and reload simpler.
 - Property sync is still extensible for new `className`s and serialized types.
+- `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed and inherited, but are not yet enforced by the Studio-to-disk writer.

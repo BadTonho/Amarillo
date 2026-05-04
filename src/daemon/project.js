@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const projectResolver = require("./project-resolver");
 
 const PROJECT_SUFFIX = ".project.json";
@@ -262,6 +263,16 @@ function stripScriptSuffix(fileName) {
     .replace(/\.lua[u]?$/i, "");
 }
 
+function normalizeResolvedPath(filePath) {
+  return path.resolve(filePath).replace(/\\/g, "/");
+}
+
+function isPathInside(childPath, parentPath) {
+  const child = normalizeResolvedPath(childPath);
+  const parent = normalizeResolvedPath(parentPath).replace(/\/+$/, "");
+  return child === parent || child.startsWith(`${parent}/`);
+}
+
 function listDirectoryEntries(dirPath) {
   if (!fs.existsSync(dirPath)) {
     return [];
@@ -276,11 +287,161 @@ function readMetaFile(metaPath) {
   return parseJsonFile(metaPath);
 }
 
+function scriptMetaNameForFile(filePath) {
+  const fileName = path.basename(filePath);
+  if (!detectScriptFileType(fileName)) {
+    return null;
+  }
+  return `${stripScriptSuffix(fileName)}${META_SUFFIX}`;
+}
+
+function scriptFileExistsForMeta(metaPath) {
+  const baseName = path.basename(metaPath, META_SUFFIX);
+  const dirPath = path.dirname(metaPath);
+  return [
+    `${baseName}.server.luau`,
+    `${baseName}.server.lua`,
+    `${baseName}.client.luau`,
+    `${baseName}.client.lua`,
+    `${baseName}.luau`,
+    `${baseName}.lua`
+  ].some((fileName) => fs.existsSync(path.join(dirPath, fileName)));
+}
+
+function collectOrphanScriptMetaCandidates(rootDir, metaName, targetMetaPath, results = []) {
+  for (const entry of listDirectoryEntries(rootDir)) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      collectOrphanScriptMetaCandidates(fullPath, metaName, targetMetaPath, results);
+      continue;
+    }
+    if (
+      entry.isFile()
+      && entry.name === metaName
+      && normalizeResolvedPath(fullPath) !== normalizeResolvedPath(targetMetaPath)
+      && !scriptFileExistsForMeta(fullPath)
+    ) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function collectScriptMetaRepairState(rootDir, state = { missingMetaScripts: new Map(), orphanMetas: new Map() }) {
+  for (const entry of listDirectoryEntries(rootDir)) {
+    const fullPath = path.join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      collectScriptMetaRepairState(fullPath, state);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    const scriptMetaName = scriptMetaNameForFile(fullPath);
+    if (scriptMetaName) {
+      const metaPath = path.join(path.dirname(fullPath), scriptMetaName);
+      if (!fs.existsSync(metaPath)) {
+        const bucket = state.missingMetaScripts.get(scriptMetaName) || [];
+        bucket.push(fullPath);
+        state.missingMetaScripts.set(scriptMetaName, bucket);
+      }
+      continue;
+    }
+
+    if (entry.name.endsWith(META_SUFFIX) && !scriptFileExistsForMeta(fullPath)) {
+      const bucket = state.orphanMetas.get(entry.name) || [];
+      bucket.push(fullPath);
+      state.orphanMetas.set(entry.name, bucket);
+    }
+  }
+  return state;
+}
+
+function moveOrphanScriptMetaForFile(mount, scriptFilePath, options = {}) {
+  const absoluteScriptPath = path.resolve(scriptFilePath);
+  const mountRoot = path.resolve(mount.absolutePath || mount);
+  if (!fs.existsSync(absoluteScriptPath) || !isPathInside(absoluteScriptPath, mountRoot)) {
+    return { moved: false, reason: "script_not_in_mount" };
+  }
+
+  const metaName = scriptMetaNameForFile(absoluteScriptPath);
+  if (!metaName) {
+    return { moved: false, reason: "not_script" };
+  }
+
+  const targetMetaPath = path.join(path.dirname(absoluteScriptPath), metaName);
+  if (fs.existsSync(targetMetaPath)) {
+    return { moved: false, reason: "target_meta_exists", targetPath: targetMetaPath };
+  }
+
+  const candidates = collectOrphanScriptMetaCandidates(mountRoot, metaName, targetMetaPath);
+  if (candidates.length !== 1) {
+    return {
+      moved: false,
+      reason: candidates.length === 0 ? "no_orphan_meta" : "ambiguous_orphan_meta",
+      candidates
+    };
+  }
+
+  const sourceMetaPath = candidates[0];
+  const sourceInfo = collectExistingFileInfos(sourceMetaPath)[0] || {};
+  ensureDirectory(path.dirname(targetMetaPath));
+  fs.renameSync(sourceMetaPath, targetMetaPath);
+  notifyFileChange(options, {
+    action: "delete",
+    filePath: sourceMetaPath,
+    size: sourceInfo.size,
+    hash: sourceInfo.hash
+  });
+  notifyFileChange(options, {
+    action: "create",
+    filePath: targetMetaPath,
+    size: sourceInfo.size,
+    hash: sourceInfo.hash
+  });
+  return {
+    moved: true,
+    from: sourceMetaPath,
+    to: targetMetaPath
+  };
+}
+
+function repairOrphanScriptMetasInMount(mount, options = {}) {
+  const mountRoot = path.resolve(mount.absolutePath || mount);
+  const state = collectScriptMetaRepairState(mountRoot);
+  const repaired = [];
+  for (const [metaName, scriptPaths] of state.missingMetaScripts.entries()) {
+    const orphanPaths = state.orphanMetas.get(metaName) || [];
+    if (scriptPaths.length !== 1 || orphanPaths.length !== 1) {
+      continue;
+    }
+    const result = moveOrphanScriptMetaForFile(mount, scriptPaths[0], options);
+    if (result.moved) {
+      repaired.push(result);
+    }
+  }
+  return repaired;
+}
+
+function repairProjectOrphanScriptMetas(project, options = {}) {
+  const repaired = [];
+  for (const mount of project.mounts || []) {
+    repaired.push(...repairOrphanScriptMetasInMount(mount, {
+      ...options,
+      project,
+      mount
+    }));
+  }
+  return repaired;
+}
+
 function buildNodeFromJsonModel(modelName, modelData) {
   const children = (modelData.Children || []).map((child) => buildNodeFromJsonModel(child.Name, child));
   return {
     name: modelName,
     className: modelData.ClassName || "Folder",
+    classNameSource: "file",
     properties: modelData.Properties || {},
     keepUnknowns: true,
     children
@@ -318,6 +479,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     return {
       name: baseName,
       className,
+      classNameSource: "file",
       fileKind: scriptType.fileKind,
       ext: scriptType.ext,
       source,
@@ -340,6 +502,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     return {
       name: baseName,
       className: "Model",
+      classNameSource: "file",
       properties: {
         ExternalAssetFile: name
       },
@@ -360,6 +523,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
       return {
         name: baseName,
         className: "ModuleScript",
+        classNameSource: "file",
         source: luauSource,
         properties: {},
         children: [],
@@ -377,6 +541,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     return {
       name: baseName,
       className: "StringValue",
+      classNameSource: "file",
       properties: { Value: content },
       children: [],
       sourceFile: "txt"
@@ -391,6 +556,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     return {
       name: baseName,
       className: "StringValue",
+      classNameSource: "file",
       properties: { Value: richText },
       children: [],
       sourceFile: "md"
@@ -404,6 +570,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     return {
       name: baseName,
       className: "LocalizationTable",
+      classNameSource: "file",
       properties: { Contents: content },
       children: [],
       sourceFile: "csv"
@@ -478,7 +645,9 @@ function markdownToRichText(markdown) {
 function buildNodeFromDirectory(dirPath, options = {}) {
   const entries = listDirectoryEntries(dirPath);
   const dirName = path.basename(dirPath);
-  const meta = readMetaFile(path.join(dirPath, `init${META_SUFFIX}`));
+  const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
+  const meta = readMetaFile(metaPath);
+  const hasExplicitClassName = typeof meta.className === "string" && meta.className.length > 0;
   const initEntry = entries.find((entry) => {
     if (!entry.isFile()) {
       return false;
@@ -491,6 +660,7 @@ function buildNodeFromDirectory(dirPath, options = {}) {
     : {
         name: dirName,
         className: meta.className || "Folder",
+        classNameSource: hasExplicitClassName ? "meta" : "defaultFolder",
         properties: meta.properties || {},
         keepUnknowns: meta.keepUnknowns,
         children: []
@@ -498,6 +668,7 @@ function buildNodeFromDirectory(dirPath, options = {}) {
 
   if (meta.className && !initEntry) {
     baseNode.className = meta.className;
+    baseNode.classNameSource = "meta";
   }
   if (meta.properties) {
     baseNode.properties = {
@@ -547,7 +718,10 @@ function buildNodeFromDirectory(dirPath, options = {}) {
   return baseNode;
 }
 
-function readLocalProjectState(project) {
+function readLocalProjectState(project, extraOptions = {}) {
+  if (extraOptions.repairOrphanScriptMetas) {
+    repairProjectOrphanScriptMetas(project, extraOptions);
+  }
   const options = {
     ignoreGlobs: project.ignoreGlobs || [],
     legacyScripts: project.legacyScripts,
@@ -564,6 +738,7 @@ function readLocalProjectState(project) {
         segments: mount.segments.slice(),
         relativePath: mount.relativePath,
         absolutePath: mount.absolutePath,
+        keepUnknowns: mount.keepUnknowns,
         children: listDirectoryEntries(mount.absolutePath)
           .filter((entry) => !entry.isFile() || !entry.name.endsWith(META_SUFFIX))
           .filter((entry) => {
@@ -619,6 +794,7 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options = {
     return {
       name: baseName,
       className,
+      classNameSource: "file",
       fileKind: scriptType.fileKind,
       ext: scriptType.ext,
       source,
@@ -634,7 +810,9 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options = {
 async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
   const entries = listDirectoryEntries(dirPath);
   const dirName = path.basename(dirPath);
-  const meta = readMetaFile(path.join(dirPath, `init${META_SUFFIX}`));
+  const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
+  const meta = readMetaFile(metaPath);
+  const hasExplicitClassName = typeof meta.className === "string" && meta.className.length > 0;
   const initEntry = entries.find((entry) => {
     if (!entry.isFile()) {
       return false;
@@ -647,6 +825,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
     : {
         name: dirName,
         className: meta.className || "Folder",
+        classNameSource: hasExplicitClassName ? "meta" : "defaultFolder",
         properties: meta.properties || {},
         keepUnknowns: meta.keepUnknowns,
         children: []
@@ -654,6 +833,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
 
   if (meta.className && !initEntry) {
     baseNode.className = meta.className;
+    baseNode.classNameSource = "meta";
   }
   if (meta.properties) {
     baseNode.properties = {
@@ -692,7 +872,10 @@ async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
   return baseNode;
 }
 
-async function readLocalProjectStateAsync(project) {
+async function readLocalProjectStateAsync(project, extraOptions = {}) {
+  if (extraOptions.repairOrphanScriptMetas) {
+    repairProjectOrphanScriptMetas(project, extraOptions);
+  }
   const options = {
     ignoreGlobs: project.ignoreGlobs || [],
     legacyScripts: project.legacyScripts,
@@ -732,6 +915,7 @@ async function readLocalProjectStateAsync(project) {
       segments: mount.segments.slice(),
       relativePath: mount.relativePath,
       absolutePath: mount.absolutePath,
+      keepUnknowns: mount.keepUnknowns,
       children
     };
   });
@@ -765,26 +949,86 @@ function ensureDirectory(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
-function writeJsonFile(filePath, value) {
-  return writeTextFileIfChanged(filePath, JSON.stringify(value, null, 2));
+function hashBuffer(value) {
+  return crypto.createHash("sha1").update(value).digest("hex");
 }
 
-function writeTextFileIfChanged(filePath, value) {
-  if (fs.existsSync(filePath)) {
+function fileInfoForContent(value) {
+  const buffer = Buffer.from(String(value), "utf8");
+  return {
+    size: buffer.length,
+    hash: hashBuffer(buffer)
+  };
+}
+
+function notifyFileChange(options, change) {
+  if (!options || typeof options.onFileChange !== "function") {
+    return;
+  }
+  options.onFileChange({
+    ...change,
+    filePath: path.resolve(change.filePath),
+    projectId: options.project ? options.project.id : null,
+    mountId: options.mount ? options.mount.id : null
+  });
+}
+
+function writeJsonFile(filePath, value, options = {}) {
+  return writeTextFileIfChanged(filePath, JSON.stringify(value, null, 2), options);
+}
+
+function writeTextFileIfChanged(filePath, value, options = {}) {
+  const existed = fs.existsSync(filePath);
+  if (existed) {
     const current = fs.readFileSync(filePath, "utf8");
     if (current === value) {
       return false;
     }
   }
   fs.writeFileSync(filePath, value, "utf8");
+  notifyFileChange(options, {
+    action: existed ? "modify" : "create",
+    filePath,
+    ...fileInfoForContent(value)
+  });
   return true;
 }
 
-function removePath(targetPath) {
+function collectExistingFileInfos(targetPath, results = []) {
   if (!fs.existsSync(targetPath)) {
+    return results;
+  }
+  const stats = fs.statSync(targetPath);
+  if (stats.isFile()) {
+    results.push({
+      filePath: targetPath,
+      size: stats.size,
+      hash: hashBuffer(fs.readFileSync(targetPath))
+    });
+    return results;
+  }
+  if (stats.isDirectory()) {
+    for (const entry of fs.readdirSync(targetPath, { withFileTypes: true })) {
+      collectExistingFileInfos(path.join(targetPath, entry.name), results);
+    }
+  }
+  return results;
+}
+
+function removePath(targetPath, options = {}) {
+  const removedFiles = collectExistingFileInfos(targetPath);
+  if (removedFiles.length === 0 && !fs.existsSync(targetPath)) {
     return;
   }
   fs.rmSync(targetPath, { recursive: true, force: true });
+  for (const file of removedFiles) {
+    notifyFileChange(options, {
+      action: "delete",
+      filePath: file.filePath,
+      size: file.size,
+      hash: file.hash
+    });
+  }
 }
 
 function metaForNode(node) {
@@ -812,7 +1056,7 @@ function metaForScriptNode(node) {
   return meta;
 }
 
-function writeScriptNode(parentDir, node, asInit = false) {
+function writeScriptNode(parentDir, node, asInit = false, options = {}) {
   const extension = node.ext || (
     node.fileKind === "server"
       ? ".server.luau"
@@ -821,54 +1065,54 @@ function writeScriptNode(parentDir, node, asInit = false) {
         : ".luau"
   );
   const fileName = asInit ? `init${extension}` : `${node.name}${extension}`;
-  writeTextFileIfChanged(path.join(parentDir, fileName), node.source || "");
+  writeTextFileIfChanged(path.join(parentDir, fileName), node.source || "", options);
 
   const meta = metaForScriptNode(node);
   if (Object.keys(meta).length > 0) {
     const metaName = asInit ? `init${META_SUFFIX}` : `${node.name}${META_SUFFIX}`;
-    writeJsonFile(path.join(parentDir, metaName), meta);
+    writeJsonFile(path.join(parentDir, metaName), meta, options);
   }
 }
 
-function writeFolderNode(parentDir, node) {
+function writeFolderNode(parentDir, node, options = {}) {
   const nodeDir = path.join(parentDir, node.name);
   ensureDirectory(nodeDir);
 
   const meta = metaForNode(node);
   if (Object.keys(meta).length > 0) {
-    writeJsonFile(path.join(nodeDir, `init${META_SUFFIX}`), meta);
+    writeJsonFile(path.join(nodeDir, `init${META_SUFFIX}`), meta, options);
   }
 
   if (Array.isArray(node.children)) {
     for (const child of node.children) {
-      writeNode(nodeDir, child);
+      writeNode(nodeDir, child, options);
     }
   }
 
   if (node.keepUnknowns !== true) {
-    cleanupUnexpectedEntries(nodeDir, node);
+    cleanupUnexpectedEntries(nodeDir, node, false, options);
   }
 }
 
-function writeNode(parentDir, node) {
+function writeNode(parentDir, node, options = {}) {
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
       const nodeDir = path.join(parentDir, node.name);
       ensureDirectory(nodeDir);
-      writeScriptNode(nodeDir, node, true);
+      writeScriptNode(nodeDir, node, true, options);
       for (const child of node.children) {
-        writeNode(nodeDir, child);
+        writeNode(nodeDir, child, options);
       }
       if (node.keepUnknowns !== true) {
-        cleanupUnexpectedEntries(nodeDir, node, true);
+        cleanupUnexpectedEntries(nodeDir, node, true, options);
       }
       return;
     }
-    writeScriptNode(parentDir, node, false);
+    writeScriptNode(parentDir, node, false, options);
     return;
   }
 
-  writeFolderNode(parentDir, node);
+  writeFolderNode(parentDir, node, options);
 }
 
 function expectedEntriesForNode(node, withInitScript = false) {
@@ -907,19 +1151,23 @@ function expectedEntriesForNode(node, withInitScript = false) {
   return expected;
 }
 
-function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false) {
+function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options = {}) {
   const expected = expectedEntriesForNode(node, withInitScript);
   for (const entry of listDirectoryEntries(nodeDir)) {
     if (!expected.has(entry.name)) {
-      removePath(path.join(nodeDir, entry.name));
+      removePath(path.join(nodeDir, entry.name), options);
     }
   }
 }
 
-function writeMountSnapshot(mount, children) {
+function writeMountSnapshot(mount, children, options = {}) {
+  const mountOptions = {
+    ...options,
+    mount
+  };
   ensureDirectory(mount.absolutePath);
   for (const child of children) {
-    writeNode(mount.absolutePath, child);
+    writeNode(mount.absolutePath, child, mountOptions);
   }
 
   const expected = new Set();
@@ -946,20 +1194,32 @@ function writeMountSnapshot(mount, children) {
   for (const entry of allEntries) {
     const fullPath = path.join(mount.absolutePath, entry.name);
     if (!expected.has(entry.name)) {
-      removePath(fullPath);
+      removePath(fullPath, mountOptions);
     }
   }
 }
 
-function writeStudioProjectState(project, snapshot) {
+function writeStudioProjectState(project, snapshot, options = {}) {
+  const changes = [];
+  const writeOptions = {
+    ...options,
+    project,
+    onFileChange: (change) => {
+      changes.push(change);
+      if (typeof options.onFileChange === "function") {
+        options.onFileChange(change);
+      }
+    }
+  };
   const mountMap = new Map(project.mounts.map((mount) => [mount.id, mount]));
   for (const mountSnapshot of snapshot.mounts || []) {
     const mount = mountMap.get(mountSnapshot.id);
     if (!mount) {
       continue;
     }
-    writeMountSnapshot(mount, mountSnapshot.children || []);
+    writeMountSnapshot(mount, mountSnapshot.children || [], writeOptions);
   }
+  return changes;
 }
 
 function buildProjectSelectionMessage(reason, project, placeId) {
@@ -1035,7 +1295,7 @@ function normalizeInstancePathSegments(instancePath) {
     .filter((segment) => segment.length > 0 && segment !== "game" && segment !== "DataModel");
 }
 
-function patchStudioFileSource(project, instancePath, newSource) {
+function patchStudioFileSource(project, instancePath, newSource, options = {}) {
   const targetSegments = normalizeInstancePathSegments(instancePath);
   if (targetSegments.length === 0) {
     return {
@@ -1075,10 +1335,11 @@ function patchStudioFileSource(project, instancePath, newSource) {
     for (const f of initFiles) {
       const p = path.join(currentPath, f);
       if (fs.existsSync(p)) {
-        writeTextFileIfChanged(p, newSource);
+        const changed = writeTextFileIfChanged(p, newSource, options);
         return {
           ok: true,
-          filePath: p
+          filePath: p,
+          changed
         };
       }
     }
@@ -1111,10 +1372,11 @@ function patchStudioFileSource(project, instancePath, newSource) {
   for (const f of possibleFiles) {
     const p = path.join(currentPath, f);
     if (fs.existsSync(p)) {
-      writeTextFileIfChanged(p, newSource);
+      const changed = writeTextFileIfChanged(p, newSource, options);
       return {
         ok: true,
-        filePath: p
+        filePath: p,
+        changed
       };
     }
   }
@@ -1132,6 +1394,8 @@ module.exports = {
   loadWorkspaceProjectCatalog: projectResolver.loadWorkspaceProjectCatalog,
   loadWorkspaceProjects: projectResolver.loadWorkspaceProjects,
   matchesAnyGlob,
+  moveOrphanScriptMetaForFile,
+  repairProjectOrphanScriptMetas,
   jsonToLuauTable,
   markdownToRichText,
   parseProjectFile: projectResolver.parseProjectFile,
