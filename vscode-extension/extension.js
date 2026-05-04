@@ -5,6 +5,7 @@ const syncFs = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const http = require("node:http");
+const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { ensureWorkspaceMcpConfig } = require("./mcp-config");
 const { ensureWorkspaceProjectFile } = require("./project-bootstrap");
@@ -57,6 +58,7 @@ function logWarn(message, silent) {
 
 function logError(message, silent) {
   log(`ERROR: ${message}`);
+  reportExtensionError(message, { code: "EXTENSION" });
   if (silent || getNotificationLevel() < 1) {
     return;
   }
@@ -69,6 +71,22 @@ function logError(message, silent) {
 
 function runtimePath(context, ...segments) {
   return path.join(context.extensionPath, "runtime", ...segments);
+}
+
+async function fileSha1(filePath) {
+  return crypto.createHash("sha1").update(await fs.readFile(filePath)).digest("hex");
+}
+
+async function filesMatch(leftPath, rightPath) {
+  try {
+    const [leftHash, rightHash] = await Promise.all([
+      fileSha1(leftPath),
+      fileSha1(rightPath)
+    ]);
+    return leftHash === rightHash;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function getActiveSessionId() {
@@ -1052,6 +1070,117 @@ function requestJson(method, route, body, options = {}) {
   });
 }
 
+function reportExtensionError(message, options = {}) {
+  if (!message) {
+    return;
+  }
+  try {
+    void requestJson("POST", "/errors/add", {
+      component: "extension",
+      severity: options.severity || "error",
+      code: options.code || "EXTENSION",
+      message: String(message),
+      context: options.context || null
+    }, { timeout: 1000 }).catch(() => {});
+  } catch (_error) {
+    // Reporting must never interrupt the user-facing error path.
+  }
+}
+
+function workspaceFileOperationPath(uri) {
+  if (!uri || (uri.scheme && uri.scheme !== "file") || !uri.fsPath) {
+    return null;
+  }
+
+  let workspaceRoot;
+  try {
+    workspaceRoot = resolveWorkspaceRoot();
+  } catch (_error) {
+    return null;
+  }
+
+  const relativePath = path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, "/");
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  const firstSegment = relativePath.split("/")[0];
+  if ([".git", "node_modules", ".amarillo", ".vscode", "dist", "build"].includes(firstSegment)) {
+    return null;
+  }
+
+  return uri.fsPath;
+}
+
+async function notifyWorkspaceFileOperation(source, events) {
+  const filteredEvents = events.filter(Boolean);
+  if (filteredEvents.length === 0) {
+    return;
+  }
+
+  try {
+    const settings = getBridgeSettings();
+    const health = await fetchDaemonHealth();
+    if (!daemonMatchesWorkspace(settings, health)) {
+      return;
+    }
+
+    const response = await requestJson("POST", "/workspace/files-changed", {
+      source,
+      events: filteredEvents
+    }, { timeout: 3000 });
+
+    if (response.accepted > 0) {
+      log(`Forwarded ${response.accepted} VS Code file operation path(s) to the daemon.`);
+    }
+  } catch (error) {
+    if (daemonProcess && !daemonProcess.killed) {
+      log(`Failed to forward VS Code file operation: ${error.message}`);
+    }
+  }
+}
+
+function registerWorkspaceFileOperationWatchers(context) {
+  context.subscriptions.push(
+    vscode.workspace.onDidRenameFiles((event) => {
+      const events = event.files
+        .map((file) => {
+          const oldPath = workspaceFileOperationPath(file.oldUri);
+          const newPath = workspaceFileOperationPath(file.newUri);
+          if (!oldPath && !newPath) {
+            return null;
+          }
+          return {
+            type: "vscode_rename",
+            oldPath,
+            newPath
+          };
+        });
+      void notifyWorkspaceFileOperation("vscode_rename", events);
+    }),
+    vscode.workspace.onDidCreateFiles((event) => {
+      const events = event.files
+        .map((uri) => {
+          const filePath = workspaceFileOperationPath(uri);
+          return filePath
+            ? { type: "vscode_create", path: filePath }
+            : null;
+        });
+      void notifyWorkspaceFileOperation("vscode_create", events);
+    }),
+    vscode.workspace.onDidDeleteFiles((event) => {
+      const events = event.files
+        .map((uri) => {
+          const filePath = workspaceFileOperationPath(uri);
+          return filePath
+            ? { type: "vscode_delete", path: filePath }
+            : null;
+        });
+      void notifyWorkspaceFileOperation("vscode_delete", events);
+    })
+  );
+}
+
 async function fetchDaemonHealth() {
   return requestJson("GET", "/health");
 }
@@ -1311,9 +1440,6 @@ async function ensureExistingWorkspaceSourcemapOnActivate() {
 }
 
 async function installRobloxPlugin(context) {
-  const sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
-  await ensurePathExists(sourcePath, "Plugin Amarillo");
-
   const localAppData = process.env.LOCALAPPDATA;
   if (!localAppData) {
     throw new Error("LOCALAPPDATA is not available on this system.");
@@ -1322,10 +1448,27 @@ async function installRobloxPlugin(context) {
   const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
   const targetPath = path.join(pluginsDir, "Amarillo.lua");
 
+  // Try workspace source first (for development), then extension runtime
+  let sourcePath = null;
+  try {
+    const workspaceRoot = resolveWorkspaceRoot();
+    const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
+    if (syncFs.existsSync(workspaceSource)) {
+      sourcePath = workspaceSource;
+    }
+  } catch (_error) {
+    // No workspace open
+  }
+
+  if (!sourcePath) {
+    sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
+  }
+
+  await ensurePathExists(sourcePath, "Plugin Amarillo");
   await fs.mkdir(pluginsDir, { recursive: true });
   await fs.copyFile(sourcePath, targetPath);
 
-  log(`Plugin copiado para ${targetPath}`);
+  log(`Plugin copiado para ${targetPath} (source: ${path.basename(path.dirname(sourcePath))})`);
   refreshSidebar();
   vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${targetPath}`);
 }
@@ -1486,6 +1629,9 @@ async function ensureWorkspaceMcp(context) {
 }
 
 async function startBridge(context, options = {}) {
+  // Auto-install the plugin before starting the bridge
+  await silentPluginInstall(context);
+
   const startResult = await ensureBridgeStarted(context, options);
   let daemonHealth = null;
   if (!startResult.alreadyRunning) {
@@ -1659,7 +1805,6 @@ async function executeCodeInStudio() {
 // ===== Silent plugin install on activation =====
 async function silentPluginInstall(context) {
   try {
-    const sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
     const localAppData = process.env.LOCALAPPDATA;
     if (!localAppData) {
       return;
@@ -1668,6 +1813,22 @@ async function silentPluginInstall(context) {
     const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
     const targetPath = path.join(pluginsDir, "Amarillo.lua");
 
+    // Try workspace source first (for development), then extension runtime
+    let sourcePath = null;
+    try {
+      const workspaceRoot = resolveWorkspaceRoot();
+      const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
+      if (syncFs.existsSync(workspaceSource)) {
+        sourcePath = workspaceSource;
+      }
+    } catch (_error) {
+      // No workspace open, try runtime
+    }
+
+    if (!sourcePath) {
+      sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
+    }
+
     // Check if source exists
     try {
       await fs.access(sourcePath);
@@ -1675,22 +1836,15 @@ async function silentPluginInstall(context) {
       return;
     }
 
-    // Check if target already exists and is up-to-date
-    try {
-      const [sourceStats, targetStats] = await Promise.all([
-        fs.stat(sourcePath),
-        fs.stat(targetPath)
-      ]);
-      if (targetStats.mtimeMs >= sourceStats.mtimeMs) {
-        return; // Already up-to-date
-      }
-    } catch (_error) {
-      // Target doesn't exist, proceed with install
+    // VSIX extraction/copy timestamps are not reliable for updates, so compare
+    // content to avoid skipping a newly packaged plugin.
+    if (await filesMatch(sourcePath, targetPath)) {
+      return;
     }
 
     await fs.mkdir(pluginsDir, { recursive: true });
     await fs.copyFile(sourcePath, targetPath);
-    log(`Plugin Amarillo auto-instalado/atualizado em ${targetPath}`);
+    log(`Plugin Amarillo auto-instalado/atualizado em ${targetPath} (source: ${path.basename(path.dirname(sourcePath))})`);
   } catch (error) {
     log(`Plugin auto-install failed: ${error.message}`);
   }
@@ -1846,7 +2000,7 @@ function activate(context) {
       ];
 
       const picked = await vscode.window.showQuickPick(menuItems, {
-        title: "Amarillo v0.5.0",
+        title: "Amarillo v1.0.9",
         placeHolder: "Select an action..."
       });
 
@@ -1947,6 +2101,7 @@ function activate(context) {
     void restoreLastSession(context);
   }
 
+  registerWorkspaceFileOperationWatchers(context);
   updateStatusBar();
   refreshSidebar();
   log("Amarillo extension activated.");

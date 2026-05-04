@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const { once } = require("node:events");
 const {
   loadWorkspaceProjectCatalog,
+  moveOrphanScriptMetaForFile,
   readLocalProjectState,
   readLocalProjectStateAsync,
   readWorkspaceConfig,
@@ -14,6 +15,8 @@ const {
   writeStudioProjectState
 } = require("./project");
 const { ErrorTracker } = require("./lib/error-tracker");
+const { ActivityLog, getFileInfo } = require("./lib/activity-log");
+const { ensurePluginInstructionsFile } = require("./lib/instructions");
 
 function jsonResponse(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -166,6 +169,39 @@ function isScriptSnapshotNode(node) {
   );
 }
 
+function normalizeStudioInstancePathSegments(instancePath) {
+  if (Array.isArray(instancePath)) {
+    return instancePath.filter((segment) => typeof segment === "string" && segment.length > 0);
+  }
+  if (typeof instancePath !== "string") {
+    return [];
+  }
+  return instancePath
+    .split(".")
+    .filter((segment) => segment.length > 0 && segment !== "game" && segment !== "DataModel");
+}
+
+function collectFilesRecursive(dirPath, results = []) {
+  if (!fs.existsSync(dirPath)) {
+    return results;
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  } catch (_error) {
+    return results;
+  }
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      collectFilesRecursive(fullPath, results);
+    } else if (entry.isFile()) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
 class PluginRobloxApp {
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -199,6 +235,10 @@ class PluginRobloxApp {
       workspaceRoot: this.workspaceRoot,
       persistOnAdd: true
     });
+    this.activityLog = new ActivityLog({
+      workspaceRoot: this.workspaceRoot
+    });
+    this.activityFileState = new Map();
   }
 
   async start() {
@@ -212,7 +252,7 @@ class PluginRobloxApp {
     this.startWatchers();
     this.httpServer = http.createServer((request, response) => {
       this.handleHttp(request, response).catch((error) => {
-        this.errorTracker.add({
+        this.recordError({
           component: "daemon",
           severity: "error",
           code: "HTTP-500",
@@ -243,7 +283,7 @@ class PluginRobloxApp {
           // Recreate server since listen failure leaves it in broken state
           this.httpServer = http.createServer((request, response) => {
             this.handleHttp(request, response).catch((httpError) => {
-              this.errorTracker.add({
+              this.recordError({
                 component: "daemon",
                 severity: "error",
                 code: "HTTP-500",
@@ -278,6 +318,22 @@ class PluginRobloxApp {
     }
   }
 
+  recordError(entry = {}) {
+    return this.errorTracker.add({
+      component: entry.component || "daemon",
+      severity: entry.severity || "error",
+      code: entry.code || null,
+      message: entry.message || "Unknown error",
+      file: entry.file || null,
+      line: entry.line || null,
+      sessionId: entry.sessionId || null,
+      projectId: entry.projectId || null,
+      context: entry.context || null,
+      suggestion: entry.suggestion || null,
+      stack: entry.stack || null
+    });
+  }
+
   refreshWorkspace() {
     const previousDefaultProjectId = this.defaultProjectId;
     this.config = readWorkspaceConfig(this.workspaceRoot);
@@ -290,6 +346,8 @@ class PluginRobloxApp {
     this.projectCatalogIssues = projectCatalog.issues;
     this.defaultProjectId = this.resolveDefaultProjectId(previousDefaultProjectId);
     this.reportProjectCatalogIssues();
+    this.rebuildActivityFileState();
+    this.ensureInstructionsFile();
     this.lastWorkspaceRefresh = new Date().toISOString();
   }
 
@@ -314,7 +372,7 @@ class PluginRobloxApp {
         continue;
       }
       process.stderr.write(`[amarillo] ${issue.message}\n`);
-      this.errorTracker.add({
+      this.recordError({
         component: "daemon",
         severity: "error",
         code: issue.code || "PROJECT-CATALOG",
@@ -326,6 +384,155 @@ class PluginRobloxApp {
       });
     }
     this.lastProjectIssueKeys = nextIssueKeys;
+  }
+
+  ensureInstructionsFile() {
+    try {
+      ensurePluginInstructionsFile({
+        workspaceRoot: this.workspaceRoot,
+        projects: this.projects
+      });
+    } catch (error) {
+      this.recordError({
+        component: "daemon",
+        severity: "warning",
+        code: "INSTRUCTIONS",
+        message: error.message,
+        stack: error.stack
+      });
+    }
+  }
+
+  rebuildActivityFileState() {
+    this.activityFileState.clear();
+    const seen = new Set();
+    for (const project of this.allProjects) {
+      for (const mount of project.mounts || []) {
+        for (const filePath of collectFilesRecursive(mount.absolutePath)) {
+          const normalized = normalizeFsPath(filePath);
+          if (seen.has(normalized)) {
+            continue;
+          }
+          seen.add(normalized);
+          const info = getFileInfo(normalized);
+          if (info) {
+            this.activityFileState.set(normalized, info);
+          }
+        }
+      }
+    }
+  }
+
+  findMountedFileContext(filePath) {
+    const normalized = normalizeFsPath(filePath);
+
+    for (const session of this.sessions.values()) {
+      if (session.connectionState !== "ready") {
+        continue;
+      }
+      const project = this.getProjectById(session.projectId);
+      if (!project) {
+        continue;
+      }
+      const mount = (project.mounts || []).find((candidate) => isPathInside(normalized, candidate.absolutePath));
+      if (mount) {
+        return {
+          projectId: project.id,
+          mountId: mount.id,
+          sessionId: session.id
+        };
+      }
+    }
+
+    for (const project of this.projects.length > 0 ? this.projects : this.allProjects) {
+      const mount = (project.mounts || []).find((candidate) => isPathInside(normalized, candidate.absolutePath));
+      if (mount) {
+        return {
+          projectId: project.id,
+          mountId: mount.id,
+          sessionId: null
+        };
+      }
+    }
+
+    return null;
+  }
+
+  recordActivity(change = {}, defaults = {}) {
+    const filePath = change.filePath || change.path;
+    if (!filePath) {
+      return null;
+    }
+    const normalized = normalizeFsPath(filePath);
+    const context = this.findMountedFileContext(normalized);
+    const projectId = change.projectId || defaults.projectId || (context && context.projectId);
+    const mountId = change.mountId || defaults.mountId || (context && context.mountId);
+    if (!projectId || !mountId) {
+      return null;
+    }
+
+    const record = this.activityLog.add({
+      action: change.action,
+      path: normalized,
+      projectId,
+      mountId,
+      direction: defaults.direction,
+      source: defaults.source,
+      reason: defaults.reason,
+      sessionId: defaults.sessionId || (context && context.sessionId),
+      size: change.size,
+      hash: change.hash
+    });
+
+    if (record.action === "delete") {
+      this.activityFileState.delete(normalized);
+    } else {
+      const nextInfo = getFileInfo(normalized) || {
+        size: record.size,
+        hash: record.hash
+      };
+      if (nextInfo && nextInfo.hash) {
+        this.activityFileState.set(normalized, nextInfo);
+      }
+    }
+    return record;
+  }
+
+  recordWorkspaceFileActivity(filePath, defaults = {}) {
+    const normalized = normalizeFsPath(filePath);
+    const context = this.findMountedFileContext(normalized);
+    if (!context) {
+      return null;
+    }
+
+    const previousInfo = this.activityFileState.get(normalized) || null;
+    const nextInfo = getFileInfo(normalized);
+    let action = null;
+    let info = nextInfo || previousInfo || {};
+
+    if (!previousInfo && nextInfo) {
+      action = "create";
+    } else if (previousInfo && !nextInfo) {
+      action = "delete";
+    } else if (previousInfo && nextInfo && (previousInfo.hash !== nextInfo.hash || previousInfo.size !== nextInfo.size)) {
+      action = "modify";
+    }
+
+    if (!action) {
+      return null;
+    }
+
+    return this.recordActivity({
+      action,
+      filePath: normalized,
+      projectId: context.projectId,
+      mountId: context.mountId,
+      size: info.size,
+      hash: info.hash
+    }, {
+      ...defaults,
+      sessionId: defaults.sessionId || context.sessionId
+    });
   }
 
   studioSessionLastContactAt(session) {
@@ -398,7 +605,7 @@ class PluginRobloxApp {
     // OPT-009: More aggressive filtering to reduce CPU overhead from fs.watch
     let configRefreshTimer = null;
     let configRefreshTarget = null;
-    const watcher = fs.watch(this.workspaceRoot, { recursive: true }, (_eventType, fileName) => {
+    const watcher = fs.watch(this.workspaceRoot, { recursive: true }, (eventType, fileName) => {
       if (!fileName) {
         return;
       }
@@ -445,7 +652,7 @@ class PluginRobloxApp {
         || normalized.endsWith(".rbxmx")
         || normalized.endsWith(".project.json")
       ) {
-        this.onWorkspaceFileChanged(path.join(this.workspaceRoot, fileName));
+        this.onWorkspaceFileChanged(path.join(this.workspaceRoot, fileName), eventType);
       }
     });
     this.fileWatchers.push(watcher);
@@ -480,6 +687,20 @@ class PluginRobloxApp {
     }
   }
 
+  projectReadOptions(session) {
+    return {
+      repairOrphanScriptMetas: true,
+      onFileChange: (change) => {
+        this.recordActivity(change, {
+          direction: "pc_to_studio",
+          source: "workspace_watcher",
+          reason: "workspace_meta_repaired",
+          sessionId: session?.id || null
+        });
+      }
+    };
+  }
+
   scheduleProjectTreeApply(session, project, reason, changedPath = null, debounceMs = PROJECT_TREE_DEBOUNCE_MS) {
     logSync("enqueue_apply_project_tree_scheduled", {
       sessionId: session.id,
@@ -500,7 +721,7 @@ class PluginRobloxApp {
       });
       // OPT-006: Use async file reading to avoid blocking the event loop
       try {
-        const projectState = await readLocalProjectStateAsync(project);
+        const projectState = await readLocalProjectStateAsync(project, this.projectReadOptions(session));
         this.enqueueCommand(session.id, "apply_project_tree", {
           project: projectState,
           reason
@@ -511,7 +732,7 @@ class PluginRobloxApp {
           error: error.message
         });
         this.enqueueCommand(session.id, "apply_project_tree", {
-          project: readLocalProjectState(project),
+          project: readLocalProjectState(project, this.projectReadOptions(session)),
           reason
         });
       }
@@ -563,7 +784,69 @@ class PluginRobloxApp {
     return isScriptSnapshotNode(findSnapshotNode(snapshot, instanceSegments));
   }
 
-  onWorkspaceFileChanged(changedPath) {
+  resolveWorkspaceEventPath(filePath) {
+    if (typeof filePath !== "string" || filePath.trim().length === 0) {
+      return null;
+    }
+    const resolved = path.resolve(this.workspaceRoot, filePath);
+    if (!isPathInside(resolved, this.workspaceRoot)) {
+      return null;
+    }
+    return resolved;
+  }
+
+  handleWorkspaceFileEvents(events = []) {
+    const acceptedPaths = [];
+    const ignoredPaths = [];
+    const pendingPaths = [];
+
+    const addPath = (filePath, eventType) => {
+      const resolved = this.resolveWorkspaceEventPath(filePath);
+      if (!resolved) {
+        if (filePath) {
+          ignoredPaths.push(filePath);
+        }
+        return;
+      }
+      pendingPaths.push({ path: resolved, eventType });
+    };
+
+    for (const event of Array.isArray(events) ? events : []) {
+      if (!event || typeof event !== "object") {
+        continue;
+      }
+      const eventType = typeof event.type === "string" && event.type
+        ? event.type
+        : "vscode_file_operation";
+      if (event.oldPath || event.oldUri) {
+        addPath(event.oldPath || event.oldUri, `${eventType}:old`);
+      }
+      if (event.newPath || event.newUri) {
+        addPath(event.newPath || event.newUri, `${eventType}:new`);
+      }
+      if (event.path || event.uri) {
+        addPath(event.path || event.uri, eventType);
+      }
+    }
+
+    const seen = new Set();
+    for (const item of pendingPaths) {
+      const key = `${item.eventType}:${normalizeFsPath(item.path)}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      acceptedPaths.push(item.path);
+      this.onWorkspaceFileChanged(item.path, item.eventType);
+    }
+
+    return {
+      accepted: acceptedPaths.length,
+      ignored: ignoredPaths.length
+    };
+  }
+
+  onWorkspaceFileChanged(changedPath, eventType = "change") {
     if (this.lastDiskWriteTime && Date.now() - this.lastDiskWriteTime < 1000) {
       logSync("file_change_ignored", {
         reason: "within_1s_of_last_write",
@@ -573,7 +856,12 @@ class PluginRobloxApp {
       return;
     }
     const normalizedChangedPath = normalizeFsPath(changedPath);
-    logSync("disk_file_changed", { path: normalizedChangedPath });
+    logSync("disk_file_changed", { path: normalizedChangedPath, eventType });
+    this.recordWorkspaceFileActivity(normalizedChangedPath, {
+      direction: "pc_to_studio",
+      source: "workspace_watcher",
+      reason: "workspace_changed"
+    });
     if (!this.autoSyncToStudio) {
       logSync("disk_file_change_auto_sync_disabled", { path: normalizedChangedPath });
       return;
@@ -592,6 +880,28 @@ class PluginRobloxApp {
       const mount = project.mounts.find((m) => isPathInside(normalizedChangedPath, m.absolutePath));
       if (!mount) {
         continue;
+      }
+
+      if (isLuau && fs.existsSync(normalizedChangedPath)) {
+        const metaMove = moveOrphanScriptMetaForFile(mount, normalizedChangedPath, {
+          project,
+          mount,
+          onFileChange: (change) => {
+            this.recordActivity(change, {
+              direction: "pc_to_studio",
+              source: "workspace_watcher",
+              reason: "workspace_meta_repaired",
+              sessionId: session.id
+            });
+          }
+        });
+        if (metaMove.moved) {
+          logSync("orphan_script_meta_moved", {
+            sessionId: session.id,
+            from: normalizeFsPath(metaMove.from),
+            to: normalizeFsPath(metaMove.to)
+          });
+        }
       }
 
       if (!fs.existsSync(normalizedChangedPath)) {
@@ -917,7 +1227,7 @@ class PluginRobloxApp {
 
     if (normalizedTruthSource === "pc") {
       this.enqueueCommand(session.id, "apply_project_tree", {
-        project: readLocalProjectState(project),
+        project: readLocalProjectState(project, this.projectReadOptions(session)),
         reason: INITIAL_PC_SYNC_REASON
       });
     }
@@ -1025,7 +1335,11 @@ class PluginRobloxApp {
     if (command) {
       session.inFlightCommands.delete(commandId);
       if (command.type === "apply_project_tree" && command.payload?.project) {
-        this.recordAppliedProjectSnapshot(session, command.payload.project, command.payload?.reason);
+        if (payload?.snapshot) {
+          this.updateStudioSnapshot(sessionId, payload.snapshot, "apply_project_tree_corrected");
+        } else {
+          this.recordAppliedProjectSnapshot(session, command.payload.project, command.payload?.reason);
+        }
       }
       if (command.type === "apply_project_tree" && command.payload?.reason === INITIAL_PC_SYNC_REASON) {
         this.markSessionReady(session, INITIAL_PC_SYNC_REASON);
@@ -1061,6 +1375,35 @@ class PluginRobloxApp {
     });
   }
 
+  recordPatchedStudioSource(session, instancePath, source) {
+    if (!session.lastStudioSnapshot) {
+      return false;
+    }
+    const instanceSegments = normalizeStudioInstancePathSegments(instancePath);
+    const node = findSnapshotNode(session.lastStudioSnapshot, instanceSegments);
+    if (!isScriptSnapshotNode(node)) {
+      return false;
+    }
+
+    node.source = String(source ?? "");
+    const normalized = {
+      ...session.lastStudioSnapshot,
+      mounts: (session.lastStudioSnapshot.mounts || []).map((mount) => ({
+        ...mount,
+        children: mount.children || []
+      }))
+    };
+    session.lastStudioSnapshot = normalized;
+    session.lastStudioHash = hashSnapshot(normalized);
+    session.lastStudioSeenAt = new Date().toISOString();
+    logSync("studio_snapshot_assumed_from_source_patch", {
+      sessionId: session.id,
+      path: instanceSegments.join("."),
+      snapshotHash: session.lastStudioHash
+    });
+    return true;
+  }
+
   rejectCommand(sessionId, commandId, error) {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -1070,7 +1413,7 @@ class PluginRobloxApp {
     if (command) {
       session.inFlightCommands.delete(commandId);
       session.lastCommandError = String(error || "Studio reported an error.");
-      this.errorTracker.add({
+      this.recordError({
         component: "studio",
         severity: command.type === "apply_project_tree" ? "error" : "warning",
         code: "CMD-REJECT",
@@ -1148,7 +1491,31 @@ class PluginRobloxApp {
         snapshotHash: session.lastStudioHash
       });
       this.lastDiskWriteTime = Date.now();
-      writeStudioProjectState(project, session.lastStudioSnapshot);
+      try {
+        writeStudioProjectState(project, session.lastStudioSnapshot, {
+          onFileChange: (change) => {
+            this.recordActivity(change, {
+              direction: "studio_to_pc",
+              source: "studio_snapshot",
+              reason,
+              sessionId
+            });
+          }
+        });
+      } catch (error) {
+        this.pendingStudioWrites.delete(sessionId);
+        this.recordError({
+          component: "daemon",
+          severity: "error",
+          code: "DISK-WRITE",
+          message: error.message,
+          sessionId,
+          projectId: project.id,
+          context: { reason },
+          stack: error.stack
+        });
+        return;
+      }
       this.pendingStudioWrites.delete(sessionId);
       session.lastAppliedAt = new Date().toISOString();
       if (reason === INITIAL_STUDIO_SYNC_REASON || (session.connectionState !== "ready" && session.truthSource === "studio")) {
@@ -1223,6 +1590,89 @@ class PluginRobloxApp {
     };
   }
 
+  calculateDiff(studioSnapshot, pcSnapshot, truthSource) {
+    const changes = [];
+    const maxChanges = 50;
+    let changeCount = 0;
+
+    function addChange(msg) {
+      if (changeCount < maxChanges) {
+        changes.push(msg);
+      }
+      changeCount++;
+    }
+
+    function compareNodes(path, sNode, pNode) {
+      if (!sNode && pNode) {
+        addChange(truthSource === "pc" ? `+ Created in Studio: ${path}` : `- Deleted locally: ${path}`);
+        return;
+      }
+      if (sNode && !pNode) {
+        addChange(truthSource === "pc" ? `- Deleted from Studio: ${path}` : `+ Created locally: ${path}`);
+        return;
+      }
+      if (sNode && pNode) {
+        if (sNode.className !== pNode.className && sNode.className !== "Folder" && pNode.className !== "Folder") {
+           addChange(`~ Modified (Class): ${path}`);
+        } else if (sNode.source !== undefined && pNode.source !== undefined && sNode.source !== pNode.source) {
+           addChange(`~ Modified (Source): ${path}`);
+        }
+        
+        const sChildren = {};
+        for (const child of (sNode.children || [])) {
+          sChildren[child.name] = child;
+        }
+        const pChildren = {};
+        for (const child of (pNode.children || [])) {
+          pChildren[child.name] = child;
+        }
+
+        const allNames = new Set([...Object.keys(sChildren), ...Object.keys(pChildren)]);
+        for (const childName of allNames) {
+           compareNodes(`${path}/${childName}`, sChildren[childName], pChildren[childName]);
+        }
+      }
+    }
+
+    const sMounts = {};
+    for (const m of (studioSnapshot.mounts || [])) sMounts[m.id] = m;
+    const pMounts = {};
+    for (const m of (pcSnapshot.mounts || [])) pMounts[m.id] = m;
+
+    const allMounts = new Set([...Object.keys(sMounts), ...Object.keys(pMounts)]);
+    for (const mId of allMounts) {
+      const sM = sMounts[mId];
+      const pM = pMounts[mId];
+      if (!sM && pM) {
+        addChange(truthSource === "pc" ? `+ Created in Studio: [Mount ${mId}]` : `- Deleted locally: [Mount ${mId}]`);
+        continue;
+      }
+      if (sM && !pM) {
+        addChange(truthSource === "pc" ? `- Deleted from Studio: [Mount ${mId}]` : `+ Created locally: [Mount ${mId}]`);
+        continue;
+      }
+
+      const sC = {};
+      for (const child of (sM.children || [])) sC[child.name] = child;
+      const pC = {};
+      for (const child of (pM.children || [])) pC[child.name] = child;
+
+      const allC = new Set([...Object.keys(sC), ...Object.keys(pC)]);
+      for (const cName of allC) {
+        compareNodes(`${mId}/${cName}`, sC[cName], pC[cName]);
+      }
+    }
+
+    if (changeCount > maxChanges) {
+      changes.push(`... and ${changeCount - maxChanges} more changes.`);
+    }
+    if (changeCount === 0) {
+      changes.push("No changes detected. Everything is up to date.");
+    }
+
+    return changes;
+  }
+
   async handleHttp(request, response) {
     const requestUrl = new URL(request.url, `http://${request.headers.host || `${this.host}:${this.port}`}`);
     if (request.method === "OPTIONS") {
@@ -1264,6 +1714,16 @@ class PluginRobloxApp {
       jsonResponse(response, 200, {
         ok: true,
         project
+      });
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/workspace/files-changed") {
+      const body = await readJsonBody(request);
+      const result = this.handleWorkspaceFileEvents(body.events || [body]);
+      jsonResponse(response, 200, {
+        ok: true,
+        ...result
       });
       return;
     }
@@ -1378,6 +1838,25 @@ class PluginRobloxApp {
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/connection/diff") {
+      const body = await readJsonBody(request);
+      const project = this.getProjectById(body.projectId);
+      if (!project) {
+        jsonResponse(response, 404, { ok: false, error: "Project not found" });
+        return;
+      }
+      const { readLocalProjectState } = require('./project');
+      const pcSnapshot = readLocalProjectState(project);
+      const studioSnapshot = body.studioSnapshot || { mounts: [] };
+      const changes = this.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
+      
+      jsonResponse(response, 200, {
+        ok: true,
+        changes
+      });
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/session/open") {
       const body = await readJsonBody(request);
       const { session, project } = this.openSession(body.placeId || 0, body.projectId || null, {
@@ -1485,7 +1964,8 @@ class PluginRobloxApp {
 
     if (request.method === "POST" && requestUrl.pathname === "/studio/patch-source") {
       const body = await readJsonBody(request);
-      const session = this.sessions.get(body.sessionId);
+      const sessionId = body.sessionId;
+      const session = this.sessions.get(sessionId);
       if (!session) {
         jsonResponse(response, 404, { ok: false, error: "Session not found." });
         return;
@@ -1498,7 +1978,31 @@ class PluginRobloxApp {
       }
       
       this.lastDiskWriteTime = Date.now();
-      const result = require("./project").patchStudioFileSource(project, body.path, body.source);
+      const result = require("./project").patchStudioFileSource(project, body.path, body.source, {
+        project,
+        onFileChange: (change) => {
+          this.recordActivity(change, {
+            direction: "studio_to_pc",
+            source: "studio_patch",
+            reason: "script_patch",
+            sessionId
+          });
+        }
+      });
+      if (!result.ok) {
+        this.recordError({
+          component: "daemon",
+          severity: "warning",
+          code: "STUDIO-PATCH",
+          message: result.error || "Studio patch could not be written to disk.",
+          sessionId,
+          projectId: project.id,
+          context: { path: body.path }
+        });
+      }
+      if (result.ok) {
+        this.recordPatchedStudioSource(session, body.path, body.source);
+      }
       
       jsonResponse(response, 200, result);
       return;
@@ -1528,7 +2032,7 @@ class PluginRobloxApp {
 
       if (request.method === "POST" && action === "pull") {
         const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
-          project: readLocalProjectState(project),
+          project: readLocalProjectState(project, this.projectReadOptions(session)),
           reason: "manual_pull"
         }, true);
         jsonResponse(response, 200, { ok: true, result });
@@ -1664,6 +2168,28 @@ class PluginRobloxApp {
       }
     }
 
+    // ===== Activity log endpoints =====
+    if (request.method === "GET" && requestUrl.pathname === "/activity") {
+      jsonResponse(response, 200, {
+        ok: true,
+        entries: this.activityLog.query({
+          limit: Number(requestUrl.searchParams.get("limit") || 100),
+          action: requestUrl.searchParams.get("action") || null,
+          direction: requestUrl.searchParams.get("direction") || null,
+          projectId: requestUrl.searchParams.get("projectId") || null
+        })
+      });
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/activity/summary") {
+      jsonResponse(response, 200, {
+        ok: true,
+        summary: this.activityLog.summary()
+      });
+      return;
+    }
+
     // ===== Error Tracker endpoints =====
     if (request.method === "GET" && requestUrl.pathname === "/errors") {
       const filters = {};
@@ -1704,7 +2230,7 @@ class PluginRobloxApp {
 
     if (request.method === "POST" && requestUrl.pathname === "/errors/add") {
       const body = await readJsonBody(request);
-      const record = this.errorTracker.add(body);
+      const record = this.recordError(body);
       jsonResponse(response, 200, {
         ok: true,
         entry: record

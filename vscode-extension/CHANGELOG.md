@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.9
+
+- Forwards VS Code file create/delete/rename operations directly to the daemon so moving files in the VS Code Explorer stays synchronized.
+- Keeps moved script sidecar metadata attached before the daemon applies the project tree to Studio.
+- Updates the daemon's Studio snapshot cache after fast Studio source patches so Studio edits after a file move keep syncing.
+- Reports plugin command failures during initial sync instead of letting the Studio plugin hang without a daemon response.
+
+## 1.0.6
+
+- Stores activity logs under `.amarillo/activity/YYYY-MM-DD/` instead of appending all days to one file.
+- Stores error reports under `.amarillo/errors/YYYY-MM-DD/` while still reading legacy single-file logs.
+
+## 1.0.5
+
+- Updates the embedded Studio plugin when VSIX runtime content changes, regardless of file timestamps.
+- Fixes move sync so Studio `Parent` changes are pushed back to disk and moved files do not duplicate in implicit folders.
+- Repairs orphaned `*.meta.json` sidecars when scripts are moved in VS Code before applying the tree to Studio.
+
 ## 0.4.9
 
 - Adds a connection handshake between VS Code and Roblox Studio, with plugin-side approval and initial truth-source selection.
