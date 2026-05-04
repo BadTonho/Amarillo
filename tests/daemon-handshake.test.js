@@ -286,6 +286,37 @@ test("PC truth becomes ready after the Studio completes the initial apply", () =
   assert.ok(session.lastStudioSnapshot);
 });
 
+test("failed initial PC sync can be retried by the same Studio window", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const first = app.acceptConnection({
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const firstCommand = app.dequeueCommands(first.session.id).commands[0];
+  app.rejectCommand(first.session.id, firstCommand.id, "Initial apply failed.");
+
+  assert.equal(first.session.connectionState, "error");
+  assert.equal(first.session.lastCommandError, "Initial apply failed.");
+
+  const retry = app.acceptConnection({
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "pc"
+  });
+
+  assert.equal(retry.ok, true);
+  assert.equal(retry.session.id, first.session.id);
+  assert.equal(retry.session.connectionState, "accepted");
+  assert.equal(retry.session.lastCommandError, null);
+  assert.equal(retry.session.inFlightCommands.size, 0);
+  assert.equal(retry.session.pendingCommands.length, 1);
+  assert.equal(retry.session.pendingCommands[0].payload.reason, "initial_pc_truth");
+});
+
 test("corrected apply snapshot replaces assumed daemon cache and writes metadata", async () => {
   const workspace = createWorkspaceWithProject();
   fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService", "ImplicitGui"), { recursive: true });
@@ -621,6 +652,40 @@ test("existing VS Code script edits still use the fast file patch path", async (
   assert.equal(session.pendingCommands[0].type, "apply_file_patch");
   assert.deepEqual(session.pendingCommands[0].payload.path, ["ServerScriptService", "Hello"]);
   assert.equal(session.pendingCommands[0].payload.source, "return 42");
+});
+
+test("rejected fast file patches fall back to a full project tree apply", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const emotesDir = path.join(workspace, "sync", "ServerScriptService", "Emotes");
+  fs.mkdirSync(emotesDir, { recursive: true });
+  fs.writeFileSync(path.join(emotesDir, "Script.server.luau"), "return 'emote'", "utf8");
+  app.refreshWorkspace();
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Emotes", "Script"],
+    source: "return 'edited'"
+  });
+
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  assert.equal(dequeued.commands[0].type, "apply_file_patch");
+  app.rejectCommand(
+    session.id,
+    dequeued.commands[0].id,
+    "Instance not found for path: ServerScriptService.Emotes.Script"
+  );
+  await wait(120);
+
+  assert.equal(session.pendingCommands.length, 1);
+  const fallback = session.pendingCommands[0];
+  assert.equal(fallback.type, "apply_project_tree");
+  assert.equal(fallback.payload.reason, "file_patch_rejected");
+  const script = findSnapshotNodeByPath(fallback.payload.project, ["ServerScriptService", "Emotes", "Script"]);
+  assert.equal(script.source, "return 'emote'");
 });
 
 test("Studio snapshot disk writes are recorded in the local activity log", async () => {

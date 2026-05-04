@@ -1,0 +1,9 @@
+{
+  "name": "Default Project",
+  "placeIds": [],
+  "tree": {
+    "ServerScriptService": {
+      "$path": "src"
+    }
+  }
+}

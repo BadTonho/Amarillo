@@ -1227,6 +1227,12 @@ async function chooseSession(forcePick = false) {
       ? health.sessions.find((session) => (session.connectionState || "ready") !== "ready")
       : null;
     if (pendingSession) {
+      if ((pendingSession.connectionState || "ready") === "error") {
+        const detail = pendingSession.lastCommandError
+          ? ` ${pendingSession.lastCommandError}`
+          : "";
+        throw new Error(`The Studio session failed the initial sync.${detail}`);
+      }
       throw new Error("The Studio session is still syncing the initial source of truth.");
     }
     if (health.connectionOffer?.status === "pending") {

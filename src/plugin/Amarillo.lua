@@ -54,6 +54,7 @@ local state = {
 
 local disconnectWatcher
 local startWatcher
+local resetSessionState
 local widget
 
 local function now()
@@ -1369,8 +1370,9 @@ end
 
 local function handleCommand(command)
 	if command.type == "apply_project_tree" then
+		local isInitialPcSync = state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth"
 		local ok, message, correctedSnapshot = applyProjectSnapshot(command.payload.project)
-		if ok and state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth" then
+		if ok and isInitialPcSync then
 			state.awaitingInitialSync = false
 			pcall(startWatcher)
 			updateStatus("connected")
@@ -1382,6 +1384,16 @@ local function handleCommand(command)
 			error = ok and nil or message
 		})
 		appendLog(ok and "Local snapshot applied in Studio." or ("Apply failed: " .. tostring(message)))
+		if not ok and isInitialPcSync then
+			appendLog("Initial PC sync failed: " .. tostring(message))
+			if resetSessionState then
+				resetSessionState("initial sync failed")
+			else
+				state.awaitingInitialSync = false
+				state.connected = false
+				updateStatus("initial sync failed")
+			end
+		end
 		return
 	end
 
@@ -1773,6 +1785,11 @@ local function handleCommand(command)
 end
 
 local function handleCommandSafely(command)
+	local isInitialPcSync = command
+		and command.type == "apply_project_tree"
+		and command.payload
+		and command.payload.reason == "initial_pc_truth"
+		and state.awaitingInitialSync
 	local ok, err = xpcall(function()
 		handleCommand(command)
 	end, function(errorValue)
@@ -1794,6 +1811,16 @@ local function handleCommandSafely(command)
 		postCommandResult(commandId, false, {
 			error = tostring(err)
 		})
+	end
+	if isInitialPcSync then
+		appendLog("Initial PC sync failed: " .. tostring(err))
+		if resetSessionState then
+			resetSessionState("initial sync failed")
+		else
+			state.awaitingInitialSync = false
+			state.connected = false
+			updateStatus("initial sync failed")
+		end
 	end
 end
 
@@ -1843,7 +1870,7 @@ local function refreshTreePreview()
 	end
 end
 
-local function resetSessionState(statusText)
+function resetSessionState(statusText)
 	state.connected = false
 	state.awaitingInitialSync = false
 	state.sessionId = nil
@@ -2050,7 +2077,7 @@ local function applyAcceptedSession(response, truthSource)
 			updateStatus("connected")
 		else
 			appendLog("Initial Studio sync failed: " .. tostring(syncResponse))
-			updateStatus("initial sync failed")
+			resetSessionState("initial sync failed")
 		end
 	else
 		appendLog("PC set as the initial source of truth. Waiting for the daemon's initial apply.")

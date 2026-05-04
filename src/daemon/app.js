@@ -1084,6 +1084,11 @@ class PluginRobloxApp {
         this.reclaimStudioSession(existing, selection, placeId, options);
       }
       if (!options.studioInstanceId || !existing.studioInstanceId || existing.studioInstanceId === options.studioInstanceId) {
+        if (options.connectionState && existing.connectionState !== "ready") {
+          this.clearSessionRuntimeState(existing);
+          existing.createdAt = new Date().toISOString();
+          existing.lastCommandError = null;
+        }
         existing.projectSelectionReason = selection.reason;
         existing.projectSelectionMessage = selection.message;
         if (options.connectionState) {
@@ -1413,6 +1418,7 @@ class PluginRobloxApp {
     if (command) {
       session.inFlightCommands.delete(commandId);
       session.lastCommandError = String(error || "Studio reported an error.");
+      const commandPath = Array.isArray(command.payload?.path) ? command.payload.path.join(".") : null;
       this.recordError({
         component: "studio",
         severity: command.type === "apply_project_tree" ? "error" : "warning",
@@ -1420,8 +1426,20 @@ class PluginRobloxApp {
         message: `Command ${command.type} was rejected by Studio: ${error || "unknown error"}`,
         sessionId,
         projectId: session.projectId,
-        context: { commandId, commandType: command.type, reason: command.payload?.reason }
+        context: { commandId, commandType: command.type, reason: command.payload?.reason, path: commandPath }
       });
+      if (command.type === "apply_file_patch") {
+        const project = this.getProjectById(session.projectId);
+        if (project) {
+          logSync("apply_file_patch_rejected_fallback_tree", {
+            sessionId,
+            commandId,
+            path: commandPath,
+            error: String(error || "Studio reported an error.")
+          });
+          this.scheduleProjectTreeApply(session, project, "file_patch_rejected", commandPath, 50);
+        }
+      }
       if (command.type === "apply_project_tree" && command.payload?.reason === INITIAL_PC_SYNC_REASON) {
         session.connectionState = "error";
       }

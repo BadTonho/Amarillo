@@ -39,6 +39,9 @@ test("instructions markdown includes plugin commands and MCP tools", () => {
   assert.match(markdown, /## Studio Plugin Commands/);
   assert.match(markdown, /### apply_project_tree/);
   assert.match(markdown, /### modify_property/);
+  assert.match(markdown, /## Native MCP Workflow/);
+  assert.match(markdown, /Start with `health`/);
+  assert.match(markdown, /requires `sessionId` should reuse the `id` returned by `health`/);
   assert.match(markdown, /## MCP Tools/);
   assert.match(markdown, /### get_tree/);
   assert.match(markdown, /### delete_instance/);
