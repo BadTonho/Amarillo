@@ -15,3 +15,10 @@ test("package-vsix copies the daemon runtime recursively", () => {
     /Copy-Item -Path \(Join-Path \$repoRoot "src\\\\daemon\\\\\*"\) -Destination \$runtimeDaemon -Recurse -Force/
   );
 });
+
+test("package-vsix includes the shared Amarillo version manifest", () => {
+  assert.match(
+    packageScript,
+    /Copy-Item -LiteralPath \(Join-Path \$repoRoot "amarillo-version\.json"\) -Destination \(Join-Path \$stagingExtension "amarillo-version\.json"\) -Force/
+  );
+});

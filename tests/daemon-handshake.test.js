@@ -104,14 +104,17 @@ function findSnapshotNodeByPath(snapshot, segments) {
   return null;
 }
 
-async function invoke(app, method, url, body) {
-  const request = body === undefined
+async function invoke(app, method, url, body, options = {}) {
+  const request = options.rawBody !== undefined
+    ? Readable.from([Buffer.from(options.rawBody, "utf8")])
+    : (body === undefined
     ? Readable.from([])
-    : Readable.from([Buffer.from(JSON.stringify(body), "utf8")]);
+    : Readable.from([Buffer.from(JSON.stringify(body), "utf8")]));
   request.method = method;
   request.url = url;
   request.headers = {
-    host: "127.0.0.1:8323"
+    host: "127.0.0.1:8323",
+    ...(options.headers || {})
   };
 
   return new Promise((resolve, reject) => {
@@ -133,6 +136,112 @@ async function invoke(app, method, url, body) {
     app.handleHttp(request, response).catch(reject);
   });
 }
+
+test("bridge token protects administrative and MCP HTTP routes", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const publicHealth = await invoke(app, "GET", "/health");
+  assert.equal(publicHealth.statusCode, 200);
+
+  const missingToken = await invoke(app, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  });
+  assert.equal(missingToken.statusCode, 401);
+  assert.equal(missingToken.payload.code, "UNAUTHORIZED");
+
+  const invalidToken = await invoke(app, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  }, {
+    headers: {
+      "x-amarillo-bridge-token": "wrong-token"
+    }
+  });
+  assert.equal(invalidToken.statusCode, 401);
+
+  const authorized = await invoke(app, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  }, {
+    headers: {
+      "x-amarillo-bridge-token": "secret-token"
+    }
+  });
+  assert.equal(authorized.statusCode, 200);
+  assert.equal(authorized.payload.ok, true);
+});
+
+test("daemon returns standard JSON errors for invalid or oversized bodies", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const invalidJson = await invoke(app, "POST", "/mcp/call", null, {
+    rawBody: "{invalid-json",
+    headers: {
+      "x-amarillo-bridge-token": "secret-token"
+    }
+  });
+  assert.equal(invalidJson.statusCode, 400);
+  assert.equal(invalidJson.payload.code, "INVALID_JSON");
+
+  const oversized = await invoke(app, "POST", "/mcp/call", null, {
+    rawBody: JSON.stringify({ data: "x".repeat(1024 * 1024 + 1) }),
+    headers: {
+      "x-amarillo-bridge-token": "secret-token"
+    }
+  });
+  assert.equal(oversized.statusCode, 413);
+  assert.equal(oversized.payload.code, "BODY_TOO_LARGE");
+});
+
+test("Studio sessions receive and must use a session token after handshake", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-secure",
+    placeId: 0,
+    truthSource: "pc",
+    pluginVersion: "1.0.17",
+    pluginProtocolVersion: 1
+  });
+  assert.equal(accept.statusCode, 200);
+  const sessionId = accept.payload.session.id;
+  const sessionToken = accept.payload.session.sessionToken;
+  assert.equal(typeof sessionToken, "string");
+
+  const missingToken = await invoke(app, "GET", `/studio/poll?sessionId=${sessionId}`);
+  assert.equal(missingToken.statusCode, 401);
+
+  const validToken = await invoke(app, "GET", `/studio/poll?sessionId=${sessionId}`, undefined, {
+    headers: {
+      "x-amarillo-session-token": sessionToken
+    }
+  });
+  assert.equal(validToken.statusCode, 200);
+  assert.equal(validToken.payload.ok, true);
+  assert.equal(validToken.payload.commands.length, 1);
+});
 
 test("session open no longer auto-enqueues apply_project_tree on session_opened", () => {
   const workspace = createWorkspaceWithProject();
@@ -1130,4 +1239,123 @@ test("Doctor reports blocked when a connected plugin needs an update", async () 
   assert.equal(doctor.payload.status, "blocked");
   assert.match(doctor.payload.summary.blockedReasons.join("\n"), /Plugin update required/);
   assert.equal(doctor.payload.compatibility.blockedSessionIds.length, 1);
+});
+
+test("destructive session routes block on session health gates", async () => {
+  const cases = [
+    {
+      name: "not ready",
+      mutate(session) {
+        session.connectionState = "waiting";
+      },
+      reasonCode: "SESSION_NOT_READY"
+    },
+    {
+      name: "version blocked",
+      mutate(session) {
+        session.requirePluginVersion = true;
+        session.pluginVersion = null;
+        session.pluginProtocolVersion = null;
+      },
+      reasonCode: "PLUGIN_UPDATE_REQUIRED"
+    },
+    {
+      name: "sync degraded",
+      mutate(session, app) {
+        app.markSyncDegraded(session, "test degradation");
+      },
+      reasonCode: "SYNC_DEGRADED"
+    },
+    {
+      name: "studio contact stale",
+      mutate(session) {
+        session.lastStudioSeenAt = new Date(Date.now() - 70000).toISOString();
+      },
+      reasonCode: "STUDIO_CONTACT_CRITICAL"
+    }
+  ];
+
+  for (const testCase of cases) {
+    const workspace = createWorkspaceWithProject();
+    const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+    app.refreshWorkspace();
+    const { session } = app.openSession(0, null, { connectionState: "ready", truthSource: "pc" });
+    session.lastStudioSeenAt = new Date().toISOString();
+    testCase.mutate(session, app);
+
+    const response = await invoke(app, "POST", `/session/${session.id}/create-instance`, {
+      parentPath: "game.ServerScriptService",
+      className: "Folder",
+      name: "Blocked"
+    });
+    assert.equal(response.statusCode, 409, `${testCase.name} should be blocked`);
+    assert.equal(response.payload.result.blocked, true);
+    assert.equal(response.payload.result.reasonCode, testCase.reasonCode);
+  }
+});
+
+test("blocked destructive MCP calls are recorded in the MCP audit log and surfaced by Doctor", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date(Date.now() - 70000).toISOString();
+
+  const response = await invoke(app, "POST", "/mcp/call", {
+    name: "delete_instance",
+    arguments: {
+      sessionId: session.id,
+      path: "game.Workspace.Part"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.parsed.ok, false);
+  assert.equal(response.payload.parsed.blocked, true);
+  assert.equal(response.payload.parsed.reasonCode, "STUDIO_CONTACT_CRITICAL");
+
+  const doctor = await invoke(app, "GET", "/doctor");
+  assert.equal(doctor.payload.mcpAudit.total, 1);
+  assert.equal(doctor.payload.mcpAudit.lastFailureOrDecline.reasonCode, "STUDIO_CONTACT_CRITICAL");
+});
+
+test("declined destructive MCP actions are returned to the caller and tracked in the MCP audit log", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  const responsePromise = invoke(app, "POST", "/mcp/call", {
+    name: "modify_property",
+    arguments: {
+      sessionId: session.id,
+      path: "game.ServerScriptService.Hello",
+      property: "Disabled",
+      value: true
+    }
+  });
+
+  await wait(10);
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  assert.equal(dequeued.commands[0].type, "modify_property");
+  app.completeCommand(session.id, dequeued.commands[0].id, {
+    ok: false,
+    error: "Destructive action declined by user.",
+    blocked: false,
+    declined: true,
+    confirmed: false,
+    reasonCode: "DECLINED_BY_USER"
+  });
+
+  const response = await responsePromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.parsed.ok, false);
+  assert.equal(response.payload.parsed.declined, true);
+  assert.equal(response.payload.parsed.reasonCode, "DECLINED_BY_USER");
+
+  const auditSummary = app.mcpAuditLog.summary();
+  assert.equal(auditSummary.total, 1);
+  assert.equal(auditSummary.lastFailureOrDecline.reasonCode, "DECLINED_BY_USER");
 });

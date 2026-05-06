@@ -45,6 +45,9 @@ test("instructions markdown includes plugin commands and MCP tools", () => {
   assert.match(markdown, /## MCP Tools/);
   assert.match(markdown, /### get_tree/);
   assert.match(markdown, /### delete_instance/);
+  assert.match(markdown, /### insert_model/);
+  assert.match(markdown, /mcp\.jsonl/);
+  assert.match(markdown, /reasonCode/);
   assert.match(markdown, /Game\.project\.json/);
 });
 

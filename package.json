@@ -5,10 +5,12 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "check": "node scripts/check-js-syntax.js",
     "start": "node src/daemon/index.js",
     "start:workspace": "node src/daemon/index.js --workspace .",
     "package:vsix": "powershell -ExecutionPolicy Bypass -File scripts/package-vsix.ps1",
-    "test": "node --test"
+    "test": "node --test",
+    "test:ci": "npm run check && npm test && npm run package:vsix"
   },
   "engines": {
     "node": ">=22.0.0"

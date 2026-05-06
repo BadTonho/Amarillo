@@ -37,6 +37,7 @@ Copy-Item -LiteralPath (Join-Path $extensionSource "project-bootstrap.js") -Dest
 Copy-Item -LiteralPath (Join-Path $extensionSource "sourcemap.js") -Destination (Join-Path $stagingExtension "sourcemap.js") -Force
 Copy-Item -LiteralPath (Join-Path $extensionSource "README.md") -Destination (Join-Path $stagingExtension "README.md") -Force
 Copy-Item -LiteralPath (Join-Path $extensionSource "CHANGELOG.md") -Destination (Join-Path $stagingExtension "CHANGELOG.md") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "amarillo-version.json") -Destination (Join-Path $stagingExtension "amarillo-version.json") -Force
 Copy-Item -LiteralPath (Join-Path $extensionSource "media\\amarillo.svg") -Destination (Join-Path $mediaDir "amarillo.svg") -Force
 Copy-Item -LiteralPath (Join-Path $extensionSource "schemas\\meta.json") -Destination (Join-Path $schemasDir "meta.json") -Force
 Copy-Item -LiteralPath (Join-Path $extensionSource "schemas\\project.json") -Destination (Join-Path $schemasDir "project.json") -Force

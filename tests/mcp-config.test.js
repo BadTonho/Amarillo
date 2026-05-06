@@ -21,7 +21,8 @@ test("buildWorkspaceMcpConfig creates the stdio proxy shape", () => {
     workspaceRoot,
     proxyEntry,
     host: "127.0.0.1",
-    port: 8323
+    port: 8323,
+    bridgeToken: "test-token"
   });
 
   assert.deepEqual(config, {
@@ -36,7 +37,9 @@ test("buildWorkspaceMcpConfig creates the stdio proxy shape", () => {
           "--host",
           "127.0.0.1",
           "--port",
-          "8323"
+          "8323",
+          "--bridge-token",
+          "test-token"
         ]
       }
     }
@@ -51,7 +54,8 @@ test("ensureWorkspaceMcpConfig creates .vscode/mcp.json when missing", async () 
   const result = await ensureWorkspaceMcpConfig(workspace, {
     proxyEntry,
     host: "127.0.0.1",
-    port: 8323
+    port: 8323,
+    bridgeToken: "test-token"
   });
 
   const mcpPath = path.join(workspace, ".vscode", "mcp.json");
@@ -63,7 +67,8 @@ test("ensureWorkspaceMcpConfig creates .vscode/mcp.json when missing", async () 
       workspaceRoot: workspace,
       proxyEntry,
       host: "127.0.0.1",
-      port: 8323
+      port: 8323,
+      bridgeToken: "test-token"
     })
   );
 });
@@ -78,13 +83,15 @@ test("ensureWorkspaceMcpConfig updates stale config when host, port or workspace
     workspaceRoot: path.join(workspace, "old-workspace"),
     proxyEntry: path.join(workspace, "old-runtime", "mcp-proxy", "index.js"),
     host: "127.0.0.1",
-    port: 8123
+    port: 8123,
+    bridgeToken: "old-token"
   }), null, 2)}\n`, "utf8");
 
   const result = await ensureWorkspaceMcpConfig(workspace, {
     proxyEntry,
     host: "127.0.0.1",
-    port: 8323
+    port: 8323,
+    bridgeToken: "test-token"
   });
 
   assert.equal(result.status, "updated");
@@ -94,7 +101,8 @@ test("ensureWorkspaceMcpConfig updates stale config when host, port or workspace
       workspaceRoot: workspace,
       proxyEntry,
       host: "127.0.0.1",
-      port: 8323
+      port: 8323,
+      bridgeToken: "test-token"
     })
   );
 });
@@ -106,13 +114,15 @@ test("ensureWorkspaceMcpConfig returns unchanged when config already matches", a
   await ensureWorkspaceMcpConfig(workspace, {
     proxyEntry,
     host: "127.0.0.1",
-    port: 8323
+    port: 8323,
+    bridgeToken: "test-token"
   });
 
   const result = await ensureWorkspaceMcpConfig(workspace, {
     proxyEntry,
     host: "127.0.0.1",
-    port: 8323
+    port: 8323,
+    bridgeToken: "test-token"
   });
 
   assert.equal(result.status, "unchanged");

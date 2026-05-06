@@ -12,7 +12,8 @@ function parseArgs(argv) {
     mcp: true,
     autoSyncToStudio: undefined,
     extensionVersion: null,
-    extensionProtocolVersion: null
+    extensionProtocolVersion: null,
+    bridgeToken: null
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -39,6 +40,11 @@ function parseArgs(argv) {
     }
     if (arg === "--extension-protocol" && argv[index + 1]) {
       options.extensionProtocolVersion = Number(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg === "--bridge-token" && argv[index + 1]) {
+      options.bridgeToken = argv[index + 1];
       index += 1;
       continue;
     }

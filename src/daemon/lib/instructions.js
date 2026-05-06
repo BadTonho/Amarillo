@@ -81,6 +81,11 @@ const PLUGIN_COMMANDS = [
     name: "delete_instance",
     purpose: "Deletes an instance by path.",
     notes: "Destructive. Services, Terrain, and player-controlled instances are protected."
+  },
+  {
+    name: "insert_model",
+    purpose: "Inserts the first free Marketplace model that matches a query into Workspace.",
+    notes: "Destructive. Uses the same confirmation and session-health checks as the other destructive tools."
   }
 ];
 
@@ -96,6 +101,14 @@ const LOCAL_FILES = [
   {
     path: ".amarillo/activity/YYYY-MM-DD/activity.md",
     purpose: "Human-readable daily timeline for mounted file create/modify/delete events."
+  },
+  {
+    path: ".amarillo/activity/YYYY-MM-DD/mcp.jsonl",
+    purpose: "Append-only daily machine-readable audit history for MCP/native/fallback tool calls."
+  },
+  {
+    path: ".amarillo/activity/YYYY-MM-DD/mcp.md",
+    purpose: "Human-readable daily MCP audit timeline with outcomes such as success, blocked, or declined."
   },
   {
     path: ".amarillo/plugin-instructions.md",
@@ -159,7 +172,7 @@ function buildInstructionsMarkdown(context = {}) {
     "- Open Roblox Studio, reload the Amarillo plugin if needed, and connect it to the workspace.",
     "- Run `Amarillo: Doctor` when something looks wrong; it checks workspace, sessions, sync, MCP, versions, errors, and activity in one report.",
     "- Use the MCP tools through your AI client, or use the plugin UI for connect, sync, selection, playtest, logs, and Luau execution.",
-    "- Destructive operations are `modify_property`, `create_instance`, and `delete_instance`; property changes may require confirmation in the plugin.",
+    "- Destructive operations are `modify_property`, `create_instance`, `delete_instance`, and `insert_model`; the plugin can require `Accept` or `Decline` before applying them.",
     "",
     "## Native MCP Workflow",
     "",
@@ -177,6 +190,7 @@ function buildInstructionsMarkdown(context = {}) {
     "- If the AI client cannot see native MCP tools, the daemon still exposes the same tool layer over HTTP while the bridge is online.",
     "- Check `GET /mcp/status` for config/runtime diagnostics, `GET /mcp/tools` for the tool list, and `POST /mcp/probe` to verify the fallback can call `health`.",
     "- Use `POST /mcp/call` with `{ \"name\": \"health\", \"arguments\": {} }` or any documented tool name/arguments when native MCP is unavailable.",
+    "- Destructive tool responses may include `reasonCode`, `blocked`, `declined`, and `confirmed` so callers can distinguish health gates from user rejection.",
     "- In VS Code, run `Amarillo: MCP Healthcheck` to see whether `.vscode/mcp.json` is valid and to get the fallback URL.",
     "",
     "## Local Diagnostic Files",

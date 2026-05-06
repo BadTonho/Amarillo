@@ -3,14 +3,15 @@
 const http = require("node:http");
 const path = require("node:path");
 const { readWorkspaceConfig } = require("../daemon/project");
-const { buildInsertModelLua, findNodeByPath, listTools } = require("../daemon/mcp-tools");
+const { TOOL_DEFINITIONS, listTools } = require("../daemon/mcp-tools");
 const { startStdioMcpServer, textContent } = require("../daemon/mcp-stdio");
 
 function parseArgs(argv) {
   const options = {
     workspaceRoot: process.cwd(),
     host: null,
-    port: null
+    port: null,
+    bridgeToken: null
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -30,6 +31,11 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === "--bridge-token" && argv[index + 1]) {
+      options.bridgeToken = argv[index + 1];
+      index += 1;
+      continue;
+    }
   }
 
   return options;
@@ -40,15 +46,24 @@ function resolveBridgeOptions(options) {
   return {
     workspaceRoot: options.workspaceRoot,
     host: options.host || config.argon.host || "127.0.0.1",
-    port: Number(options.port || config.plugin.daemonPort || config.argon.port || 8323)
+    port: Number(options.port || config.plugin.daemonPort || config.argon.port || 8323),
+    bridgeToken: options.bridgeToken || null
   };
 }
 
 // OPT-007: Persistent HTTP agent with keepAlive for reduced latency
 const keepAliveAgent = new http.Agent({ keepAlive: true, maxSockets: 4 });
 
-function requestJson(baseUrl, method, route, body, timeoutMs = 130000) {
+function requestJson(baseUrl, method, route, body, options = {}) {
   const url = new URL(route, `${baseUrl}/`);
+  const timeoutMs = options.timeoutMs || 130000;
+  const headers = {
+    "Content-Type": "application/json",
+    "X-Amarillo-MCP-Proxy": "1"
+  };
+  if (options.bridgeToken) {
+    headers["X-Amarillo-Bridge-Token"] = options.bridgeToken;
+  }
 
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -58,10 +73,7 @@ function requestJson(baseUrl, method, route, body, timeoutMs = 130000) {
       path: `${url.pathname}${url.search}`,
       timeout: timeoutMs,
       agent: keepAliveAgent,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Amarillo-MCP-Proxy": "1"
-      }
+      headers
     }, (response) => {
       let responseBody = "";
       response.setEncoding("utf8");
@@ -100,185 +112,28 @@ function sessionRoute(sessionId, action, query = "") {
   return `/session/${encodedSessionId}/${action}${query}`;
 }
 
-async function healthPayload(baseUrl) {
-  const [health, projects] = await Promise.all([
-    requestJson(baseUrl, "GET", "/health"),
-    requestJson(baseUrl, "GET", "/projects")
-  ]);
-
-  return {
-    workspaceRoot: health.workspaceRoot,
-    projects: projects.projects || [],
-    sessions: health.sessions || []
-  };
+async function healthPayload(baseUrl, bridgeToken) {
+  const response = await requestJson(baseUrl, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  }, { bridgeToken });
+  return response.result || textContent(response.parsed || {});
 }
 
-async function callProxyTool(baseUrl, name, args) {
-  switch (name) {
-    case "health":
-      return textContent(await healthPayload(baseUrl));
+const SUPPORTED_TOOLS = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
 
-    case "list_projects": {
-      const response = await requestJson(baseUrl, "GET", "/projects");
-      return textContent(response.projects || []);
-    }
-
-    case "set_active_project": {
-      const response = await requestJson(baseUrl, "POST", "/project/active", {
-        projectId: args.projectId
-      });
-      return textContent(response.project);
-    }
-
-    case "connect_session": {
-      const response = await requestJson(baseUrl, "POST", "/session/open", {
-        projectId: args.projectId || null,
-        placeId: Number(args.placeId) || 0,
-        connectionState: "ready",
-        truthSource: "pc"
-      });
-      return textContent({
-        ok: true,
-        sessionId: response.session?.id || null,
-        session: response.session,
-        project: response.project,
-        _hint: "Session created. Use the sessionId above in subsequent tool calls."
-      });
-    }
-
-    case "get_tree": {
-      const response = await requestJson(baseUrl, "GET", sessionRoute(args.sessionId, "tree"));
-      return textContent(response.snapshot);
-    }
-
-    case "get_selection": {
-      const response = await requestJson(baseUrl, "GET", sessionRoute(args.sessionId, "selection"));
-      return textContent(response.selection || []);
-    }
-
-    case "inspect_instance": {
-      const response = await requestJson(baseUrl, "GET", sessionRoute(args.sessionId, "tree"));
-      const node = findNodeByPath(response.snapshot, args.path);
-      return textContent(node || { error: "Node not found." });
-    }
-
-    case "run_code": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "exec"), {
-        code: args.code
-      });
-      return textContent(response.result);
-    }
-
-    case "push_changes": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "push"), {});
-      return textContent({
-        ok: true,
-        snapshot: response.snapshot,
-        snapshotHash: response.snapshotHash || null
-      });
-    }
-
-    case "pull_changes": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "pull"), {});
-      return textContent({
-        ok: true,
-        result: response.result
-      });
-    }
-
-    case "start_playtest": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "playtest"), {
-        mode: "start"
-      });
-      return textContent(response.result);
-    }
-
-    case "stop_playtest": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "playtest"), {
-        mode: "stop"
-      });
-      return textContent(response.result);
-    }
-
-    case "get_properties": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "properties"), {
-        path: args.path
-      });
-      return textContent(response.result);
-    }
-
-    case "get_descendants": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "descendants"), {
-        path: args.path,
-        maxDepth: args.maxDepth,
-        classFilter: args.classFilter
-      });
-      return textContent(response.result);
-    }
-
-    case "search_instances": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "search"), {
-        query: args.query,
-        searchBy: args.searchBy,
-        scope: args.scope
-      });
-      return textContent(response.result);
-    }
-
-    case "get_services": {
-      const response = await requestJson(baseUrl, "GET", sessionRoute(args.sessionId, "services"));
-      return textContent(response.result);
-    }
-
-    case "get_instance_info": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "instance-info"), {
-        path: args.path
-      });
-      return textContent(response.result);
-    }
-
-    case "get_output_log": {
-      const count = Math.min(Math.max(Number(args.count) || 50, 1), 200);
-      const response = await requestJson(baseUrl, "GET", sessionRoute(args.sessionId, "output-log", `?count=${count}`));
-      return textContent(response.result);
-    }
-
-    case "modify_property": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "modify-property"), {
-        path: args.path,
-        property: args.property,
-        value: args.value
-      });
-      return textContent(response.result);
-    }
-
-    case "create_instance": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "create-instance"), {
-        parentPath: args.parentPath,
-        className: args.className,
-        name: args.name || args.className,
-        properties: args.properties || {}
-      });
-      return textContent(response.result);
-    }
-
-    case "delete_instance": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "delete-instance"), {
-        path: args.path
-      });
-      return textContent(response.result);
-    }
-
-    case "insert_model": {
-      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "exec"), {
-        code: buildInsertModelLua(args.query)
-      });
-      return textContent(response.result);
-    }
-
-    default:
-      throw new Error(`Unsupported MCP tool: ${name}`);
+async function callProxyTool(baseUrl, bridgeToken, name, args) {
+  if (!SUPPORTED_TOOLS.has(name)) {
+    throw new Error(`Unsupported MCP tool: ${name}`);
   }
+  if (name === "health") {
+    return healthPayload(baseUrl, bridgeToken);
+  }
+  const response = await requestJson(baseUrl, "POST", "/mcp/call", {
+    name,
+    arguments: args || {}
+  }, { bridgeToken });
+  return response.result || textContent(response.parsed || {});
 }
 
 async function main() {
@@ -291,7 +146,7 @@ async function main() {
       version: "0.1.0"
     },
     listTools,
-    handleTool: (name, args) => callProxyTool(baseUrl, name, args)
+    handleTool: (name, args) => callProxyTool(baseUrl, options.bridgeToken, name, args)
   });
 }
 
