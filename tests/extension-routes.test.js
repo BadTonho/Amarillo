@@ -37,6 +37,7 @@ test("VS Code Doctor command calls /doctor and daemon receives extension protoco
   assert.match(extensionSource, /--extension-version/);
   assert.match(extensionSource, /--extension-protocol/);
   assert.match(extensionSource, /--bridge-token/);
+  assert.match(extensionSource, /--strict-port/);
   assert.match(extensionSource, /X-Amarillo-Bridge-Token/);
 });
 

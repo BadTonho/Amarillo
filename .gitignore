@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+*.tsbuildinfo
 
 # Environment files and local credentials
 .env
