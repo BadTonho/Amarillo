@@ -1031,13 +1031,106 @@ function removePath(targetPath, options = {}) {
   }
 }
 
-function metaForNode(node) {
+function syncbackConfig(options = {}) {
+  return options.syncback || {};
+}
+
+function ignoredSyncbackProperties(options = {}) {
+  return new Set(syncbackConfig(options).ignoreProperties || []);
+}
+
+function filterSyncbackProperties(properties, options = {}) {
+  if (!properties || Object.keys(properties).length === 0) {
+    return {};
+  }
+  const ignored = ignoredSyncbackProperties(options);
+  if (ignored.size === 0) {
+    return properties;
+  }
+  return Object.entries(properties).reduce((next, [key, value]) => {
+    if (!ignored.has(key)) {
+      next[key] = value;
+    }
+    return next;
+  }, {});
+}
+
+function scriptExtensionForNode(node) {
+  return node.ext || (
+    node.fileKind === "server"
+      ? ".server.luau"
+      : node.fileKind === "client"
+        ? ".client.luau"
+        : ".luau"
+  );
+}
+
+function matchesSyncbackGlob(fullPath, entryName, options = {}) {
+  const syncback = syncbackConfig(options);
+  if (!syncback.ignoreGlobs || syncback.ignoreGlobs.length === 0) {
+    return false;
+  }
+  const mountRoot = options.mount?.absolutePath || options.mount?.rootPath || null;
+  const relativePath = mountRoot
+    ? path.relative(mountRoot, fullPath).replace(/\\/g, "/")
+    : entryName;
+  return matchesAnyGlob(relativePath, syncback.ignoreGlobs) || matchesAnyGlob(entryName, syncback.ignoreGlobs);
+}
+
+function shouldIgnoreSyncbackNode(node, options = {}, parentDir = null) {
+  const syncback = syncbackConfig(options);
+  if ((syncback.ignoreNames || []).includes(node.name) || (syncback.ignoreClasses || []).includes(node.className)) {
+    return true;
+  }
+  if (!parentDir) {
+    return false;
+  }
+  if (node.fileKind && (!node.children || node.children.length === 0)) {
+    const fileName = `${node.name}${scriptExtensionForNode(node)}`;
+    return matchesSyncbackGlob(path.join(parentDir, fileName), fileName, options);
+  }
+  return matchesSyncbackGlob(path.join(parentDir, node.name), node.name, options);
+}
+
+function syncbackEntryBaseName(entryName) {
+  return String(entryName)
+    .replace(/\.meta\.json$/i, "")
+    .replace(/(?:\.server|\.client)?\.(?:lua|luau)$/i, "");
+}
+
+function shouldPreserveSyncbackEntry(fullPath, entryName, options = {}) {
+  const syncback = syncbackConfig(options);
+  const baseName = syncbackEntryBaseName(entryName);
+  if ((syncback.ignoreNames || []).includes(baseName)) {
+    return true;
+  }
+  if (matchesSyncbackGlob(fullPath, entryName, options)) {
+    return true;
+  }
+  if ((syncback.ignoreClasses || []).length > 0 && fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory()) {
+    const metaPath = path.join(fullPath, `init${META_SUFFIX}`);
+    if (fs.existsSync(metaPath)) {
+      try {
+        const meta = parseJsonFile(metaPath);
+        if ((syncback.ignoreClasses || []).includes(meta.className)) {
+          return true;
+        }
+      } catch (_error) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+function metaForNode(node, options = {}) {
   const meta = {};
   if (node.className && node.className !== "Folder" && !node.fileKind) {
     meta.className = node.className;
   }
-  if (node.properties && Object.keys(node.properties).length > 0) {
-    meta.properties = serializePropertyValue(node.properties);
+  const properties = filterSyncbackProperties(node.properties, options);
+  if (properties && Object.keys(properties).length > 0) {
+    meta.properties = serializePropertyValue(properties);
   }
   if (node.keepUnknowns !== undefined) {
     meta.keepUnknowns = node.keepUnknowns;
@@ -1045,10 +1138,11 @@ function metaForNode(node) {
   return meta;
 }
 
-function metaForScriptNode(node) {
+function metaForScriptNode(node, options = {}) {
   const meta = {};
-  if (node.properties && Object.keys(node.properties).length > 0) {
-    meta.properties = serializePropertyValue(node.properties);
+  const properties = filterSyncbackProperties(node.properties, options);
+  if (properties && Object.keys(properties).length > 0) {
+    meta.properties = serializePropertyValue(properties);
   }
   if (node.keepUnknowns !== undefined) {
     meta.keepUnknowns = node.keepUnknowns;
@@ -1057,17 +1151,14 @@ function metaForScriptNode(node) {
 }
 
 function writeScriptNode(parentDir, node, asInit = false, options = {}) {
-  const extension = node.ext || (
-    node.fileKind === "server"
-      ? ".server.luau"
-      : node.fileKind === "client"
-        ? ".client.luau"
-        : ".luau"
-  );
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
+  const extension = scriptExtensionForNode(node);
   const fileName = asInit ? `init${extension}` : `${node.name}${extension}`;
   writeTextFileIfChanged(path.join(parentDir, fileName), node.source || "", options);
 
-  const meta = metaForScriptNode(node);
+  const meta = metaForScriptNode(node, options);
   if (Object.keys(meta).length > 0) {
     const metaName = asInit ? `init${META_SUFFIX}` : `${node.name}${META_SUFFIX}`;
     writeJsonFile(path.join(parentDir, metaName), meta, options);
@@ -1075,10 +1166,13 @@ function writeScriptNode(parentDir, node, asInit = false, options = {}) {
 }
 
 function writeFolderNode(parentDir, node, options = {}) {
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
   const nodeDir = path.join(parentDir, node.name);
   ensureDirectory(nodeDir);
 
-  const meta = metaForNode(node);
+  const meta = metaForNode(node, options);
   if (Object.keys(meta).length > 0) {
     writeJsonFile(path.join(nodeDir, `init${META_SUFFIX}`), meta, options);
   }
@@ -1095,6 +1189,9 @@ function writeFolderNode(parentDir, node, options = {}) {
 }
 
 function writeNode(parentDir, node, options = {}) {
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
       const nodeDir = path.join(parentDir, node.name);
@@ -1115,32 +1212,24 @@ function writeNode(parentDir, node, options = {}) {
   writeFolderNode(parentDir, node, options);
 }
 
-function expectedEntriesForNode(node, withInitScript = false) {
+function expectedEntriesForNode(node, withInitScript = false, options = {}, parentDir = null) {
   const expected = new Set();
   if (withInitScript && node.fileKind) {
-    const extension = node.ext || (
-      node.fileKind === "server"
-        ? ".server.luau"
-        : node.fileKind === "client"
-          ? ".client.luau"
-          : ".luau"
-    );
+    const extension = scriptExtensionForNode(node);
     expected.add(`init${extension}`);
   }
-  if (node.className !== "Folder" || (node.properties && Object.keys(node.properties).length > 0) || node.keepUnknowns !== undefined) {
+  const properties = filterSyncbackProperties(node.properties, options);
+  if (node.className !== "Folder" || (properties && Object.keys(properties).length > 0) || node.keepUnknowns !== undefined) {
     expected.add(`init${META_SUFFIX}`);
   }
   for (const child of node.children || []) {
+    if (shouldIgnoreSyncbackNode(child, options, parentDir)) {
+      continue;
+    }
     if (child.fileKind && (!child.children || child.children.length === 0)) {
-      const ext = child.ext || (
-        child.fileKind === "server"
-          ? ".server.luau"
-          : child.fileKind === "client"
-            ? ".client.luau"
-            : ".luau"
-      );
+      const ext = scriptExtensionForNode(child);
       expected.add(`${child.name}${ext}`);
-      const childMeta = metaForScriptNode(child);
+      const childMeta = metaForScriptNode(child, options);
       if (Object.keys(childMeta).length > 0) {
         expected.add(`${child.name}${META_SUFFIX}`);
       }
@@ -1152,10 +1241,11 @@ function expectedEntriesForNode(node, withInitScript = false) {
 }
 
 function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options = {}) {
-  const expected = expectedEntriesForNode(node, withInitScript);
+  const expected = expectedEntriesForNode(node, withInitScript, options, nodeDir);
   for (const entry of listDirectoryEntries(nodeDir)) {
-    if (!expected.has(entry.name)) {
-      removePath(path.join(nodeDir, entry.name), options);
+    const fullPath = path.join(nodeDir, entry.name);
+    if (!expected.has(entry.name) && !shouldPreserveSyncbackEntry(fullPath, entry.name, options)) {
+      removePath(fullPath, options);
     }
   }
 }
@@ -1167,21 +1257,21 @@ function writeMountSnapshot(mount, children, options = {}) {
   };
   ensureDirectory(mount.absolutePath);
   for (const child of children) {
+    if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
+      continue;
+    }
     writeNode(mount.absolutePath, child, mountOptions);
   }
 
   const expected = new Set();
   for (const child of children) {
+    if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
+      continue;
+    }
     if (child.fileKind && (!child.children || child.children.length === 0)) {
-      const ext = child.ext || (
-        child.fileKind === "server"
-          ? ".server.luau"
-          : child.fileKind === "client"
-            ? ".client.luau"
-            : ".luau"
-      );
+      const ext = scriptExtensionForNode(child);
       expected.add(`${child.name}${ext}`);
-      const meta = metaForScriptNode(child);
+      const meta = metaForScriptNode(child, mountOptions);
       if (Object.keys(meta).length > 0) {
         expected.add(`${child.name}${META_SUFFIX}`);
       }
@@ -1193,7 +1283,7 @@ function writeMountSnapshot(mount, children, options = {}) {
   const allEntries = listDirectoryEntries(mount.absolutePath);
   for (const entry of allEntries) {
     const fullPath = path.join(mount.absolutePath, entry.name);
-    if (!expected.has(entry.name)) {
+    if (!expected.has(entry.name) && !shouldPreserveSyncbackEntry(fullPath, entry.name, mountOptions)) {
       removePath(fullPath, mountOptions);
     }
   }
@@ -1203,6 +1293,7 @@ function writeStudioProjectState(project, snapshot, options = {}) {
   const changes = [];
   const writeOptions = {
     ...options,
+    syncback: project.syncback || {},
     project,
     onFileChange: (change) => {
       changes.push(change);

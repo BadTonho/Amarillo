@@ -10,7 +10,9 @@ function parseArgs(argv) {
     host: null,
     port: null,
     mcp: true,
-    autoSyncToStudio: undefined
+    autoSyncToStudio: undefined,
+    extensionVersion: null,
+    extensionProtocolVersion: null
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -27,6 +29,16 @@ function parseArgs(argv) {
     }
     if (arg === "--port" && argv[index + 1]) {
       options.port = Number(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    if (arg === "--extension-version" && argv[index + 1]) {
+      options.extensionVersion = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg === "--extension-protocol" && argv[index + 1]) {
+      options.extensionProtocolVersion = Number(argv[index + 1]);
       index += 1;
       continue;
     }

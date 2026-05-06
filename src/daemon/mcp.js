@@ -1,18 +1,23 @@
 "use strict";
 
-const { findNodeByPath, listTools } = require("./mcp-tools");
+const { buildInsertModelLua, findNodeByPath, listTools } = require("./mcp-tools");
 const { startStdioMcpServer, textContent } = require("./mcp-stdio");
 
 function healthPayload(app) {
-  return {
+  const sessions = Array.from(app.sessions.values()).map((session) => app.sessionSummary(session));
+  const payload = {
     workspaceRoot: app.workspaceRoot,
     projects: app.listProjects(),
     connectionOffer: app.connectionOfferSummary(),
-    sessions: Array.from(app.sessions.values()).map((session) => app.sessionSummary(session))
+    sessions
   };
+  if (sessions.length === 0) {
+    payload._hint = "No active Studio session found. Call connect_session with a projectId from the projects list above to create one, then use the returned sessionId for subsequent tool calls.";
+  }
+  return payload;
 }
 
-async function handleTool(app, name, args) {
+async function executeTool(app, name, args) {
   switch (name) {
     case "health":
       return textContent(healthPayload(app));
@@ -22,6 +27,21 @@ async function handleTool(app, name, args) {
 
     case "set_active_project":
       return textContent(await app.setActiveProject(args.projectId));
+
+    case "connect_session": {
+      const { session, project } = app.openSession(
+        Number(args.placeId) || 0,
+        args.projectId || null,
+        { connectionState: "ready", truthSource: "pc" }
+      );
+      return textContent({
+        ok: true,
+        sessionId: session.id,
+        session: app.sessionSummary(session),
+        project: { id: project.id, name: project.name },
+        _hint: "Session created. Use the sessionId above in subsequent tool calls (get_tree, get_services, etc.)."
+      });
+    }
 
     case "get_tree":
       return textContent(await app.requestStudioTree(args.sessionId));
@@ -109,8 +129,26 @@ async function handleTool(app, name, args) {
     case "delete_instance":
       return textContent(await app.enqueueCommand(args.sessionId, "delete_instance", { path: args.path }, true));
 
+    case "insert_model":
+      return textContent(await app.runStudioCode(args.sessionId, buildInsertModelLua(args.query)));
+
     default:
       throw new Error(`Unsupported MCP tool: ${name}`);
+  }
+}
+
+async function handleTool(app, name, args = {}, options = {}) {
+  const source = options.source || "native_stdio";
+  if (source && typeof app.recordMcpContact === "function") {
+    app.recordMcpContact(source, { toolName: name });
+  }
+  try {
+    return await executeTool(app, name, args || {});
+  } catch (error) {
+    if (source && typeof app.recordMcpFailure === "function") {
+      app.recordMcpFailure(source, error, { toolName: name });
+    }
+    throw error;
   }
 }
 
@@ -126,5 +164,7 @@ async function startMcpServer(app) {
 }
 
 module.exports = {
+  handleTool,
+  healthPayload,
   startMcpServer
 };

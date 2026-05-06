@@ -16,3 +16,19 @@ test("sidebar view is declared as a webview", () => {
   assert.ok(sidebarView, "Expected amarillo.sidebar to be contributed.");
   assert.equal(sidebarView.type, "webview");
 });
+
+test("MCP healthcheck command is declared", () => {
+  const commands = packageJson.contributes?.commands || [];
+  assert.ok(
+    commands.some((command) => command.command === "amarillo.mcpHealthcheck"),
+    "Expected amarillo.mcpHealthcheck to be contributed."
+  );
+});
+
+test("Doctor command is declared", () => {
+  const commands = packageJson.contributes?.commands || [];
+  assert.ok(
+    commands.some((command) => command.command === "amarillo.doctor"),
+    "Expected amarillo.doctor to be contributed."
+  );
+});

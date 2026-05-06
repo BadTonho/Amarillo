@@ -576,3 +576,88 @@ test("patchStudioFileSource accepts array paths and game-prefixed string paths",
   assert.equal(stringResult.ok, true);
   assert.match(fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "utf8"), /return 3/);
 });
+
+test("syncback filters protect ignored Studio nodes and properties on disk", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ServerScriptService");
+  fs.mkdirSync(path.join(syncRoot, "KeepByName"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "KeepByClass"), { recursive: true });
+  fs.writeFileSync(path.join(syncRoot, "KeepByName", "Old.server.luau"), "return 'name'", "utf8");
+  fs.writeFileSync(path.join(syncRoot, "KeepByClass", "init.meta.json"), JSON.stringify({
+    className: "ScreenGui"
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "IgnoredByGlob.server.luau"), "return 'glob'", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    syncback: {
+      ignoreGlobs: ["**/IgnoredByGlob.server.luau"],
+      ignoreNames: ["KeepByName"],
+      ignoreClasses: ["ScreenGui"],
+      ignoreProperties: ["Disabled"]
+    },
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "sync/ServerScriptService"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        children: [
+          {
+            name: "KeepByName",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'new name'",
+            properties: {},
+            children: []
+          },
+          {
+            name: "KeepByClass",
+            className: "ScreenGui",
+            properties: {},
+            children: []
+          },
+          {
+            name: "IgnoredByGlob",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'new glob'",
+            properties: {},
+            children: []
+          },
+          {
+            name: "Normal",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'ok'",
+            properties: {
+              Disabled: true,
+              Attributes: {
+                Synced: true
+              }
+            },
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(fs.readFileSync(path.join(syncRoot, "KeepByName", "Old.server.luau"), "utf8"), "return 'name'");
+  assert.equal(fs.existsSync(path.join(syncRoot, "KeepByName.server.luau")), false);
+  assert.equal(fs.existsSync(path.join(syncRoot, "KeepByClass", "init.meta.json")), true);
+  assert.equal(fs.readFileSync(path.join(syncRoot, "IgnoredByGlob.server.luau"), "utf8"), "return 'glob'");
+
+  const normalMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "Normal.meta.json"), "utf8"));
+  assert.equal(normalMeta.properties.Disabled, undefined);
+  assert.equal(normalMeta.properties.Attributes.Synced, true);
+});
