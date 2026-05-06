@@ -1,5 +1,7 @@
 "use strict";
 
+import type { DiagnosticErrorEntry, HealthPayload } from "../contracts/diagnostics";
+
 const { mcpShieldSummary } = require("../mcp-shield");
 const { jsonResponse, readJsonBody } = require("../http-utils");
 
@@ -34,7 +36,7 @@ function sessionSyncDebugPayload(app, session) {
 
 async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
   if (request.method === "GET" && requestUrl.pathname === "/health") {
-    jsonResponse(response, 200, {
+    const payload: HealthPayload = {
       ok: true,
       workspaceRoot: app.workspaceRoot,
       host: app.host,
@@ -50,7 +52,8 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
       sessions: Array.from(app.sessions.values()).map((session) => app.sessionSummary(session)),
       mcpShield: mcpShieldSummary(app),
       refreshedAt: app.lastWorkspaceRefresh
-    });
+    };
+    jsonResponse(response, 200, payload);
     return true;
   }
 
@@ -180,7 +183,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     if (since) filters.since = since;
     if (sessionIdFilter) filters.sessionId = sessionIdFilter;
 
-    const entries = app.errorTracker.query(filters);
+    const entries: DiagnosticErrorEntry[] = app.errorTracker.query(filters);
     jsonResponse(response, 200, {
       ok: true,
       totalEntries: entries.length,

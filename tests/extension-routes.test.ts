@@ -39,6 +39,9 @@ test("VS Code Doctor command calls /doctor and daemon receives extension protoco
   assert.match(extensionSource, /--bridge-token/);
   assert.match(extensionSource, /--strict-port/);
   assert.match(extensionSource, /X-Amarillo-Bridge-Token/);
+  assert.match(extensionSource, /Recent unresolved diagnostic errors/);
+  assert.match(extensionSource, /lastCommandError/);
+  assert.match(extensionSource, /initial Studio sync is still accepted/);
 });
 
 test("sidebar source models fallback-only, plugin stale, version mismatch, and sync paused alerts", () => {
