@@ -3,7 +3,7 @@
 const TOOL_DEFINITIONS = [
   {
     name: "health",
-    description: "Returns daemon status, workspace details, and active sessions.",
+    description: "Returns daemon status, workspace details, and active sessions. IMPORTANT: If sessions[] is empty, it means no Roblox Studio session is connected. In that case: (1) call list_projects to see available projects, (2) call connect_session with a projectId to create a session, (3) then use the returned sessionId for subsequent tool calls.",
     inputSchema: {
       type: "object",
       properties: {}
@@ -26,6 +26,23 @@ const TOOL_DEFINITIONS = [
       properties: {
         projectId: {
           type: "string"
+        }
+      }
+    }
+  },
+  {
+    name: "connect_session",
+    description: "Creates a new Studio session directly without requiring the offer/accept handshake. Use this when health shows an empty sessions[] array but the Roblox Studio plugin is running. Returns the new sessionId to use in subsequent tool calls.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "Optional project ID to connect to. If omitted, the daemon selects the default or only project."
+        },
+        placeId: {
+          type: "number",
+          description: "Optional Roblox place ID for project matching."
         }
       }
     }
@@ -324,6 +341,23 @@ const TOOL_DEFINITIONS = [
         }
       }
     }
+  },
+  {
+    name: "insert_model",
+    description: "Inserts a model from the Roblox marketplace into the workspace. Returns the inserted model name.",
+    inputSchema: {
+      type: "object",
+      required: ["sessionId", "query"],
+      properties: {
+        sessionId: {
+          type: "string"
+        },
+        query: {
+          type: "string",
+          description: "Query to search for the model"
+        }
+      }
+    }
   }
 ];
 
@@ -335,6 +369,48 @@ function listTools() {
       inputSchema: tool.inputSchema
     }))
   };
+}
+
+function luaLongString(value) {
+  const text = String(value ?? "");
+  let equals = "";
+  while (text.includes(`]${equals}]`)) {
+    equals += "=";
+  }
+  return `[${equals}[${text}]${equals}]`;
+}
+
+function buildInsertModelLua(query) {
+  return `
+local InsertService = game:GetService("InsertService")
+local success, results = pcall(function()
+    return InsertService:GetFreeModels(${luaLongString(query)}, 0)
+end)
+
+if success and results and type(results) == "table" and #results > 0 then
+    local assetId = results[1].AssetId
+    local loadSuccess, model = pcall(function()
+        return InsertService:LoadAsset(assetId)
+    end)
+
+    if loadSuccess and model then
+        local children = model:GetChildren()
+        for _, child in ipairs(children) do
+            child.Parent = workspace
+        end
+        if #children == 1 then
+            print("Inserted: " .. children[1].Name .. " (Asset ID: " .. assetId .. ")")
+        else
+            print("Inserted Model with " .. #children .. " items (Asset ID: " .. assetId .. ")")
+        end
+        model:Destroy()
+    else
+        print("Failed to load asset: " .. tostring(model))
+    end
+else
+    print("No models found or error searching for query: " .. tostring(results))
+end
+`;
 }
 
 function findNodeByPath(snapshot, searchPath) {
@@ -376,6 +452,7 @@ function findNodeByPath(snapshot, searchPath) {
 
 module.exports = {
   TOOL_DEFINITIONS,
+  buildInsertModelLua,
   findNodeByPath,
   listTools
 };

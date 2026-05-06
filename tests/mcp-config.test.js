@@ -41,6 +41,7 @@ test("buildWorkspaceMcpConfig creates the stdio proxy shape", () => {
       }
     }
   });
+  assert.equal(Object.prototype.hasOwnProperty.call(config, "mcpServers"), false);
 });
 
 test("ensureWorkspaceMcpConfig creates .vscode/mcp.json when missing", async () => {

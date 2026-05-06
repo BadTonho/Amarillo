@@ -9,6 +9,8 @@ local Players = game:GetService("Players")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
+local PLUGIN_VERSION = "1.0.16"
+local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
 local DEFAULT_PORT = 8323
@@ -49,6 +51,11 @@ local state = {
 	openDocumentCache = {},
 	pendingPropertyCommand = nil,
 	confirmPropertyChanges = true,
+	syncState = "ready",
+	syncMessage = nil,
+	versionState = "unknown",
+	versionMessage = nil,
+	lastSyncStatusMessage = nil,
 	ui = {}
 }
 
@@ -59,6 +66,18 @@ local widget
 
 local function now()
 	return os.clock()
+end
+
+local function addVersionPayload(body)
+	body = body or {}
+	body.pluginVersion = PLUGIN_VERSION
+	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+	return body
+end
+
+local function pluginVersionQuery()
+	return "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
+		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
 end
 
 local function setTextIfPresent(element, text)
@@ -1111,6 +1130,36 @@ local function normalizeProjectSnapshotForCache(projectSnapshot)
 	}
 end
 
+local function applySyncSummary(sessionSummary)
+	if type(sessionSummary) ~= "table" then
+		return
+	end
+	state.syncState = sessionSummary.syncState or "ready"
+	state.syncMessage = sessionSummary.syncMessage
+	state.versionState = sessionSummary.versionState or state.versionState
+	state.versionMessage = sessionSummary.versionMessage or state.versionMessage
+	if sessionSummary.requiresPluginUpdate == true or state.versionState == "blocked" then
+		updateStatus("plugin update required")
+		updateConflict("1")
+		local message = state.versionMessage or sessionSummary.syncBlockedReason or "Plugin update required before sync can continue."
+		if state.lastSyncStatusMessage ~= message then
+			appendLog(message)
+			state.lastSyncStatusMessage = message
+		end
+	elseif state.syncState == "degraded" or sessionSummary.requiresManualResync == true then
+		updateStatus("sync paused")
+		updateConflict("1")
+		local message = state.syncMessage or "Sync paused. Run a manual resync."
+		if state.lastSyncStatusMessage ~= message then
+			appendLog(message)
+			state.lastSyncStatusMessage = message
+		end
+	else
+		updateConflict("0")
+		state.lastSyncStatusMessage = nil
+	end
+end
+
 local function applyProjectSnapshot(projectSnapshot)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
@@ -1119,7 +1168,7 @@ local function applyProjectSnapshot(projectSnapshot)
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
 	local correctedDuringApply = false
-	local correctedSnapshot = nil
+	local appliedSnapshot = nil
 
 	local okApply, applyError = xpcall(function()
 		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
@@ -1154,12 +1203,12 @@ local function applyProjectSnapshot(projectSnapshot)
 
 		ChangeHistoryService:SetWaypoint("Amarillo Sync End")
 		
+		appliedSnapshot = snapshotCurrentProject()
 		if correctedDuringApply then
-			correctedSnapshot = snapshotCurrentProject()
 			appendLog("Studio classes preserved; sending corrected snapshot to daemon.")
 		end
 
-		state.treeCache = normalizeProjectSnapshotForCache(correctedSnapshot or projectSnapshot)
+		state.treeCache = normalizeProjectSnapshotForCache(appliedSnapshot or projectSnapshot)
 		if state.treeCache then
 			state.lastSnapshotJson = HttpService:JSONEncode(state.treeCache)
 		end
@@ -1173,7 +1222,7 @@ local function applyProjectSnapshot(projectSnapshot)
 		return false, tostring(applyError)
 	end
 
-	return true, "Snapshot aplicado", correctedSnapshot
+	return true, "Snapshot aplicado", appliedSnapshot
 end
 
 local function postCommandResult(commandId, okValue, payload)
@@ -1190,10 +1239,15 @@ local function postCommandResult(commandId, okValue, payload)
 		commandId = commandId,
 		ok = okValue
 	}
+	addVersionPayload(body)
 	for key, value in pairs(payload or {}) do
 		body[key] = value
 	end
-	request("POST", "/studio/complete", body)
+	local ok, response = request("POST", "/studio/complete", body)
+	if not ok then
+		appendLog("Failed to confirm command with daemon: " .. tostring(response))
+	end
+	return ok, response
 end
 
 local function executeLuau(code)
@@ -1371,7 +1425,7 @@ end
 local function handleCommand(command)
 	if command.type == "apply_project_tree" then
 		local isInitialPcSync = state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth"
-		local ok, message, correctedSnapshot = applyProjectSnapshot(command.payload.project)
+		local ok, message, appliedSnapshot = applyProjectSnapshot(command.payload.project)
 		if ok and isInitialPcSync then
 			state.awaitingInitialSync = false
 			pcall(startWatcher)
@@ -1380,7 +1434,7 @@ local function handleCommand(command)
 		end
 		postCommandResult(command.id, ok, {
 			result = message,
-			snapshot = correctedSnapshot,
+			snapshot = appliedSnapshot,
 			error = ok and nil or message
 		})
 		appendLog(ok and "Local snapshot applied in Studio." or ("Apply failed: " .. tostring(message)))
@@ -1400,6 +1454,7 @@ local function handleCommand(command)
 	if command.type == "apply_file_patch" then
 		state.isApplyingRemote = true
 		state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
+		local appliedSnapshot = nil
 		
 		local ok, err = pcall(function()
 			local container = resolveMountContainer(command.payload.path)
@@ -1408,6 +1463,7 @@ local function handleCommand(command)
 				if changed then
 					ChangeHistoryService:SetWaypoint("Amarillo Patch: " .. container.Name)
 				end
+				appliedSnapshot = snapshotCurrentProject()
 			else
 				error("Instance not found for path: " .. table.concat(command.payload.path, "."))
 			end
@@ -1416,6 +1472,7 @@ local function handleCommand(command)
 		state.isApplyingRemote = false
 		postCommandResult(command.id, ok, {
 			result = ok and "Patch aplicado" or tostring(err),
+			snapshot = appliedSnapshot,
 			error = ok and nil or tostring(err)
 		})
 		return
@@ -1834,6 +1891,12 @@ local function syncSnapshot(reason)
 	if now() < state.suppressPushUntil then
 		return
 	end
+	if state.syncState == "degraded" and reason ~= "manual" and reason ~= "initial_accept" then
+		return
+	end
+	if state.versionState == "blocked" then
+		return
+	end
 
 	local snapshot = snapshotCurrentProject()
 	if not snapshot then
@@ -1845,6 +1908,7 @@ local function syncSnapshot(reason)
 		snapshot = snapshot,
 		reason = reason or "auto"
 	}
+	addVersionPayload(bodyTable)
 	local bodyJson = HttpService:JSONEncode(bodyTable)
 	local snapshotJson = HttpService:JSONEncode(snapshot)
 	if snapshotJson == state.lastSnapshotJson and reason ~= "manual" and reason ~= "initial_accept" then
@@ -1879,6 +1943,11 @@ function resetSessionState(statusText)
 	state.projectSelectionMessage = nil
 	state.pendingConnectionContext = nil
 	state.lastSnapshotJson = nil
+	state.syncState = "ready"
+	state.syncMessage = nil
+	state.versionState = "unknown"
+	state.versionMessage = nil
+	state.lastSyncStatusMessage = nil
 	if statusText then
 		updateStatus(statusText)
 	end
@@ -2051,6 +2120,11 @@ local function applyAcceptedSession(response, truthSource)
 	state.connected = state.sessionId ~= nil
 	state.awaitingInitialSync = truthSource == "pc"
 	state.connectionOffer = response.offer or nil
+	state.syncState = "ready"
+	state.syncMessage = nil
+	state.versionState = response.session and response.session.versionState or "unknown"
+	state.versionMessage = response.session and response.session.versionMessage or nil
+	state.lastSyncStatusMessage = nil
 	if state.project and state.selectedProjectId then
 		state.selectedProjectName = state.project.name
 	end
@@ -2066,6 +2140,11 @@ local function applyAcceptedSession(response, truthSource)
 	refreshTreePreview()
 	if state.projectSelectionMessage then
 		appendLog(state.projectSelectionMessage)
+	end
+	if response.session and response.session.requiresPluginUpdate == true then
+		applySyncSummary(response.session)
+		appendLog("Sync blocked until the Amarillo plugin is updated.")
+		return
 	end
 
 	if truthSource == "studio" then
@@ -2094,7 +2173,9 @@ local function acceptPendingConnection(truthSource)
 		studioInstanceId = state.studioInstanceId,
 		placeId = game.PlaceId,
 		projectId = state.selectedProjectId,
-		truthSource = truthSource
+		truthSource = truthSource,
+		pluginVersion = PLUGIN_VERSION,
+		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -2256,7 +2337,7 @@ local function chooseStudioTruth()
 end
 
 local function pollConnectionOffer()
-	local ok, response = request("GET", "/studio/poll?studioInstanceId=" .. state.studioInstanceId)
+	local ok, response = request("GET", "/studio/poll?studioInstanceId=" .. state.studioInstanceId .. "&" .. pluginVersionQuery())
 	if not ok then
 		return false, response
 	end
@@ -2350,7 +2431,7 @@ local function pollCommands()
 	if not state.sessionId then
 		return
 	end
-	local ok, response = request("GET", "/studio/poll?sessionId=" .. state.sessionId)
+	local ok, response = request("GET", "/studio/poll?sessionId=" .. state.sessionId .. "&" .. pluginVersionQuery())
 	if not ok then
 		updateStatus("daemon offline")
 		appendLog("Polling failed: " .. tostring(response))
@@ -2955,11 +3036,11 @@ local function sendScriptPatch(path, source)
 	end
 	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
 	local callOk, requestOk, response = pcall(function()
-		return request("POST", "/studio/patch-source", {
+		return request("POST", "/studio/patch-source", addVersionPayload({
 			sessionId = state.sessionId,
 			path = path,
 			source = source
-		})
+		}))
 	end)
 	if not callOk then
 		appendLog("Error sending patch: " .. tostring(requestOk))
@@ -3158,10 +3239,13 @@ local consecutivePollFailures = 0
 task.spawn(function()
 	while true do
 		if state.connected and state.sessionId then
-			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId)
+			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId .. "&" .. pluginVersionQuery())
 			if reqOk then
 				consecutivePollFailures = 0
-				updateStatus(state.awaitingInitialSync and "syncing from PC" or "connected")
+				applySyncSummary(reqResponse.session)
+				if state.syncState ~= "degraded" then
+					updateStatus(state.awaitingInitialSync and "syncing from PC" or "connected")
+				end
 				local commands = reqResponse.commands or {}
 				updateQueue(tostring(#commands))
 				for _, command in ipairs(commands) do

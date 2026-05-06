@@ -20,6 +20,7 @@ let sidebarHandshakeCycleKey = null;
 let sidebarStartPromptShown = false;
 let sidebarOfferRequested = false;
 let sidebarOfferRequestInFlight = false;
+const AMARILLO_PROTOCOL_VERSION = 1;
 
 // ===== Logger with notification levels (Argon pattern) =====
 function getNotificationLevel() {
@@ -71,6 +72,10 @@ function logError(message, silent) {
 
 function runtimePath(context, ...segments) {
   return path.join(context.extensionPath, "runtime", ...segments);
+}
+
+function extensionVersion(context = extensionContext) {
+  return String(context?.extension?.packageJSON?.version || "unknown");
 }
 
 async function fileSha1(filePath) {
@@ -288,6 +293,32 @@ function mcpReloadHint(mcpConfigResult) {
   return " If your AI/MCP client was already open, reopen the session to reload the server.";
 }
 
+function mcpStateLabel(mcpShield) {
+  switch (mcpShield?.state) {
+    case "ready":
+      return "Ready";
+    case "fallback_ready":
+      return "Fallback ready";
+    case "degraded":
+      return "Needs attention";
+    default:
+      return "Unknown";
+  }
+}
+
+function mcpStateTone(mcpShield) {
+  switch (mcpShield?.state) {
+    case "ready":
+      return "success";
+    case "fallback_ready":
+      return "warning";
+    case "degraded":
+      return "danger";
+    default:
+      return "neutral";
+  }
+}
+
 function samePath(left, right) {
   if (!left || !right) {
     return false;
@@ -480,6 +511,7 @@ async function getSidebarState() {
   const autoSyncToStudio = workspaceMatches
     ? (health?.autoSyncToStudio ?? settings?.autoSyncToStudio ?? true)
     : (settings?.autoSyncToStudio ?? true);
+  const mcpShield = workspaceMatches ? (health?.mcpShield || null) : null;
   const workspaceTooltip = buildWorkspaceTooltip(settings, health);
   const workspaceNotes = workspaceTooltip
     .split("\n")
@@ -488,7 +520,7 @@ async function getSidebarState() {
 
   let statusTone = "neutral";
   if (running && activeSession && workspaceMatches) {
-    statusTone = "success";
+    statusTone = activeSession.requiresPluginUpdate ? "danger" : (activeSession.requiresManualResync ? "warning" : "success");
   } else if (!running) {
     statusTone = "danger";
   } else if (!workspaceMatches || connectionOffer?.status === "declined") {
@@ -505,9 +537,12 @@ async function getSidebarState() {
   let sessionMessage = "No session connected in Studio.";
 
   if (activeSession) {
-    sessionTone = (activeSession.connectionState || "ready") === "ready" ? "success" : "warning";
-    sessionBadge = activeSession.connectionState || "ready";
-    sessionMessage = activeSession.projectSelectionMessage || "Session ready to sync with Studio.";
+    const sessionReady = (activeSession.connectionState || "ready") === "ready";
+    sessionTone = activeSession.requiresPluginUpdate ? "danger" : (activeSession.requiresManualResync ? "warning" : (sessionReady ? "success" : "warning"));
+    sessionBadge = activeSession.requiresPluginUpdate ? "Plugin update required" : (activeSession.requiresManualResync ? "sync paused" : (activeSession.connectionState || "ready"));
+    sessionMessage = activeSession.requiresPluginUpdate
+      ? (activeSession.versionMessage || "Plugin update required before sync can continue.")
+      : (activeSession.syncMessage || activeSession.projectSelectionMessage || "Session ready to sync with Studio.");
     sessionFacts.push(
       createSidebarFact(
         "Project",
@@ -515,6 +550,8 @@ async function getSidebarState() {
         isFallbackProjectSelection(activeSession) ? "warning" : "success"
       ),
       createSidebarFact("State", activeSession.connectionState || "ready", sessionTone),
+      createSidebarFact("Version", activeSession.versionState || "unknown", activeSession.requiresPluginUpdate ? "danger" : "success"),
+      createSidebarFact("Sync", activeSession.syncState || "ready", activeSession.requiresManualResync || activeSession.requiresPluginUpdate ? "warning" : "success"),
       createSidebarFact("Place", String(activeSession.placeId || 0)),
       createSidebarFact("Session", activeSession.id),
       createSidebarFact("Ready sessions", String(readySessions.length), readySessions.length > 0 ? "success" : "neutral")
@@ -562,6 +599,11 @@ async function getSidebarState() {
   }
 
   if (settings || health?.ok) {
+    if (mcpShield) {
+      sessionFacts.push(
+        createSidebarFact("MCP", mcpStateLabel(mcpShield), mcpStateTone(mcpShield))
+      );
+    }
     sessionFacts.push(
       createSidebarFact(
         "VS Code -> Studio",
@@ -604,6 +646,7 @@ async function getSidebarState() {
           createSidebarAction("Start Bridge", "amarillo.startBridge", "primary"),
           createSidebarAction("Stop Bridge", "amarillo.stopBridge"),
           createSidebarAction("Healthcheck", "amarillo.healthcheck"),
+          createSidebarAction("Doctor", "amarillo.doctor"),
           createSidebarAction("Open Output", "amarillo.openOutput")
         ]
       },
@@ -612,7 +655,8 @@ async function getSidebarState() {
         description: "Initial setup and integrations.",
         actions: [
           createSidebarAction("Install Roblox Plugin", "amarillo.installRobloxPlugin"),
-          createSidebarAction("Configure MCP", "amarillo.configureMcp")
+          createSidebarAction("Configure MCP", "amarillo.configureMcp"),
+          createSidebarAction("MCP Healthcheck", "amarillo.mcpHealthcheck")
         ]
       }
     ]
@@ -1528,6 +1572,8 @@ async function ensureBridgeStarted(context, options = {}) {
     "--workspace", workspaceRoot,
     "--host", host,
     "--port", String(port),
+    "--extension-version", extensionVersion(context),
+    "--extension-protocol", String(AMARILLO_PROTOCOL_VERSION),
     "--no-mcp",
     autoSyncToStudio ? "--auto-sync-to-studio" : "--no-auto-sync-to-studio"
   ];
@@ -1716,13 +1762,79 @@ async function runHealthcheck() {
     ? ` Handshake: ${handshakeStatusLabel(payload.connectionOffer)}.`
     : "";
   const autoSyncInfo = ` Auto-sync VS Code -> Studio: ${payload.autoSyncToStudio === false ? "manual" : "auto"}.`;
+  const mcpInfo = payload.mcpShield
+    ? ` MCP: ${mcpStateLabel(payload.mcpShield)}.`
+    : "";
 
-  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0}`);
+  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0} mcp=${payload.mcpShield?.state || "unknown"}`);
   refreshSidebar();
   outputChannel.show(true);
   vscode.window.showInformationMessage(
-    `Amarillo OK. Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${autoSyncInfo}${projectWarning}${offerInfo}${workspaceWarning}`
+    `Amarillo OK. Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${autoSyncInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}`
   );
+}
+
+async function runDoctor() {
+  const report = await requestJson("GET", "/doctor", undefined, { timeout: 10000 });
+  const status = report.status || "unknown";
+  log(`Doctor status: ${status}`);
+  log(`Doctor summary: ${report.summary?.message || "No summary message."}`);
+  log(`Versions: daemon=${report.versions?.daemon?.version || "unknown"} protocol=${report.versions?.daemon?.protocolVersion ?? "unknown"} extension=${report.versions?.extension?.version || "unknown"}`);
+  log(`Workspace: ${report.workspace?.root || "unknown"} projects=${report.workspace?.projectCount ?? 0} sessions=${report.summary?.sessionCount ?? 0}`);
+  for (const reason of report.summary?.blockedReasons || []) {
+    log(`BLOCKED: ${reason}`);
+  }
+  for (const warning of report.summary?.warnings || []) {
+    log(`WARNING: ${warning}`);
+  }
+  for (const recommendation of report.recommendations || []) {
+    log(`Recommendation: ${recommendation}`);
+  }
+  refreshSidebar();
+  outputChannel.show(true);
+
+  const message = `Amarillo Doctor: ${status}. ${report.summary?.message || ""}`.trim();
+  if (status === "blocked") {
+    vscode.window.showErrorMessage(message, "Show Output").then((action) => {
+      if (action === "Show Output") {
+        outputChannel.show();
+      }
+    });
+  } else if (status === "warning") {
+    vscode.window.showWarningMessage(message);
+  } else {
+    vscode.window.showInformationMessage(message);
+  }
+}
+
+async function runMcpHealthcheck() {
+  const statusPayload = await requestJson("GET", "/mcp/status", undefined, { timeout: 5000 });
+  let probePayload = null;
+  try {
+    probePayload = await requestJson("POST", "/mcp/probe", {}, { timeout: 10000 });
+  } catch (error) {
+    log(`MCP probe failed: ${error.message}`);
+  }
+
+  const mcp = probePayload?.mcp || statusPayload.mcp;
+  const fallbackUrl = mcp?.fallback?.callUrl || `${bridgeBaseUrl()}/mcp/call`;
+  const configStatus = mcp?.config?.status || "unknown";
+  const stateLabel = mcpStateLabel(mcp);
+  log(`MCP Shield: state=${mcp?.state || "unknown"} config=${configStatus} tools=${mcp?.toolCount ?? 0}`);
+  log(`MCP message: ${mcp?.message || "No MCP diagnostic message."}`);
+  log(`MCP HTTP fallback endpoint: ${fallbackUrl}`);
+  if (probePayload?.parsed?.workspaceRoot) {
+    log(`MCP probe health: workspace=${workspaceDisplayName(probePayload.parsed.workspaceRoot)} sessions=${probePayload.parsed.sessions?.length ?? 0}`);
+  }
+  refreshSidebar();
+  outputChannel.show(true);
+
+  const message = `Amarillo MCP ${stateLabel}. Native config: ${configStatus}. HTTP fallback: ${fallbackUrl}`;
+  if (mcp?.state === "ready") {
+    vscode.window.showInformationMessage(message);
+  } else {
+    vscode.window.showWarningMessage(message);
+  }
 }
 
 async function configureMcp(context) {
@@ -1794,7 +1906,7 @@ async function executeCodeInStudio() {
   const session = await chooseSession();
   log(`Executing code in Studio (session ${session.id}, ${code.length} chars)`);
 
-  const response = await requestJson("POST", `/session/${session.id}/run-code`, {
+  const response = await requestJson("POST", `/session/${session.id}/exec`, {
     code,
     source: selection ? "selection" : editor.document.uri.fsPath
   }, { timeout: 30000 });
@@ -1945,6 +2057,8 @@ function activate(context) {
     vscode.commands.registerCommand("amarillo.startBridge", () => startBridge(context)),
     vscode.commands.registerCommand("amarillo.stopBridge", () => stopBridge()),
     vscode.commands.registerCommand("amarillo.healthcheck", () => runHealthcheck()),
+    vscode.commands.registerCommand("amarillo.doctor", () => runDoctor()),
+    vscode.commands.registerCommand("amarillo.mcpHealthcheck", () => runMcpHealthcheck()),
     vscode.commands.registerCommand("amarillo.configureMcp", () => configureMcp(context)),
     vscode.commands.registerCommand("amarillo.openOutput", () => outputChannel.show(true)),
     vscode.commands.registerCommand("amarillo.refreshSidebar", () => refreshSidebar()),
@@ -1999,6 +2113,8 @@ function activate(context) {
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Setup" },
         { label: "$(cloud-download) Install Plugin", description: "Install Amarillo plugin in Roblox Studio", action: "installRobloxPlugin" },
         { label: "$(hubot) Configure MCP", description: "Setup MCP integration for AI tools", action: "configureMcp" },
+        { label: "$(shield) MCP Healthcheck", description: "Check native MCP config and HTTP fallback", action: "mcpHealthcheck" },
+        { label: "$(beaker) Doctor", description: "Run full Amarillo diagnostics", action: "doctor" },
         { label: "$(pulse) Healthcheck", description: "Check daemon status", action: "healthcheck" },
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Misc" },
         { label: "$(output) Open Output", description: "Show Amarillo output channel", action: "openOutput" },
@@ -2024,6 +2140,8 @@ function activate(context) {
           case "execCode": await executeCodeInStudio(); break;
           case "installRobloxPlugin": await installRobloxPlugin(context); break;
           case "configureMcp": await configureMcp(context); break;
+          case "mcpHealthcheck": await runMcpHealthcheck(); break;
+          case "doctor": await runDoctor(); break;
           case "healthcheck": await runHealthcheck(); break;
           case "openOutput": outputChannel.show(true); break;
           case "settings": vscode.commands.executeCommand("workbench.action.openSettings", "amarillo"); break;

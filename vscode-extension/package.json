@@ -2,7 +2,7 @@
   "name": "amarillo-vscode",
   "displayName": "Amarillo Bridge",
   "description": "Installs the Amarillo plugin in Roblox Studio and controls the local bridge from VS Code.",
-  "version": "1.0.12",
+  "version": "1.0.16",
   "publisher": "amarillo",
   "engines": {
     "vscode": "^1.90.0"
@@ -50,6 +50,14 @@
       {
         "command": "amarillo.healthcheck",
         "title": "Amarillo: Healthcheck"
+      },
+      {
+        "command": "amarillo.doctor",
+        "title": "Amarillo: Doctor"
+      },
+      {
+        "command": "amarillo.mcpHealthcheck",
+        "title": "Amarillo: MCP Healthcheck"
       },
       {
         "command": "amarillo.configureMcp",

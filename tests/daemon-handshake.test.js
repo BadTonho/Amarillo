@@ -239,7 +239,9 @@ test("first studio acceptance wins and creates a pending PC-truth initial sync",
     offerId: offer.offerId,
     studioInstanceId: "studio-a",
     placeId: 0,
-    truthSource: "pc"
+    truthSource: "pc",
+    pluginVersion: "1.0.16",
+    pluginProtocolVersion: 1
   });
   assert.equal(acceptResponse.statusCode, 200);
   assert.equal(acceptResponse.payload.session.connectionState, "accepted");
@@ -257,6 +259,50 @@ test("first studio acceptance wins and creates a pending PC-truth initial sync",
   });
   assert.equal(secondAccept.statusCode, 409);
   assert.equal(secondAccept.payload.offer.status, "accepted");
+});
+
+test("HTTP connection accept blocks old plugins that do not report a version", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const offer = app.beginConnectionOffer("test");
+  const response = await invoke(app, "POST", "/connection/accept", {
+    offerId: offer.offerId,
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+  assert.equal(response.payload.session.versionState, "blocked");
+  assert.equal(response.payload.session.requiresPluginUpdate, true);
+  assert.match(response.payload.session.versionMessage, /Plugin update required/);
+
+  const session = Array.from(app.sessions.values())[0];
+  assert.equal(session.pendingCommands.length, 0);
+});
+
+test("HTTP connection accept blocks incompatible plugin protocol versions", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const offer = app.beginConnectionOffer("test");
+  const response = await invoke(app, "POST", "/connection/accept", {
+    offerId: offer.offerId,
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc",
+    pluginVersion: "0.0.1",
+    pluginProtocolVersion: 999
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.session.versionState, "blocked");
+  assert.equal(response.payload.session.requiresPluginUpdate, true);
+  assert.equal(Array.from(app.sessions.values())[0].pendingCommands.length, 0);
 });
 
 test("PC truth becomes ready after the Studio completes the initial apply", () => {
@@ -688,6 +734,85 @@ test("rejected fast file patches fall back to a full project tree apply", async 
   assert.equal(script.source, "return 'emote'");
 });
 
+test("sync guard marks timed out apply commands as degraded and pauses auto-sync", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "test_timeout"
+  }, false, 10);
+  await wait(25);
+
+  assert.equal(session.sync.state, "degraded");
+  assert.equal(session.sync.lastFailure.commandType, "apply_project_tree");
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 100", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 0);
+});
+
+test("verified apply snapshot clears degraded sync state", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+
+  app.markSyncDegraded(session, "test degradation");
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: readLocalProjectState(project)
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+  assert.ok(session.sync.lastVerifiedAt);
+});
+
+test("unverified fast file patch degrades but verified patch updates snapshot", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 10"
+  });
+  let command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, { ok: true });
+  assert.equal(session.sync.state, "degraded");
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 11"
+  });
+  command = app.dequeueCommands(session.id).commands[0];
+  const verifiedSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  verifiedSnapshot.mounts[0].children[0].source = "return 11";
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: verifiedSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  const script = findSnapshotNodeByPath(session.lastStudioSnapshot, ["ServerScriptService", "Hello"]);
+  assert.equal(script.source, "return 11");
+});
+
 test("Studio snapshot disk writes are recorded in the local activity log", async () => {
   const workspace = createWorkspaceWithProject();
   const oldScriptPath = path.join(workspace, "sync", "ServerScriptService", "Old.server.luau");
@@ -810,4 +935,199 @@ test("manual pull still sends files to Studio when autoSyncToStudio is disabled"
   const response = await pullPromise;
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.ok, true);
+});
+
+test("version-blocked sessions reject manual sync recovery endpoints", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const sessionId = accept.payload.session.id;
+
+  for (const action of ["pull", "push", "resync"]) {
+    const response = await invoke(app, "POST", `/session/${sessionId}/${action}`, {});
+    assert.equal(response.statusCode, 409, `${action} should be blocked`);
+    assert.equal(response.payload.ok, false);
+    assert.match(response.payload.error, /Plugin update required/);
+  }
+});
+
+test("auto-sync ignores version-blocked sessions", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const session = app.sessions.get(accept.payload.session.id);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 200", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(app.sessionSummary(session).requiresPluginUpdate, true);
+});
+
+test("MCP shield exposes HTTP fallback diagnostics and tool calls", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const status = await invoke(app, "GET", "/mcp/status");
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.payload.mcp.state, "fallback_ready");
+  assert.equal(status.payload.mcp.config.status, "missing");
+  assert.match(status.payload.mcp.fallback.callUrl, /\/mcp\/call$/);
+
+  const tools = await invoke(app, "GET", "/mcp/tools");
+  assert.equal(tools.statusCode, 200);
+  assert.equal(tools.payload.ok, true);
+  assert.ok(tools.payload.tools.some((tool) => tool.name === "health"));
+
+  const probe = await invoke(app, "POST", "/mcp/probe", {});
+  assert.equal(probe.statusCode, 200);
+  assert.equal(probe.payload.ok, true);
+  assert.equal(probe.payload.parsed.workspaceRoot, workspace);
+  assert.ok(app.mcpShield.lastProbeAt);
+
+  const call = await invoke(app, "POST", "/mcp/call", {
+    name: "list_projects",
+    arguments: {}
+  });
+  assert.equal(call.statusCode, 200);
+  assert.equal(call.payload.ok, true);
+  assert.equal(call.payload.name, "list_projects");
+  assert.equal(call.payload.parsed[0].name, "Game");
+  assert.ok(app.mcpShield.lastHttpFallbackCallAt);
+});
+
+test("MCP shield reports ready when VS Code servers config is valid", async () => {
+  const workspace = createWorkspaceWithProject();
+  const mcpPath = path.join(workspace, ".vscode", "mcp.json");
+  const proxyEntry = path.join(workspace, "runtime", "mcp-proxy", "index.js");
+  fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+  fs.writeFileSync(mcpPath, `${JSON.stringify({
+    servers: {
+      amarillo: {
+        type: "stdio",
+        command: "node",
+        args: [
+          proxyEntry,
+          "--workspace",
+          workspace,
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8323"
+        ]
+      }
+    }
+  }, null, 2)}\n`, "utf8");
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const status = await invoke(app, "GET", "/mcp/status");
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.payload.mcp.state, "ready");
+  assert.equal(status.payload.mcp.config.status, "ready");
+
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.payload.mcpShield.state, "ready");
+});
+
+test("Doctor reports healthy workspace with compatible plugin and MCP config", async () => {
+  const workspace = createWorkspaceWithProject();
+  const mcpPath = path.join(workspace, ".vscode", "mcp.json");
+  fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+  fs.writeFileSync(mcpPath, `${JSON.stringify({
+    servers: {
+      amarillo: {
+        type: "stdio",
+        command: "node",
+        args: [
+          path.join(workspace, "runtime", "mcp-proxy", "index.js"),
+          "--workspace",
+          workspace,
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "8323"
+        ]
+      }
+    }
+  }, null, 2)}\n`, "utf8");
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    extensionVersion: "1.0.16",
+    extensionProtocolVersion: 1
+  });
+  app.refreshWorkspace();
+
+  await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "studio",
+    pluginVersion: "1.0.16",
+    pluginProtocolVersion: 1
+  });
+
+  const doctor = await invoke(app, "GET", "/doctor");
+  assert.equal(doctor.statusCode, 200);
+  assert.equal(doctor.payload.status, "ok");
+  assert.equal(doctor.payload.versions.daemon.protocolVersion, 1);
+  assert.equal(doctor.payload.sessions[0].versionState, "compatible");
+});
+
+test("Doctor reports warning when MCP is only available through fallback", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  app.openSession(0, null);
+
+  const doctor = await invoke(app, "GET", "/doctor");
+  assert.equal(doctor.payload.status, "warning");
+  assert.match(doctor.payload.summary.warnings.join("\n"), /MCP/);
+});
+
+test("Doctor reports blocked when sync is degraded", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  app.markSyncDegraded(session, "test degradation");
+  const doctor = await invoke(app, "GET", "/doctor");
+
+  assert.equal(doctor.payload.status, "blocked");
+  assert.match(doctor.payload.summary.blockedReasons.join("\n"), /test degradation/);
+});
+
+test("Doctor reports blocked when a connected plugin needs an update", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const doctor = await invoke(app, "GET", "/doctor");
+
+  assert.equal(doctor.payload.status, "blocked");
+  assert.match(doctor.payload.summary.blockedReasons.join("\n"), /Plugin update required/);
+  assert.equal(doctor.payload.compatibility.blockedSessionIds.length, 1);
 });

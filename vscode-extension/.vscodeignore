@@ -1,0 +1,16 @@
+.vscode/**
+.vscode-test/**
+tests/**
+src/**
+.gitignore
+.git/**
+*.vsix
+*.vsixmanifest
+.pluginroblox.json
+debug.log
+sourcemap.json
+.amarillo/**
+coverage/**
+.nyc_output/**
+.DS_Store
+Thumbs.db

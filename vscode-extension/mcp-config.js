@@ -35,6 +35,25 @@ function readJsonIfPossible(filePath) {
   }
 }
 
+async function ensureGitignore(workspaceRoot) {
+  const gitignorePath = path.join(workspaceRoot, ".gitignore");
+  const entry = ".vscode/mcp.json";
+  
+  try {
+    let content = "";
+    if (fs.existsSync(gitignorePath)) {
+      content = await fsp.readFile(gitignorePath, "utf8");
+      if (content.includes(entry)) {
+        return;
+      }
+      content = content.endsWith("\n") || content === "" ? content : content + "\n";
+    }
+    await fsp.writeFile(gitignorePath, content + entry + "\n", "utf8");
+  } catch (_error) {
+    // Ignore errors, .gitignore update is best-effort
+  }
+}
+
 async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
   const vscodeDir = path.join(workspaceRoot, ".vscode");
   const mcpPath = path.join(vscodeDir, MCP_FILE_NAME);
@@ -45,6 +64,8 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
     port: options.port
   });
   const fileContents = `${JSON.stringify(config, null, 2)}\n`;
+
+  await ensureGitignore(workspaceRoot);
 
   if (fs.existsSync(mcpPath)) {
     const currentConfig = readJsonIfPossible(mcpPath);

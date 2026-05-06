@@ -3,7 +3,7 @@
 const http = require("node:http");
 const path = require("node:path");
 const { readWorkspaceConfig } = require("../daemon/project");
-const { findNodeByPath, listTools } = require("../daemon/mcp-tools");
+const { buildInsertModelLua, findNodeByPath, listTools } = require("../daemon/mcp-tools");
 const { startStdioMcpServer, textContent } = require("../daemon/mcp-stdio");
 
 function parseArgs(argv) {
@@ -59,7 +59,8 @@ function requestJson(baseUrl, method, route, body, timeoutMs = 130000) {
       timeout: timeoutMs,
       agent: keepAliveAgent,
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-Amarillo-MCP-Proxy": "1"
       }
     }, (response) => {
       let responseBody = "";
@@ -127,6 +128,22 @@ async function callProxyTool(baseUrl, name, args) {
         projectId: args.projectId
       });
       return textContent(response.project);
+    }
+
+    case "connect_session": {
+      const response = await requestJson(baseUrl, "POST", "/session/open", {
+        projectId: args.projectId || null,
+        placeId: Number(args.placeId) || 0,
+        connectionState: "ready",
+        truthSource: "pc"
+      });
+      return textContent({
+        ok: true,
+        sessionId: response.session?.id || null,
+        session: response.session,
+        project: response.project,
+        _hint: "Session created. Use the sessionId above in subsequent tool calls."
+      });
     }
 
     case "get_tree": {
@@ -248,6 +265,13 @@ async function callProxyTool(baseUrl, name, args) {
     case "delete_instance": {
       const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "delete-instance"), {
         path: args.path
+      });
+      return textContent(response.result);
+    }
+
+    case "insert_model": {
+      const response = await requestJson(baseUrl, "POST", sessionRoute(args.sessionId, "exec"), {
+        code: buildInsertModelLua(args.query)
       });
       return textContent(response.result);
     }

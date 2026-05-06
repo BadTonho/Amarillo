@@ -17,6 +17,19 @@ const {
 const { ErrorTracker } = require("./lib/error-tracker");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
+const { handleTool: handleMcpTool } = require("./mcp");
+const {
+  createMcpShieldState,
+  listTools,
+  mcpShieldSummary,
+  mcpToolResultToHttpPayload
+} = require("./mcp-shield");
+const {
+  AMARILLO_PROTOCOL_VERSION,
+  DAEMON_VERSION,
+  normalizeProtocolVersion,
+  normalizeVersion
+} = require("./version");
 
 function jsonResponse(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -84,11 +97,29 @@ function logSync(event, details = {}) {
 const SCRIPT_PATCH_DEBOUNCE_MS = 75;
 const PROJECT_TREE_DEBOUNCE_MS = 250;
 const COMMAND_RESULT_TIMEOUT_MS = 120000;
+const SYNC_COMMAND_TIMEOUT_MS = 30000;
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
 const INITIAL_PC_SYNC_REASON = "initial_pc_truth";
 const INITIAL_STUDIO_CONTACT_GRACE_MS = 5000;
 const STUDIO_SESSION_STALE_MS = 30000;
 const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
+const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
+
+function createSyncState() {
+  return {
+    state: "ready",
+    lastAckAt: null,
+    lastVerifiedAt: null,
+    lastFailure: null,
+    lastExpectedHash: null,
+    lastObservedHash: null,
+    degradedReason: null
+  };
+}
+
+function isSyncCommandType(type) {
+  return SYNC_COMMAND_TYPES.has(type);
+}
 
 function normalizeFsPath(filePath) {
   return path.resolve(filePath).replace(/\\/g, "/");
@@ -202,6 +233,13 @@ function collectFilesRecursive(dirPath, results = []) {
   return results;
 }
 
+function recentTimestamp(entries = []) {
+  return entries
+    .map((entry) => Date.parse(entry.timestamp || entry.at || entry.createdAt || ""))
+    .filter((timestamp) => Number.isFinite(timestamp))
+    .sort((left, right) => right - left)[0] || null;
+}
+
 class PluginRobloxApp {
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -209,6 +247,8 @@ class PluginRobloxApp {
     this.port = Number(options.port || 8323);
     this.autoSyncToStudioExplicit = options.autoSyncToStudio !== undefined;
     this.autoSyncToStudio = coerceBoolean(options.autoSyncToStudio, DEFAULT_AUTO_SYNC_TO_STUDIO);
+    this.extensionVersion = normalizeVersion(options.extensionVersion);
+    this.extensionProtocolVersion = normalizeProtocolVersion(options.extensionProtocolVersion);
     this.initialStudioContactGraceMs = Number(options.initialStudioContactGraceMs) > 0
       ? Number(options.initialStudioContactGraceMs)
       : INITIAL_STUDIO_CONTACT_GRACE_MS;
@@ -239,6 +279,7 @@ class PluginRobloxApp {
       workspaceRoot: this.workspaceRoot
     });
     this.activityFileState = new Map();
+    this.mcpShield = createMcpShieldState();
   }
 
   async start() {
@@ -332,6 +373,152 @@ class PluginRobloxApp {
       suggestion: entry.suggestion || null,
       stack: entry.stack || null
     });
+  }
+
+  recordMcpContact(source = "unknown", details = {}) {
+    if (!this.mcpShield) {
+      this.mcpShield = createMcpShieldState();
+    }
+    const now = new Date().toISOString();
+    this.mcpShield.state = "ready";
+    this.mcpShield.lastFailure = null;
+    if (details.toolName) {
+      this.mcpShield.lastTool = details.toolName;
+      this.mcpShield.callCount += 1;
+    }
+    if (source === "native_stdio") {
+      this.mcpShield.lastNativeCallAt = now;
+    } else if (source === "proxy_http") {
+      this.mcpShield.lastProxyContactAt = now;
+    } else if (source === "http_fallback") {
+      this.mcpShield.lastHttpFallbackCallAt = now;
+    } else if (source === "http_probe") {
+      this.mcpShield.lastProbeAt = now;
+    }
+  }
+
+  recordMcpFailure(source = "unknown", error, details = {}) {
+    if (!this.mcpShield) {
+      this.mcpShield = createMcpShieldState();
+    }
+    const message = error?.message || String(error || "Unknown MCP error.");
+    const now = new Date().toISOString();
+    this.mcpShield.state = "degraded";
+    this.mcpShield.failureCount += 1;
+    this.mcpShield.lastFailure = {
+      at: now,
+      source,
+      toolName: details.toolName || null,
+      route: details.route || null,
+      message
+    };
+    this.recordError({
+      component: "mcp",
+      severity: "warning",
+      code: details.code || "MCP-SHIELD",
+      message,
+      context: {
+        source,
+        toolName: details.toolName || null,
+        route: details.route || null
+      }
+    });
+  }
+
+  versionPayload() {
+    const extensionProtocolMatches = this.extensionProtocolVersion === null
+      || this.extensionProtocolVersion === AMARILLO_PROTOCOL_VERSION;
+    return {
+      daemon: {
+        version: DAEMON_VERSION,
+        protocolVersion: AMARILLO_PROTOCOL_VERSION
+      },
+      extension: {
+        version: this.extensionVersion,
+        protocolVersion: this.extensionProtocolVersion,
+        state: extensionProtocolMatches ? (this.extensionProtocolVersion === null ? "unknown" : "compatible") : "blocked",
+        message: extensionProtocolMatches
+          ? (this.extensionProtocolVersion === null ? "Extension protocol was not provided by the launcher." : "Extension protocol is compatible.")
+          : `Extension protocol ${this.extensionProtocolVersion} is incompatible with daemon protocol ${AMARILLO_PROTOCOL_VERSION}.`
+      }
+    };
+  }
+
+  updateSessionPluginVersion(session, metadata = {}) {
+    if (!session || !metadata || typeof metadata !== "object") {
+      return;
+    }
+    const pluginVersion = normalizeVersion(metadata.pluginVersion);
+    const pluginProtocolVersion = normalizeProtocolVersion(metadata.pluginProtocolVersion);
+    if (pluginVersion) {
+      session.pluginVersion = pluginVersion;
+    }
+    if (pluginProtocolVersion !== null) {
+      session.pluginProtocolVersion = pluginProtocolVersion;
+    }
+    if (pluginVersion || pluginProtocolVersion !== null) {
+      session.lastPluginVersionSeenAt = new Date().toISOString();
+    }
+  }
+
+  sessionVersionStatus(session) {
+    const requiresPlugin = session?.requirePluginVersion === true;
+    const pluginVersion = normalizeVersion(session?.pluginVersion);
+    const pluginProtocolVersion = normalizeProtocolVersion(session?.pluginProtocolVersion);
+    if (!requiresPlugin) {
+      return {
+        state: "compatible",
+        message: pluginVersion
+          ? "Plugin protocol is compatible."
+          : "Plugin version is not required for this internal session.",
+        requiresPluginUpdate: false
+      };
+    }
+    if (!pluginVersion || pluginProtocolVersion === null) {
+      return {
+        state: "blocked",
+        message: "Plugin update required: this Studio plugin did not report its Amarillo version/protocol.",
+        requiresPluginUpdate: true
+      };
+    }
+    if (pluginProtocolVersion !== AMARILLO_PROTOCOL_VERSION) {
+      return {
+        state: "blocked",
+        message: `Plugin update required: plugin protocol ${pluginProtocolVersion} is incompatible with daemon protocol ${AMARILLO_PROTOCOL_VERSION}.`,
+        requiresPluginUpdate: true
+      };
+    }
+    return {
+      state: "compatible",
+      message: "Plugin protocol is compatible.",
+      requiresPluginUpdate: false
+    };
+  }
+
+  isSessionVersionBlocked(session) {
+    return this.sessionVersionStatus(session).state === "blocked";
+  }
+
+  syncBlockedReason(session) {
+    const version = this.sessionVersionStatus(session);
+    if (version.state === "blocked") {
+      return version.message;
+    }
+    const sync = this.ensureSessionSyncState(session);
+    if (sync.state === "degraded") {
+      return sync.degradedReason || sync.lastFailure?.message || "Sync verification failed.";
+    }
+    return null;
+  }
+
+  assertSessionSyncAllowed(session, action = "sync") {
+    const reason = this.syncBlockedReason(session);
+    if (reason) {
+      const error = new Error(`${action} blocked: ${reason}`);
+      error.statusCode = 409;
+      error.code = "SYNC-BLOCKED";
+      throw error;
+    }
   }
 
   refreshWorkspace() {
@@ -575,6 +762,12 @@ class PluginRobloxApp {
       clearTimeout(timer);
     }
     session.filePatchTimers.clear();
+    for (const command of session.pendingCommands) {
+      this.clearCommandSyncGuard(command);
+    }
+    for (const command of session.inFlightCommands.values()) {
+      this.clearCommandSyncGuard(command);
+    }
     for (const deferred of session.pendingResponses.values()) {
       clearTimeout(deferred.timeout);
     }
@@ -596,7 +789,14 @@ class PluginRobloxApp {
     session.connectionState = options.connectionState || "ready";
     session.truthSource = options.truthSource || null;
     session.studioInstanceId = options.studioInstanceId || null;
+    session.requirePluginVersion = options.requirePluginVersion === true;
+    session.pluginVersion = normalizeVersion(options.pluginVersion);
+    session.pluginProtocolVersion = normalizeProtocolVersion(options.pluginProtocolVersion);
+    session.lastPluginVersionSeenAt = session.pluginVersion || session.pluginProtocolVersion !== null
+      ? new Date().toISOString()
+      : null;
     session.lastCommandError = null;
+    session.sync = createSyncState();
     session.projectSelectionReason = selection.reason;
     session.projectSelectionMessage = selection.message;
   }
@@ -701,7 +901,7 @@ class PluginRobloxApp {
     };
   }
 
-  scheduleProjectTreeApply(session, project, reason, changedPath = null, debounceMs = PROJECT_TREE_DEBOUNCE_MS) {
+  scheduleProjectTreeApply(session, project, reason, changedPath = null, debounceMs = PROJECT_TREE_DEBOUNCE_MS, allowWhenDegraded = false) {
     logSync("enqueue_apply_project_tree_scheduled", {
       sessionId: session.id,
       path: changedPath,
@@ -713,6 +913,14 @@ class PluginRobloxApp {
     session.fileChangeTimer = setTimeout(async () => {
       session.fileChangeTimer = null;
       if (!this.sessions.has(session.id)) {
+        return;
+      }
+      if (!allowWhenDegraded && this.isSessionSyncBlocked(session)) {
+        logSync("enqueue_apply_project_tree_skipped", {
+          sessionId: session.id,
+          reason: "sync_degraded",
+          degradedReason: session.sync?.degradedReason || null
+        });
         return;
       }
       logSync("enqueue_apply_project_tree_executing", {
@@ -749,6 +957,15 @@ class PluginRobloxApp {
     const timer = setTimeout(() => {
       session.filePatchTimers.delete(patchKey);
       if (!this.sessions.has(session.id)) {
+        return;
+      }
+      if (this.isSessionSyncBlocked(session)) {
+        logSync("enqueue_apply_file_patch_skipped", {
+          sessionId: session.id,
+          reason: "sync_degraded",
+          path: patchKey,
+          degradedReason: session.sync?.degradedReason || null
+        });
         return;
       }
 
@@ -870,6 +1087,14 @@ class PluginRobloxApp {
     
     for (const session of this.sessions.values()) {
       if (session.connectionState !== "ready") {
+        continue;
+      }
+      if (this.isSessionSyncBlocked(session)) {
+        logSync("disk_file_change_auto_sync_paused", {
+          sessionId: session.id,
+          path: normalizedChangedPath,
+          degradedReason: session.sync?.degradedReason || null
+        });
         continue;
       }
       const project = this.getProjectById(session.projectId);
@@ -1088,6 +1313,7 @@ class PluginRobloxApp {
           this.clearSessionRuntimeState(existing);
           existing.createdAt = new Date().toISOString();
           existing.lastCommandError = null;
+          existing.sync = createSyncState();
         }
         existing.projectSelectionReason = selection.reason;
         existing.projectSelectionMessage = selection.message;
@@ -1100,6 +1326,10 @@ class PluginRobloxApp {
         if (options.studioInstanceId) {
           existing.studioInstanceId = options.studioInstanceId;
         }
+        if (options.requirePluginVersion === true) {
+          existing.requirePluginVersion = true;
+        }
+        this.updateSessionPluginVersion(existing, options);
       }
       return {
         session: existing,
@@ -1121,14 +1351,22 @@ class PluginRobloxApp {
       fileChangeTimer: null,
       filePatchTimers: new Map(),
       lastAppliedAt: null,
+      sync: createSyncState(),
       connectionState: options.connectionState || "ready",
       truthSource: options.truthSource || null,
       studioInstanceId: options.studioInstanceId || null,
+      requirePluginVersion: options.requirePluginVersion === true,
+      pluginVersion: normalizeVersion(options.pluginVersion),
+      pluginProtocolVersion: normalizeProtocolVersion(options.pluginProtocolVersion),
+      lastPluginVersionSeenAt: null,
       lastCommandError: null,
       projectSelectionReason: selection.reason,
       projectSelectionMessage: selection.message,
       _pollWaiter: null
     };
+    if (session.pluginVersion || session.pluginProtocolVersion !== null) {
+      session.lastPluginVersionSeenAt = new Date().toISOString();
+    }
     this.sessions.set(session.id, session);
     return {
       session,
@@ -1183,7 +1421,10 @@ class PluginRobloxApp {
     studioInstanceId = null,
     placeId = 0,
     projectId = null,
-    truthSource = "pc"
+    truthSource = "pc",
+    pluginVersion = null,
+    pluginProtocolVersion = null,
+    requirePluginVersion = false
   }) {
     if (offerId) {
       if (!this.connectionOffer || this.connectionOffer.offerId !== offerId) {
@@ -1209,7 +1450,10 @@ class PluginRobloxApp {
       sessionResult = this.openSession(placeId, projectId, {
         connectionState: initialConnectionState,
         truthSource: normalizedTruthSource,
-        studioInstanceId
+        studioInstanceId,
+        pluginVersion,
+        pluginProtocolVersion,
+        requirePluginVersion
       });
     } catch (error) {
       return {
@@ -1230,7 +1474,23 @@ class PluginRobloxApp {
       });
     }
 
-    if (normalizedTruthSource === "pc") {
+    const versionStatus = this.sessionVersionStatus(session);
+    if (versionStatus.state === "blocked") {
+      session.lastCommandError = versionStatus.message;
+      this.recordError({
+        component: "plugin",
+        severity: "error",
+        code: "VERSION-BLOCKED",
+        message: versionStatus.message,
+        sessionId: session.id,
+        projectId: project.id,
+        context: {
+          pluginVersion: session.pluginVersion || null,
+          pluginProtocolVersion: session.pluginProtocolVersion || null,
+          daemonProtocolVersion: AMARILLO_PROTOCOL_VERSION
+        }
+      });
+    } else if (normalizedTruthSource === "pc") {
       this.enqueueCommand(session.id, "apply_project_tree", {
         project: readLocalProjectState(project, this.projectReadOptions(session)),
         reason: INITIAL_PC_SYNC_REASON
@@ -1255,13 +1515,175 @@ class PluginRobloxApp {
     return true;
   }
 
-  enqueueCommand(sessionId, type, payload, waitForResult = false, timeoutMs = COMMAND_RESULT_TIMEOUT_MS) {
+  ensureSessionSyncState(session) {
+    if (!session.sync) {
+      session.sync = createSyncState();
+    }
+    return session.sync;
+  }
+
+  syncMessage(session) {
+    const blockedReason = this.syncBlockedReason(session);
+    if (blockedReason && this.isSessionVersionBlocked(session)) {
+      return `Sync blocked: ${blockedReason}`;
+    }
+    const sync = this.ensureSessionSyncState(session);
+    if (sync.state === "degraded") {
+      return sync.degradedReason
+        ? `Sync paused: ${sync.degradedReason}`
+        : "Sync paused. Run a manual resync before continuing.";
+    }
+    if (session.pendingCommands.length > 0 || session.inFlightCommands.size > 0) {
+      return "Sync command pending confirmation from Studio.";
+    }
+    return "Sync healthy.";
+  }
+
+  isSessionSyncBlocked(session) {
+    return Boolean(this.syncBlockedReason(session));
+  }
+
+  clearCommandSyncGuard(command) {
+    if (command && command.syncGuardTimer) {
+      clearTimeout(command.syncGuardTimer);
+      command.syncGuardTimer = null;
+    }
+  }
+
+  removePendingSyncCommand(session, commandId) {
+    session.pendingCommands = session.pendingCommands.filter((command) => {
+      if (command.id !== commandId) {
+        return true;
+      }
+      this.clearCommandSyncGuard(command);
+      return false;
+    });
+  }
+
+  markSyncDegraded(session, reason, details = {}) {
+    const sync = this.ensureSessionSyncState(session);
+    const message = String(reason || "Sync verification failed.");
+    const timestamp = new Date().toISOString();
+    sync.state = "degraded";
+    sync.degradedReason = message;
+    sync.lastFailure = {
+      at: timestamp,
+      message,
+      commandId: details.commandId || null,
+      commandType: details.commandType || null
+    };
+    if (details.expectedHash !== undefined) {
+      sync.lastExpectedHash = details.expectedHash;
+    }
+    if (details.observedHash !== undefined) {
+      sync.lastObservedHash = details.observedHash;
+    }
+    if (!session.lastCommandError) {
+      session.lastCommandError = message;
+    }
+    this.recordError({
+      component: details.component || "daemon",
+      severity: details.severity || "error",
+      code: details.code || "SYNC-DEGRADED",
+      message,
+      sessionId: session.id,
+      projectId: session.projectId,
+      context: {
+        commandId: details.commandId || null,
+        commandType: details.commandType || null,
+        expectedHash: details.expectedHash || null,
+        observedHash: details.observedHash || null
+      }
+    });
+  }
+
+  markSyncAck(session, command) {
+    const sync = this.ensureSessionSyncState(session);
+    sync.lastAckAt = new Date().toISOString();
+    if (command?.expectedHash) {
+      sync.lastExpectedHash = command.expectedHash;
+    }
+  }
+
+  markSyncVerified(session, observedHash = null) {
+    const sync = this.ensureSessionSyncState(session);
+    const timestamp = new Date().toISOString();
+    sync.state = "ready";
+    sync.lastVerifiedAt = timestamp;
+    sync.degradedReason = null;
+    sync.lastFailure = null;
+    if (observedHash) {
+      sync.lastObservedHash = observedHash;
+    }
+    if ((session.connectionState || "ready") === "ready") {
+      session.lastCommandError = null;
+    }
+  }
+
+  cacheStudioSnapshot(session, snapshot, reason = "command_verified") {
+    const normalized = {
+      ...snapshot,
+      mounts: (snapshot.mounts || []).map((mount) => ({
+        ...mount,
+        children: mount.children || []
+      }))
+    };
+    const snapshotHash = hashSnapshot(normalized);
+    session.lastStudioSnapshot = normalized;
+    session.lastStudioHash = snapshotHash;
+    session.lastStudioSeenAt = new Date().toISOString();
+    logSync("studio_snapshot_cached", {
+      sessionId: session.id,
+      reason,
+      snapshotHash
+    });
+    return snapshotHash;
+  }
+
+  startSyncCommandGuard(session, command, timeoutMs = SYNC_COMMAND_TIMEOUT_MS) {
+    if (!isSyncCommandType(command.type)) {
+      return;
+    }
+    command.syncGuardTimer = setTimeout(() => {
+      command.syncGuardTimer = null;
+      this.removePendingSyncCommand(session, command.id);
+      this.markSyncDegraded(session, `Timed out waiting for Studio confirmation for ${command.type}.`, {
+        code: "SYNC-TIMEOUT",
+        commandId: command.id,
+        commandType: command.type,
+        expectedHash: command.expectedHash || null
+      });
+    }, timeoutMs);
+    if (typeof command.syncGuardTimer.unref === "function") {
+      command.syncGuardTimer.unref();
+    }
+  }
+
+  enqueueCommand(
+    sessionId,
+    type,
+    payload,
+    waitForResult = false,
+    timeoutMs = waitForResult ? COMMAND_RESULT_TIMEOUT_MS : SYNC_COMMAND_TIMEOUT_MS
+  ) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error("Studio session not found.");
     }
+    if (isSyncCommandType(type) && this.isSessionVersionBlocked(session)) {
+      const error = new Error(`${type} blocked: ${this.syncBlockedReason(session)}`);
+      error.statusCode = 409;
+      error.code = "VERSION-BLOCKED";
+      throw error;
+    }
     if (type === "apply_project_tree") {
-      session.pendingCommands = session.pendingCommands.filter(c => c.type !== "apply_project_tree" && c.type !== "apply_file_patch");
+      session.pendingCommands = session.pendingCommands.filter((command) => {
+        const keep = command.type !== "apply_project_tree" && command.type !== "apply_file_patch";
+        if (!keep) {
+          this.clearCommandSyncGuard(command);
+        }
+        return keep;
+      });
     }
     if (type === "apply_file_patch" && Array.isArray(payload?.path)) {
       const patchPath = payload.path.join(".");
@@ -1269,7 +1691,11 @@ class PluginRobloxApp {
         if (c.type !== "apply_file_patch" || !Array.isArray(c.payload?.path)) {
           return true;
         }
-        return c.payload.path.join(".") !== patchPath;
+        const keep = c.payload.path.join(".") !== patchPath;
+        if (!keep) {
+          this.clearCommandSyncGuard(c);
+        }
+        return keep;
       });
     }
     const command = {
@@ -1277,6 +1703,10 @@ class PluginRobloxApp {
       type,
       payload
     };
+    if (type === "apply_project_tree" && payload?.project) {
+      command.expectedHash = hashSnapshot(payload.project);
+      this.ensureSessionSyncState(session).lastExpectedHash = command.expectedHash;
+    }
     logSync("enqueue_command", {
       sessionId,
       commandId: command.id,
@@ -1290,10 +1720,21 @@ class PluginRobloxApp {
       deferred.timeout = setTimeout(() => {
         if (session.pendingResponses.delete(command.id)) {
           session.pendingCommands = session.pendingCommands.filter(c => c.id !== command.id);
+          this.clearCommandSyncGuard(command);
+          if (isSyncCommandType(command.type)) {
+            this.markSyncDegraded(session, `Timed out waiting for Studio response for ${type}.`, {
+              code: "SYNC-TIMEOUT",
+              commandId: command.id,
+              commandType: command.type,
+              expectedHash: command.expectedHash || null
+            });
+          }
           deferred.reject(new Error(`Timed out waiting for Studio response for ${type}.`));
         }
       }, timeoutMs);
       session.pendingResponses.set(command.id, deferred);
+    } else if (isSyncCommandType(type)) {
+      this.startSyncCommandGuard(session, command, timeoutMs);
     }
     session.pendingCommands.push(command);
     // Wake up long-poll waiter immediately
@@ -1320,13 +1761,24 @@ class PluginRobloxApp {
       });
     }
     return {
-      commands,
+      commands: commands.map((command) => ({
+        id: command.id,
+        type: command.type,
+        payload: command.payload
+      })),
       session: {
         id: session.id,
         placeId: session.placeId,
         projectId: session.projectId,
         lastStudioSeenAt: session.lastStudioSeenAt,
-        lastAppliedAt: session.lastAppliedAt
+        lastAppliedAt: session.lastAppliedAt,
+        syncState: this.ensureSessionSyncState(session).state,
+        syncMessage: this.syncMessage(session),
+        requiresManualResync: this.ensureSessionSyncState(session).state === "degraded",
+        versionState: this.sessionVersionStatus(session).state,
+        versionMessage: this.sessionVersionStatus(session).message,
+        requiresPluginUpdate: this.sessionVersionStatus(session).requiresPluginUpdate,
+        syncBlockedReason: this.syncBlockedReason(session)
       }
     };
   }
@@ -1339,11 +1791,37 @@ class PluginRobloxApp {
     const command = session.inFlightCommands.get(commandId) || null;
     if (command) {
       session.inFlightCommands.delete(commandId);
+      this.clearCommandSyncGuard(command);
+      if (isSyncCommandType(command.type)) {
+        this.markSyncAck(session, command);
+      }
       if (command.type === "apply_project_tree" && command.payload?.project) {
         if (payload?.snapshot) {
           this.updateStudioSnapshot(sessionId, payload.snapshot, "apply_project_tree_corrected");
+          this.markSyncVerified(session, session.lastStudioHash);
         } else {
           this.recordAppliedProjectSnapshot(session, command.payload.project, command.payload?.reason);
+          this.markSyncDegraded(session, "Studio confirmed apply_project_tree without a verification snapshot.", {
+            code: "SYNC-UNVERIFIED",
+            commandId,
+            commandType: command.type,
+            expectedHash: command.expectedHash || null,
+            observedHash: session.lastStudioHash || null
+          });
+        }
+      }
+      if (command.type === "apply_file_patch") {
+        if (payload?.snapshot) {
+          const observedHash = this.cacheStudioSnapshot(session, payload.snapshot, "apply_file_patch_verified");
+          this.markSyncVerified(session, observedHash);
+        } else if (payload?.appliedHash) {
+          this.markSyncVerified(session, String(payload.appliedHash));
+        } else {
+          this.markSyncDegraded(session, "Studio confirmed apply_file_patch without a verification snapshot or hash.", {
+            code: "SYNC-UNVERIFIED",
+            commandId,
+            commandType: command.type
+          });
         }
       }
       if (command.type === "apply_project_tree" && command.payload?.reason === INITIAL_PC_SYNC_REASON) {
@@ -1417,6 +1895,7 @@ class PluginRobloxApp {
     const command = session.inFlightCommands.get(commandId) || null;
     if (command) {
       session.inFlightCommands.delete(commandId);
+      this.clearCommandSyncGuard(command);
       session.lastCommandError = String(error || "Studio reported an error.");
       const commandPath = Array.isArray(command.payload?.path) ? command.payload.path.join(".") : null;
       this.recordError({
@@ -1437,11 +1916,20 @@ class PluginRobloxApp {
             path: commandPath,
             error: String(error || "Studio reported an error.")
           });
-          this.scheduleProjectTreeApply(session, project, "file_patch_rejected", commandPath, 50);
+          this.scheduleProjectTreeApply(session, project, "file_patch_rejected", commandPath, 50, true);
         }
       }
       if (command.type === "apply_project_tree" && command.payload?.reason === INITIAL_PC_SYNC_REASON) {
         session.connectionState = "error";
+      }
+      if (isSyncCommandType(command.type)) {
+        this.markSyncDegraded(session, `Studio rejected ${command.type}: ${error || "unknown error"}`, {
+          component: "studio",
+          code: "CMD-REJECT",
+          commandId,
+          commandType: command.type,
+          expectedHash: command.expectedHash || null
+        });
       }
     }
     const deferred = session.pendingResponses.get(commandId);
@@ -1458,14 +1946,20 @@ class PluginRobloxApp {
     if (!session) {
       throw new Error("Studio session not found.");
     }
-    const normalized = {
+    if (this.isSessionVersionBlocked(session)) {
+      const reason = this.syncBlockedReason(session);
+      const error = new Error(`Studio snapshot write blocked: ${reason}`);
+      error.statusCode = 409;
+      error.code = "VERSION-BLOCKED";
+      throw error;
+    }
+    const nextHash = hashSnapshot({
       ...snapshot,
       mounts: (snapshot.mounts || []).map((mount) => ({
         ...mount,
         children: mount.children || []
       }))
-    };
-    const nextHash = hashSnapshot(normalized);
+    });
     const prevHash = session.lastStudioHash;
     const hashChanged = nextHash !== prevHash;
     logSync("studio_snapshot_received", {
@@ -1476,9 +1970,8 @@ class PluginRobloxApp {
       hashChanged,
       previousHash: prevHash
     });
-    session.lastStudioSnapshot = snapshot;
-    session.lastStudioHash = nextHash;
-    session.lastStudioSeenAt = new Date().toISOString();
+    this.cacheStudioSnapshot(session, snapshot, reason);
+    this.ensureSessionSyncState(session).lastObservedHash = nextHash;
 
     if (!hashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
       logSync("disk_write_skipped", {
@@ -1522,6 +2015,10 @@ class PluginRobloxApp {
         });
       } catch (error) {
         this.pendingStudioWrites.delete(sessionId);
+        this.markSyncDegraded(session, `Failed to write Studio snapshot to disk: ${error.message}`, {
+          code: "DISK-WRITE",
+          observedHash: session.lastStudioHash || null
+        });
         this.recordError({
           component: "daemon",
           severity: "error",
@@ -1536,6 +2033,9 @@ class PluginRobloxApp {
       }
       this.pendingStudioWrites.delete(sessionId);
       session.lastAppliedAt = new Date().toISOString();
+      if (reason === "manual" || reason === INITIAL_STUDIO_SYNC_REASON) {
+        this.markSyncVerified(session, session.lastStudioHash);
+      }
       if (reason === INITIAL_STUDIO_SYNC_REASON || (session.connectionState !== "ready" && session.truthSource === "studio")) {
         this.markSessionReady(session, reason);
       }
@@ -1557,7 +2057,11 @@ class PluginRobloxApp {
       throw new Error(result.error || "Studio did not return a tree.");
     }
     if (result.snapshot) {
-      this.updateStudioSnapshot(sessionId, result.snapshot, "manual");
+      if (this.isSessionVersionBlocked(session)) {
+        this.cacheStudioSnapshot(session, result.snapshot, "manual_readonly");
+      } else {
+        this.updateStudioSnapshot(sessionId, result.snapshot, "manual");
+      }
     }
     return result.snapshot;
   }
@@ -1589,6 +2093,9 @@ class PluginRobloxApp {
 
   sessionSummary(session) {
     const project = this.getProjectById(session.projectId);
+    const sync = this.ensureSessionSyncState(session);
+    const version = this.sessionVersionStatus(session);
+    const syncBlockedReason = this.syncBlockedReason(session);
     return {
       id: session.id,
       projectId: session.projectId,
@@ -1597,6 +2104,13 @@ class PluginRobloxApp {
       connectionState: session.connectionState || "ready",
       truthSource: session.truthSource || null,
       studioInstanceId: session.studioInstanceId || null,
+      pluginVersion: session.pluginVersion || null,
+      pluginProtocolVersion: session.pluginProtocolVersion || null,
+      lastPluginVersionSeenAt: session.lastPluginVersionSeenAt || null,
+      versionState: version.state,
+      versionMessage: version.message,
+      requiresPluginUpdate: version.requiresPluginUpdate,
+      syncBlockedReason,
       projectSelectionReason: session.projectSelectionReason || null,
       projectSelectionMessage: session.projectSelectionMessage || null,
       placeId: session.placeId,
@@ -1604,7 +2118,120 @@ class PluginRobloxApp {
       lastStudioSeenAt: session.lastStudioSeenAt,
       lastAppliedAt: session.lastAppliedAt,
       pendingCommands: session.pendingCommands.length,
+      inFlightCommands: session.inFlightCommands.size,
+      syncState: sync.state,
+      syncMessage: this.syncMessage(session),
+      lastAckAt: sync.lastAckAt,
+      lastVerifiedAt: sync.lastVerifiedAt,
+      lastSyncError: sync.state === "degraded" ? (sync.degradedReason || sync.lastFailure?.message || null) : null,
+      requiresManualResync: sync.state === "degraded",
       lastCommandError: session.lastCommandError || null
+    };
+  }
+
+  doctorReport() {
+    const sessions = Array.from(this.sessions.values()).map((session) => this.sessionSummary(session));
+    const versions = this.versionPayload();
+    const mcp = mcpShieldSummary(this);
+    const errors = this.errorTracker.summary();
+    const activity = this.activityLog.summary();
+    const blockedReasons = [];
+    const warnings = [];
+
+    if (this.projects.length === 0) {
+      blockedReasons.push("No enabled .project.json was found in this workspace.");
+    }
+    if (versions.extension.state === "blocked") {
+      blockedReasons.push(versions.extension.message);
+    }
+    for (const session of sessions) {
+      if (session.requiresPluginUpdate) {
+        blockedReasons.push(`${session.projectName}: ${session.versionMessage}`);
+      }
+      if (session.requiresManualResync) {
+        blockedReasons.push(`${session.projectName}: ${session.lastSyncError || "Sync degraded."}`);
+      }
+    }
+
+    if (sessions.length === 0) {
+      warnings.push("No active Studio session is connected.");
+    }
+    if (mcp.state !== "ready") {
+      warnings.push(`MCP is ${mcp.state}: ${mcp.message}`);
+    }
+    if (errors.unresolved > 0 && blockedReasons.length === 0) {
+      warnings.push(`${errors.unresolved} unresolved diagnostic error(s) are recorded.`);
+    }
+
+    const status = blockedReasons.length > 0
+      ? "blocked"
+      : (warnings.length > 0 ? "warning" : "ok");
+    const recommendations = [];
+    if (sessions.some((session) => session.requiresPluginUpdate)) {
+      recommendations.push("Run Amarillo: Install Roblox Studio Plugin, then reload the plugin in Roblox Studio.");
+    }
+    if (sessions.some((session) => session.requiresManualResync)) {
+      recommendations.push("Run a manual resync after checking the sync paused message.");
+    }
+    if (this.projects.length === 0) {
+      recommendations.push("Create or select a valid .project.json for this workspace.");
+    }
+    if (mcp.state !== "ready") {
+      recommendations.push("Run Amarillo: Configure MCP for Workspace and reopen the AI/MCP client session.");
+    }
+    if (sessions.length === 0) {
+      recommendations.push("Open Roblox Studio and connect the Amarillo plugin.");
+    }
+    if (recommendations.length === 0) {
+      recommendations.push("No action required.");
+    }
+
+    return {
+      ok: status !== "blocked",
+      status,
+      generatedAt: new Date().toISOString(),
+      summary: {
+        message: status === "ok"
+          ? "Amarillo Doctor did not find blocking issues."
+          : (status === "blocked" ? "Amarillo Doctor found blocking issues." : "Amarillo Doctor found warnings."),
+        blockedReasons,
+        warnings,
+        projectCount: this.projects.length,
+        sessionCount: sessions.length,
+        syncBlockedSessionCount: sessions.filter((session) => session.syncBlockedReason).length,
+        unresolvedErrorCount: errors.unresolved
+      },
+      versions,
+      compatibility: {
+        protocolVersion: AMARILLO_PROTOCOL_VERSION,
+        extensionState: versions.extension.state,
+        blockedSessionIds: sessions.filter((session) => session.requiresPluginUpdate).map((session) => session.id)
+      },
+      workspace: {
+        root: this.workspaceRoot,
+        host: this.host,
+        port: this.port,
+        projectCount: this.projects.length,
+        defaultProjectId: this.defaultProjectId,
+        refreshedAt: this.lastWorkspaceRefresh
+      },
+      sessions,
+      sync: {
+        autoSyncToStudio: this.autoSyncToStudio,
+        lastDiskWriteTime: this.lastDiskWriteTime,
+        degradedSessionIds: sessions.filter((session) => session.requiresManualResync).map((session) => session.id),
+        blockedSessionIds: sessions.filter((session) => session.syncBlockedReason).map((session) => session.id)
+      },
+      mcp,
+      errors: {
+        ...errors,
+        lastErrorAt: recentTimestamp(errors.recent)
+      },
+      activity: {
+        ...activity,
+        lastActivityAt: recentTimestamp(activity.recent)
+      },
+      recommendations
     };
   }
 
@@ -1693,6 +2320,9 @@ class PluginRobloxApp {
 
   async handleHttp(request, response) {
     const requestUrl = new URL(request.url, `http://${request.headers.host || `${this.host}:${this.port}`}`);
+    if (request.headers["x-amarillo-mcp-proxy"]) {
+      this.recordMcpContact("proxy_http", { route: requestUrl.pathname });
+    }
     if (request.method === "OPTIONS") {
       jsonResponse(response, 204, { ok: true });
       return;
@@ -1704,6 +2334,7 @@ class PluginRobloxApp {
         workspaceRoot: this.workspaceRoot,
         host: this.host,
         port: this.port,
+        versions: this.versionPayload(),
         autoSyncToStudio: this.autoSyncToStudio,
         projectCount: this.projects.length,
         defaultProjectId: this.defaultProjectId,
@@ -1712,8 +2343,90 @@ class PluginRobloxApp {
           : null,
         connectionOffer: this.connectionOfferSummary(),
         sessions: Array.from(this.sessions.values()).map((session) => this.sessionSummary(session)),
+        mcpShield: mcpShieldSummary(this),
         refreshedAt: this.lastWorkspaceRefresh
       });
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/mcp/status") {
+      jsonResponse(response, 200, {
+        ok: true,
+        mcp: mcpShieldSummary(this)
+      });
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/doctor") {
+      jsonResponse(response, 200, this.doctorReport());
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/debug/mcp-state") {
+      jsonResponse(response, 200, {
+        ok: true,
+        timestamp: new Date().toISOString(),
+        mcp: mcpShieldSummary(this)
+      });
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/mcp/tools") {
+      const tools = listTools();
+      jsonResponse(response, 200, {
+        ok: true,
+        toolCount: tools.tools.length,
+        ...tools,
+        mcp: mcpShieldSummary(this)
+      });
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/mcp/probe") {
+      try {
+        const result = await handleMcpTool(this, "health", {}, { source: "http_probe" });
+        jsonResponse(response, 200, {
+          ok: true,
+          probe: "health",
+          mcp: mcpShieldSummary(this),
+          ...mcpToolResultToHttpPayload(result)
+        });
+      } catch (error) {
+        jsonResponse(response, 502, {
+          ok: false,
+          error: error.message,
+          mcp: mcpShieldSummary(this)
+        });
+      }
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/mcp/call") {
+      const body = await readJsonBody(request);
+      const toolName = String(body.name || body.tool || "");
+      if (!toolName) {
+        jsonResponse(response, 400, {
+          ok: false,
+          error: "Missing MCP tool name. Send { \"name\": \"health\", \"arguments\": {} }."
+        });
+        return;
+      }
+      try {
+        const result = await handleMcpTool(this, toolName, body.arguments || body.args || {}, { source: "http_fallback" });
+        jsonResponse(response, 200, {
+          ok: true,
+          name: toolName,
+          mcp: mcpShieldSummary(this),
+          ...mcpToolResultToHttpPayload(result)
+        });
+      } catch (error) {
+        jsonResponse(response, 502, {
+          ok: false,
+          name: toolName,
+          error: error.message,
+          mcp: mcpShieldSummary(this)
+        });
+      }
       return;
     }
 
@@ -1757,6 +2470,7 @@ class PluginRobloxApp {
 
       if (session) {
         const project = this.getProjectById(session.projectId);
+        const sync = this.ensureSessionSyncState(session);
         jsonResponse(response, 200, {
           ok: true,
           mode: "single_session",
@@ -1768,6 +2482,15 @@ class PluginRobloxApp {
             placeId: session.placeId,
             connectionState: session.connectionState || "ready",
             truthSource: session.truthSource || null,
+            syncState: sync.state,
+            syncMessage: this.syncMessage(session),
+            lastAckAt: sync.lastAckAt,
+            lastVerifiedAt: sync.lastVerifiedAt,
+            lastFailure: sync.lastFailure,
+            lastExpectedHash: sync.lastExpectedHash,
+            lastObservedHash: sync.lastObservedHash,
+            degradedReason: sync.degradedReason,
+            requiresManualResync: sync.state === "degraded",
             lastStudioContactAt: session.lastStudioContactAt,
             lastStudioSeenAt: session.lastStudioSeenAt,
             lastAppliedAt: session.lastAppliedAt,
@@ -1775,8 +2498,17 @@ class PluginRobloxApp {
             hasSnapshot: !!session.lastStudioSnapshot,
             snapshotSize: session.lastStudioSnapshot ? JSON.stringify(session.lastStudioSnapshot).length : 0,
             pendingCommandCount: session.pendingCommands.length,
-            pendingCommands: session.pendingCommands.map(c => ({ id: c.id, type: c.type })),
+            pendingCommands: session.pendingCommands.map(c => ({
+              id: c.id,
+              type: c.type,
+              expectedHash: c.expectedHash || null
+            })),
             inFlightCommandCount: session.inFlightCommands.size,
+            inFlightCommands: Array.from(session.inFlightCommands.values()).map(c => ({
+              id: c.id,
+              type: c.type,
+              expectedHash: c.expectedHash || null
+            })),
             fileChangeTimerActive: !!session.fileChangeTimer
           },
           lastDiskWriteTime: this.lastDiskWriteTime,
@@ -1800,11 +2532,21 @@ class PluginRobloxApp {
         },
         sessions: Array.from(this.sessions.values()).map((session) => {
           const project = this.getProjectById(session.projectId);
+          const sync = this.ensureSessionSyncState(session);
           return {
             id: session.id,
             projectId: session.projectId,
             projectName: project ? project.name : "unknown",
             placeId: session.placeId,
+            syncState: sync.state,
+            syncMessage: this.syncMessage(session),
+            lastAckAt: sync.lastAckAt,
+            lastVerifiedAt: sync.lastVerifiedAt,
+            lastFailure: sync.lastFailure,
+            lastExpectedHash: sync.lastExpectedHash,
+            lastObservedHash: sync.lastObservedHash,
+            degradedReason: sync.degradedReason,
+            requiresManualResync: sync.state === "degraded",
             lastStudioContactAt: session.lastStudioContactAt,
             lastStudioSeenAt: session.lastStudioSeenAt,
             lastAppliedAt: session.lastAppliedAt,
@@ -1841,7 +2583,10 @@ class PluginRobloxApp {
         studioInstanceId: body.studioInstanceId || null,
         placeId: body.placeId || 0,
         projectId: body.projectId || null,
-        truthSource: body.truthSource || "pc"
+        truthSource: body.truthSource || "pc",
+        pluginVersion: body.pluginVersion || null,
+        pluginProtocolVersion: body.pluginProtocolVersion || null,
+        requirePluginVersion: true
       });
       if (!result.ok) {
         jsonResponse(response, 409, result);
@@ -1880,7 +2625,10 @@ class PluginRobloxApp {
       const { session, project } = this.openSession(body.placeId || 0, body.projectId || null, {
         studioInstanceId: body.studioInstanceId || null,
         truthSource: body.truthSource || null,
-        connectionState: body.connectionState || "ready"
+        connectionState: body.connectionState || "ready",
+        pluginVersion: body.pluginVersion || null,
+        pluginProtocolVersion: body.pluginProtocolVersion || null,
+        requirePluginVersion: body.requirePluginVersion === true
       });
       jsonResponse(response, 200, {
         ok: true,
@@ -1916,6 +2664,10 @@ class PluginRobloxApp {
         jsonResponse(response, 404, { ok: false, error: "Session not found." });
         return;
       }
+      this.updateSessionPluginVersion(session, {
+        pluginVersion: requestUrl.searchParams.get("pluginVersion"),
+        pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion")
+      });
       this.markStudioSessionContact(session);
 
       // If commands are already pending, respond immediately
@@ -1962,7 +2714,9 @@ class PluginRobloxApp {
 
     if (request.method === "POST" && requestUrl.pathname === "/studio/complete") {
       const body = await readJsonBody(request);
-      this.markStudioSessionContact(this.sessions.get(body.sessionId));
+      const session = this.sessions.get(body.sessionId);
+      this.updateSessionPluginVersion(session, body);
+      this.markStudioSessionContact(session);
       if (body.ok) {
         this.completeCommand(body.sessionId, body.commandId, body);
       } else {
@@ -1974,7 +2728,17 @@ class PluginRobloxApp {
 
     if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
       const body = await readJsonBody(request);
-      this.markStudioSessionContact(this.sessions.get(body.sessionId));
+      const session = this.sessions.get(body.sessionId);
+      this.updateSessionPluginVersion(session, body);
+      this.markStudioSessionContact(session);
+      if (session && this.isSessionVersionBlocked(session)) {
+        jsonResponse(response, 409, {
+          ok: false,
+          error: this.syncBlockedReason(session),
+          session: this.sessionSummary(session)
+        });
+        return;
+      }
       this.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto");
       jsonResponse(response, 200, { ok: true });
       return;
@@ -1988,7 +2752,16 @@ class PluginRobloxApp {
         jsonResponse(response, 404, { ok: false, error: "Session not found." });
         return;
       }
+      this.updateSessionPluginVersion(session, body);
       this.markStudioSessionContact(session);
+      if (this.isSessionVersionBlocked(session)) {
+        jsonResponse(response, 409, {
+          ok: false,
+          error: this.syncBlockedReason(session),
+          session: this.sessionSummary(session)
+        });
+        return;
+      }
       const project = this.getProjectById(session.projectId);
       if (!project) {
         jsonResponse(response, 404, { ok: false, error: "Project not found." });
@@ -2026,7 +2799,7 @@ class PluginRobloxApp {
       return;
     }
 
-    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance)$/);
+    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance)$/);
     if (sessionActionMatch) {
       const [, sessionId, action] = sessionActionMatch;
       const session = this.sessions.get(sessionId);
@@ -2049,6 +2822,11 @@ class PluginRobloxApp {
       }
 
       if (request.method === "POST" && action === "pull") {
+        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
+        if (blockedReason) {
+          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
+          return;
+        }
         const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
           project: readLocalProjectState(project, this.projectReadOptions(session)),
           reason: "manual_pull"
@@ -2058,11 +2836,50 @@ class PluginRobloxApp {
       }
 
       if (request.method === "POST" && action === "push") {
+        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
+        if (blockedReason) {
+          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
+          return;
+        }
         const snapshot = await this.requestStudioTree(sessionId);
         jsonResponse(response, 200, {
           ok: true,
           snapshot,
           snapshotHash: session.lastStudioHash
+        });
+        return;
+      }
+
+      if (request.method === "POST" && action === "resync") {
+        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
+        if (blockedReason) {
+          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
+          return;
+        }
+        const body = await readJsonBody(request);
+        const direction = body.direction === "studio_to_pc" || body.direction === "push"
+          ? "studio_to_pc"
+          : "pc_to_studio";
+        if (direction === "studio_to_pc") {
+          const snapshot = await this.requestStudioTree(sessionId);
+          this.markSyncVerified(session, session.lastStudioHash);
+          jsonResponse(response, 200, {
+            ok: true,
+            direction,
+            snapshotHash: session.lastStudioHash,
+            snapshot
+          });
+          return;
+        }
+        const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
+          project: readLocalProjectState(project, this.projectReadOptions(session)),
+          reason: "manual_resync"
+        }, true);
+        jsonResponse(response, 200, {
+          ok: true,
+          direction,
+          result,
+          sync: this.ensureSessionSyncState(session)
         });
         return;
       }

@@ -9,6 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
+const { TOOL_DEFINITIONS } = require("../src/daemon/mcp-tools");
 
 function createTempWorkspace() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-proxy-"));
@@ -95,6 +96,17 @@ function toolText(result) {
   assert.equal(result.content[0].type, "text");
   return JSON.parse(result.content[0].text);
 }
+
+test("advertised MCP tools are implemented by the daemon and proxy handlers", () => {
+  const proxySource = fs.readFileSync(path.join(__dirname, "..", "src", "mcp-proxy", "index.js"), "utf8");
+  const daemonSource = fs.readFileSync(path.join(__dirname, "..", "src", "daemon", "mcp.js"), "utf8");
+
+  for (const tool of TOOL_DEFINITIONS) {
+    const matcher = new RegExp(`case "${tool.name}"`);
+    assert.match(proxySource, matcher, `${tool.name} missing from MCP proxy`);
+    assert.match(daemonSource, matcher, `${tool.name} missing from daemon MCP server`);
+  }
+});
 
 test("mcp proxy answers initialize, tools/list and health through HTTP", async () => {
   const workspace = createTempWorkspace();
@@ -229,6 +241,21 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
       return;
     }
 
+    if (request.method === "POST" && request.url === "/session/open") {
+      writeJson(response, 200, {
+        ok: true,
+        session: {
+          id: "session-1",
+          projectName: "ExampleGame"
+        },
+        project: {
+          id: "ExampleGame.project.json",
+          name: "ExampleGame"
+        }
+      });
+      return;
+    }
+
     if (request.method === "GET" && request.url === "/session/session-1/tree") {
       writeJson(response, 200, {
         ok: true,
@@ -288,6 +315,20 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
     });
     assert.equal(toolText(setProject.result).name, "ExampleGame");
 
+    const connectSession = await client.request({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "tools/call",
+      params: {
+        name: "connect_session",
+        arguments: {
+          projectId: "ExampleGame.project.json",
+          placeId: 123
+        }
+      }
+    });
+    assert.equal(toolText(connectSession.result).sessionId, "session-1");
+
     const tree = await client.request({
       jsonrpc: "2.0",
       id: 3,
@@ -340,6 +381,16 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
         url: "/project/active",
         body: {
           projectId: "ExampleGame.project.json"
+        }
+      },
+      {
+        method: "POST",
+        url: "/session/open",
+        body: {
+          projectId: "ExampleGame.project.json",
+          placeId: 123,
+          connectionState: "ready",
+          truthSource: "pc"
         }
       },
       {
