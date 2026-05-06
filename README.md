@@ -112,7 +112,7 @@ Available tools:
 
 - read and sync: `health`, `list_projects`, `set_active_project`, `get_tree`, `get_selection`, `inspect_instance`, `run_code`, `push_changes`, `pull_changes`, `start_playtest`, `stop_playtest`
 - introspection: `get_properties`, `get_descendants`, `search_instances`, `get_services`, `get_instance_info`, `get_output_log`
-- destructive operations: `modify_property`, `create_instance`, `delete_instance`
+- destructive operations: `modify_property`, `create_instance`, `delete_instance`, `insert_model`
 
 ## Tests
 
@@ -135,6 +135,7 @@ The final file will be created in `dist/`.
 - `node --test` should stay green
 - the HTTP daemon responds on `127.0.0.1:8323`
 - MCP responds to `initialize` and `tools/list`
+- destructive MCP operations can be blocked by session health or require explicit `Accept` / `Decline` in the Roblox plugin
 - final validation for `push/pull`, `run_code`, and introspection still depends on a real connected Roblox Studio session
 
 ## Notes
@@ -142,4 +143,5 @@ The final file will be created in `dist/`.
 - The project is still `Windows-first`.
 - The Studio plugin remains a single file to make installation and reload simpler.
 - Property sync is still extensible for new `className`s and serialized types.
-- `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed and inherited, but are not yet enforced by the Studio-to-disk writer.
+- `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed, inherited, and enforced by the Studio-to-disk writer.
+- Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).

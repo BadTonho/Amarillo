@@ -1,6 +1,6 @@
 "use strict";
 
-const DAEMON_VERSION = "0.1.0";
+const DAEMON_VERSION = "1.0.17";
 const AMARILLO_PROTOCOL_VERSION = 1;
 
 function normalizeVersion(value) {

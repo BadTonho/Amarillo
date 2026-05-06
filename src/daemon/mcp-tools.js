@@ -344,7 +344,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "insert_model",
-    description: "Inserts a model from the Roblox marketplace into the workspace. Returns the inserted model name.",
+    description: "Inserts the first free Roblox marketplace model that matches a query into Workspace. Destructive operation.",
     inputSchema: {
       type: "object",
       required: ["sessionId", "query"],
@@ -369,6 +369,44 @@ function listTools() {
       inputSchema: tool.inputSchema
     }))
   };
+}
+
+const TOOL_DEFINITION_BY_NAME = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+
+function validateToolArguments(name, args = {}) {
+  const tool = TOOL_DEFINITION_BY_NAME.get(name);
+  if (!tool) {
+    throw new Error(`Unsupported MCP tool: ${name}`);
+  }
+  const schema = tool.inputSchema || {};
+  const properties = schema.properties || {};
+  const required = Array.isArray(schema.required) ? schema.required : [];
+
+  for (const key of required) {
+    if (args[key] === undefined || args[key] === null || args[key] === "") {
+      throw new Error(`Missing required argument '${key}' for MCP tool '${name}'.`);
+    }
+  }
+
+  for (const [key, definition] of Object.entries(properties)) {
+    if (args[key] === undefined || args[key] === null || definition.type === undefined) {
+      continue;
+    }
+    if (definition.type === "number" && typeof args[key] !== "number") {
+      throw new Error(`Argument '${key}' for MCP tool '${name}' must be a number.`);
+    }
+    if (definition.type === "string" && typeof args[key] !== "string") {
+      throw new Error(`Argument '${key}' for MCP tool '${name}' must be a string.`);
+    }
+    if (definition.type === "object" && (typeof args[key] !== "object" || Array.isArray(args[key]))) {
+      throw new Error(`Argument '${key}' for MCP tool '${name}' must be an object.`);
+    }
+    if (Array.isArray(definition.enum) && !definition.enum.includes(args[key])) {
+      throw new Error(`Argument '${key}' for MCP tool '${name}' must be one of: ${definition.enum.join(", ")}.`);
+    }
+  }
+
+  return args;
 }
 
 function luaLongString(value) {
@@ -454,5 +492,6 @@ module.exports = {
   TOOL_DEFINITIONS,
   buildInsertModelLua,
   findNodeByPath,
-  listTools
+  listTools,
+  validateToolArguments
 };

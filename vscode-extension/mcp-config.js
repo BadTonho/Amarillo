@@ -8,20 +8,24 @@ const { isDeepStrictEqual } = require("node:util");
 const MCP_FILE_NAME = "mcp.json";
 
 function buildWorkspaceMcpConfig(options) {
+  const args = [
+    options.proxyEntry,
+    "--workspace",
+    options.workspaceRoot,
+    "--host",
+    options.host,
+    "--port",
+    String(options.port)
+  ];
+  if (options.bridgeToken) {
+    args.push("--bridge-token", options.bridgeToken);
+  }
   return {
     servers: {
       amarillo: {
         type: "stdio",
         command: "node",
-        args: [
-          options.proxyEntry,
-          "--workspace",
-          options.workspaceRoot,
-          "--host",
-          options.host,
-          "--port",
-          String(options.port)
-        ]
+        args
       }
     }
   };
@@ -61,7 +65,8 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
     workspaceRoot,
     proxyEntry: options.proxyEntry,
     host: options.host,
-    port: options.port
+    port: options.port,
+    bridgeToken: options.bridgeToken
   });
   const fileContents = `${JSON.stringify(config, null, 2)}\n`;
 

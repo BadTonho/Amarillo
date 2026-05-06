@@ -36,4 +36,20 @@ test("VS Code Doctor command calls /doctor and daemon receives extension protoco
   assert.match(extensionSource, /amarillo\.doctor/);
   assert.match(extensionSource, /--extension-version/);
   assert.match(extensionSource, /--extension-protocol/);
+  assert.match(extensionSource, /--bridge-token/);
+  assert.match(extensionSource, /X-Amarillo-Bridge-Token/);
+});
+
+test("sidebar source models fallback-only, plugin stale, version mismatch, and sync paused alerts", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /Native MCP not detected\. HTTP fallback is available/);
+  assert.match(extensionSource, /Plugin stale/);
+  assert.match(extensionSource, /Contact delayed/);
+  assert.match(extensionSource, /Plugin update required/);
+  assert.match(extensionSource, /sync paused/);
+  assert.match(extensionSource, /Destructive MCP actions are blocked/);
 });

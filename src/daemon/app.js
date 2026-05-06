@@ -16,7 +16,23 @@ const {
 } = require("./project");
 const { ErrorTracker } = require("./lib/error-tracker");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
+const { McpAuditLog } = require("./lib/mcp-audit-log");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
+const { handleConnectionRoutes } = require("./routes/connection");
+const { handleDiagnosticsRoutes } = require("./routes/diagnostics");
+const { handleMcpRoutes } = require("./routes/mcp");
+const { handleSessionRoutes } = require("./routes/session");
+const { handleStudioRoutes } = require("./routes/studio");
+const {
+  BRIDGE_TOKEN_HEADER,
+  HttpError,
+  SESSION_TOKEN_HEADER,
+  errorResponse,
+  jsonResponse,
+  normalizeToken,
+  readJsonBody,
+  timingSafeEqualString
+} = require("./http-utils");
 const { handleTool: handleMcpTool } = require("./mcp");
 const {
   createMcpShieldState,
@@ -30,27 +46,6 @@ const {
   normalizeProtocolVersion,
   normalizeVersion
 } = require("./version");
-
-function jsonResponse(response, statusCode, payload) {
-  response.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  });
-  response.end(JSON.stringify(payload));
-}
-
-async function readJsonBody(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-  if (chunks.length === 0) {
-    return {};
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-}
 
 // OPT-001/002: Simplified hash — direct JSON.stringify with sorted keys
 function hashSnapshot(snapshot) {
@@ -102,8 +97,11 @@ const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
 const INITIAL_PC_SYNC_REASON = "initial_pc_truth";
 const INITIAL_STUDIO_CONTACT_GRACE_MS = 5000;
 const STUDIO_SESSION_STALE_MS = 30000;
+const STUDIO_CONTACT_STALE_WARNING_MS = 35000;
+const STUDIO_CONTACT_CRITICAL_MS = 65000;
 const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
+const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
 
 function createSyncState() {
   return {
@@ -119,6 +117,10 @@ function createSyncState() {
 
 function isSyncCommandType(type) {
   return SYNC_COMMAND_TYPES.has(type);
+}
+
+function isDestructiveActionType(type) {
+  return DESTRUCTIVE_ACTION_TYPES.has(type);
 }
 
 function normalizeFsPath(filePath) {
@@ -153,6 +155,19 @@ function coerceBoolean(value, fallback) {
     }
   }
   return fallback;
+}
+
+function formatElapsedMs(value) {
+  if (!Number.isFinite(value) || value < 0) {
+    return "0s";
+  }
+  const totalSeconds = Math.round(value / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
 }
 
 function segmentsHavePrefix(segments, prefix) {
@@ -247,6 +262,7 @@ class PluginRobloxApp {
     this.port = Number(options.port || 8323);
     this.autoSyncToStudioExplicit = options.autoSyncToStudio !== undefined;
     this.autoSyncToStudio = coerceBoolean(options.autoSyncToStudio, DEFAULT_AUTO_SYNC_TO_STUDIO);
+    this.bridgeToken = normalizeToken(options.bridgeToken || process.env.AMARILLO_BRIDGE_TOKEN || null);
     this.extensionVersion = normalizeVersion(options.extensionVersion);
     this.extensionProtocolVersion = normalizeProtocolVersion(options.extensionProtocolVersion);
     this.initialStudioContactGraceMs = Number(options.initialStudioContactGraceMs) > 0
@@ -278,8 +294,71 @@ class PluginRobloxApp {
     this.activityLog = new ActivityLog({
       workspaceRoot: this.workspaceRoot
     });
+    this.mcpAuditLog = new McpAuditLog({
+      workspaceRoot: this.workspaceRoot
+    });
     this.activityFileState = new Map();
     this.mcpShield = createMcpShieldState();
+  }
+
+  createSessionToken() {
+    return crypto.randomBytes(24).toString("hex");
+  }
+
+  isBridgeRequestAuthorized(request) {
+    if (!this.bridgeToken) {
+      return true;
+    }
+    return timingSafeEqualString(request.headers?.[BRIDGE_TOKEN_HEADER], this.bridgeToken);
+  }
+
+  isSessionRequestAuthorized(request, session = null) {
+    if (!this.bridgeToken) {
+      return true;
+    }
+    if (this.isBridgeRequestAuthorized(request)) {
+      return true;
+    }
+    const token = normalizeToken(request.headers?.[SESSION_TOKEN_HEADER]);
+    if (!token) {
+      return false;
+    }
+    if (session) {
+      return timingSafeEqualString(token, session.sessionToken);
+    }
+    return Array.from(this.sessions.values()).some((candidate) => timingSafeEqualString(token, candidate.sessionToken));
+  }
+
+  isPublicHttpRoute(request, requestUrl) {
+    if (request.method === "GET" && requestUrl.pathname === "/health") {
+      return true;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/projects") {
+      return true;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/studio/poll" && !requestUrl.searchParams.get("sessionId")) {
+      return true;
+    }
+    if (request.method === "POST" && (
+      requestUrl.pathname === "/connection/accept"
+      || requestUrl.pathname === "/connection/decline"
+    )) {
+      return true;
+    }
+    return false;
+  }
+
+  authorizeHttpRequest(request, requestUrl) {
+    if (!this.bridgeToken || this.isPublicHttpRoute(request, requestUrl)) {
+      return true;
+    }
+    if (requestUrl.pathname.startsWith("/studio/")) {
+      return this.isSessionRequestAuthorized(request);
+    }
+    if (requestUrl.pathname === "/errors/add") {
+      return this.isBridgeRequestAuthorized(request) || this.isSessionRequestAuthorized(request);
+    }
+    return this.isBridgeRequestAuthorized(request);
   }
 
   async start() {
@@ -499,6 +578,111 @@ class PluginRobloxApp {
     return this.sessionVersionStatus(session).state === "blocked";
   }
 
+  studioContactStatus(session) {
+    const lastContactAt = this.studioSessionLastContactAt(session) || session?.createdAt || null;
+    if (!lastContactAt) {
+      return {
+        state: "unknown",
+        ageMs: null,
+        lastContactAt: null,
+        message: "Studio plugin contact time is not available yet."
+      };
+    }
+    const lastContactMs = parseTimestampMs(lastContactAt);
+    if (lastContactMs === null) {
+      return {
+        state: "unknown",
+        ageMs: null,
+        lastContactAt,
+        message: "Studio plugin contact time is invalid."
+      };
+    }
+    const ageMs = Math.max(0, Date.now() - lastContactMs);
+    const ageLabel = formatElapsedMs(ageMs);
+    if (ageMs > STUDIO_CONTACT_CRITICAL_MS) {
+      return {
+        state: "critical",
+        ageMs,
+        lastContactAt,
+        message: `Studio plugin has not contacted the daemon for ${ageLabel}.`
+      };
+    }
+    if (ageMs > STUDIO_CONTACT_STALE_WARNING_MS) {
+      return {
+        state: "stale",
+        ageMs,
+        lastContactAt,
+        message: `Studio plugin last contacted the daemon ${ageLabel} ago.`
+      };
+    }
+    return {
+      state: "fresh",
+      ageMs,
+      lastContactAt,
+      message: `Studio plugin last contacted the daemon ${ageLabel} ago.`
+    };
+  }
+
+  destructiveActionPolicy(session, action = "destructive action") {
+    if (!session) {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "SESSION_NOT_FOUND",
+        message: `${action} blocked: Studio session not found.`
+      };
+    }
+    if ((session.connectionState || "ready") !== "ready") {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "SESSION_NOT_READY",
+        message: `${action} blocked: the Studio session is not ready yet.`
+      };
+    }
+    const version = this.sessionVersionStatus(session);
+    if (version.state === "blocked") {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "PLUGIN_UPDATE_REQUIRED",
+        message: `${action} blocked: ${version.message}`
+      };
+    }
+    const sync = this.ensureSessionSyncState(session);
+    if (sync.state === "degraded") {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "SYNC_DEGRADED",
+        message: `${action} blocked: ${sync.degradedReason || sync.lastFailure?.message || "Sync verification failed."}`
+      };
+    }
+    const contact = this.studioContactStatus(session);
+    if (contact.state === "critical") {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "STUDIO_CONTACT_CRITICAL",
+        message: `${action} blocked: ${contact.message} Wait for Roblox Studio to reconnect before applying destructive changes.`
+      };
+    }
+    if (contact.state === "stale") {
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "STUDIO_CONTACT_STALE",
+        message: `${action} blocked: ${contact.message} Wait for a fresh Studio poll before applying destructive changes.`
+      };
+    }
+    return {
+      allowed: true,
+      blocked: false,
+      reasonCode: null,
+      message: "Destructive actions are allowed."
+    };
+  }
+
   syncBlockedReason(session) {
     const version = this.sessionVersionStatus(session);
     if (version.state === "blocked") {
@@ -519,6 +703,10 @@ class PluginRobloxApp {
       error.code = "SYNC-BLOCKED";
       throw error;
     }
+  }
+
+  recordMcpAudit(entry = {}) {
+    return this.mcpAuditLog.add(entry);
   }
 
   refreshWorkspace() {
@@ -1326,6 +1514,9 @@ class PluginRobloxApp {
         if (options.studioInstanceId) {
           existing.studioInstanceId = options.studioInstanceId;
         }
+        if (!existing.sessionToken) {
+          existing.sessionToken = this.createSessionToken();
+        }
         if (options.requirePluginVersion === true) {
           existing.requirePluginVersion = true;
         }
@@ -1338,6 +1529,7 @@ class PluginRobloxApp {
     }
     const session = {
       id: crypto.randomUUID(),
+      sessionToken: this.createSessionToken(),
       placeId: Number(placeId || 0),
       projectId: project.id,
       createdAt: new Date().toISOString(),
@@ -2082,6 +2274,48 @@ class PluginRobloxApp {
     return result;
   }
 
+  normalizeDestructiveCommandResult(session, result = {}) {
+    const normalized = result && typeof result === "object"
+      ? { ...result }
+      : {
+        ok: false,
+        error: String(result || "Unknown destructive command result.")
+      };
+    normalized.blocked = normalized.blocked === true;
+    normalized.declined = normalized.declined === true;
+    normalized.confirmed = normalized.confirmed === true
+      || (normalized.ok === true && !normalized.blocked && !normalized.declined);
+    normalized.reasonCode = normalized.reasonCode || (normalized.declined ? "DECLINED_BY_USER" : null);
+    if (session?.id && !normalized.sessionId) {
+      normalized.sessionId = session.id;
+    }
+    return normalized;
+  }
+
+  async enqueueDestructiveCommand(sessionId, type, payload) {
+    if (!isDestructiveActionType(type)) {
+      throw new Error(`Unsupported destructive command: ${type}`);
+    }
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error("Studio session not found.");
+    }
+    const policy = this.destructiveActionPolicy(session, type);
+    if (!policy.allowed) {
+      return {
+        ok: false,
+        error: policy.message,
+        blocked: true,
+        declined: false,
+        confirmed: false,
+        reasonCode: policy.reasonCode,
+        sessionId: session.id
+      };
+    }
+    const result = await this.enqueueCommand(sessionId, type, payload, true);
+    return this.normalizeDestructiveCommandResult(session, result);
+  }
+
   async setActiveProject(projectId) {
     const project = this.getProjectById(projectId);
     if (!project || project.abstract === true || project.enabled === false) {
@@ -2091,13 +2325,16 @@ class PluginRobloxApp {
     return project;
   }
 
-  sessionSummary(session) {
+  sessionSummary(session, options = {}) {
     const project = this.getProjectById(session.projectId);
     const sync = this.ensureSessionSyncState(session);
     const version = this.sessionVersionStatus(session);
     const syncBlockedReason = this.syncBlockedReason(session);
+    const contact = this.studioContactStatus(session);
+    const destructive = this.destructiveActionPolicy(session);
     return {
       id: session.id,
+      ...(options.includeSessionToken ? { sessionToken: session.sessionToken || null } : {}),
       projectId: session.projectId,
       projectName: project ? project.name : session.projectId,
       projectPath: project ? path.relative(this.workspaceRoot, project.projectPath).replace(/\\/g, "/") : null,
@@ -2116,6 +2353,9 @@ class PluginRobloxApp {
       placeId: session.placeId,
       lastStudioContactAt: session.lastStudioContactAt,
       lastStudioSeenAt: session.lastStudioSeenAt,
+      studioContactState: contact.state,
+      studioContactAgeMs: contact.ageMs,
+      studioContactMessage: contact.message,
       lastAppliedAt: session.lastAppliedAt,
       pendingCommands: session.pendingCommands.length,
       inFlightCommands: session.inFlightCommands.size,
@@ -2125,7 +2365,10 @@ class PluginRobloxApp {
       lastVerifiedAt: sync.lastVerifiedAt,
       lastSyncError: sync.state === "degraded" ? (sync.degradedReason || sync.lastFailure?.message || null) : null,
       requiresManualResync: sync.state === "degraded",
-      lastCommandError: session.lastCommandError || null
+      lastCommandError: session.lastCommandError || null,
+      destructiveActionsAllowed: destructive.allowed,
+      destructiveActionReasonCode: destructive.reasonCode,
+      destructiveActionMessage: destructive.allowed ? null : destructive.message
     };
   }
 
@@ -2135,6 +2378,7 @@ class PluginRobloxApp {
     const mcp = mcpShieldSummary(this);
     const errors = this.errorTracker.summary();
     const activity = this.activityLog.summary();
+    const mcpAudit = this.mcpAuditLog.summary();
     const blockedReasons = [];
     const warnings = [];
 
@@ -2150,6 +2394,9 @@ class PluginRobloxApp {
       }
       if (session.requiresManualResync) {
         blockedReasons.push(`${session.projectName}: ${session.lastSyncError || "Sync degraded."}`);
+      }
+      if (session.studioContactState === "stale" || session.studioContactState === "critical") {
+        warnings.push(`${session.projectName}: ${session.studioContactMessage}`);
       }
     }
 
@@ -2199,7 +2446,8 @@ class PluginRobloxApp {
         projectCount: this.projects.length,
         sessionCount: sessions.length,
         syncBlockedSessionCount: sessions.filter((session) => session.syncBlockedReason).length,
-        unresolvedErrorCount: errors.unresolved
+        unresolvedErrorCount: errors.unresolved,
+        mcpAuditCount: mcpAudit.total
       },
       versions,
       compatibility: {
@@ -2230,6 +2478,11 @@ class PluginRobloxApp {
       activity: {
         ...activity,
         lastActivityAt: recentTimestamp(activity.recent)
+      },
+      mcpAudit: {
+        ...mcpAudit,
+        lastToolAt: mcpAudit.lastTool?.timestamp || null,
+        lastFailureOrDeclineAt: mcpAudit.lastFailureOrDecline?.timestamp || null
       },
       recommendations
     };
@@ -2319,13 +2572,33 @@ class PluginRobloxApp {
   }
 
   async handleHttp(request, response) {
+    try {
     const requestUrl = new URL(request.url, `http://${request.headers.host || `${this.host}:${this.port}`}`);
     if (request.headers["x-amarillo-mcp-proxy"]) {
       this.recordMcpContact("proxy_http", { route: requestUrl.pathname });
     }
     if (request.method === "OPTIONS") {
-      jsonResponse(response, 204, { ok: true });
+      jsonResponse(response, 204, { ok: true }, request);
       return;
+    }
+    if (!this.authorizeHttpRequest(request, requestUrl)) {
+      jsonResponse(response, 401, {
+        ok: false,
+        code: "UNAUTHORIZED",
+        error: "Missing or invalid Amarillo authorization token."
+      }, request);
+      return;
+    }
+    for (const routeHandler of [
+      handleDiagnosticsRoutes,
+      handleMcpRoutes,
+      handleConnectionRoutes,
+      handleStudioRoutes,
+      handleSessionRoutes
+    ]) {
+      if (await routeHandler(this, request, response, requestUrl)) {
+        return;
+      }
     }
 
     if (request.method === "GET" && requestUrl.pathname === "/health") {
@@ -2412,7 +2685,8 @@ class PluginRobloxApp {
         return;
       }
       try {
-        const result = await handleMcpTool(this, toolName, body.arguments || body.args || {}, { source: "http_fallback" });
+        const source = request.headers["x-amarillo-mcp-proxy"] ? "proxy_http" : "http_fallback";
+        const result = await handleMcpTool(this, toolName, body.arguments || body.args || {}, { source });
         jsonResponse(response, 200, {
           ok: true,
           name: toolName,
@@ -2595,7 +2869,7 @@ class PluginRobloxApp {
       jsonResponse(response, 200, {
         ok: true,
         offer: result.offer,
-        session: this.sessionSummary(result.session),
+        session: this.sessionSummary(result.session, { includeSessionToken: true }),
         project: this.projectPayload(result.project)
       });
       return;
@@ -2608,8 +2882,7 @@ class PluginRobloxApp {
         jsonResponse(response, 404, { ok: false, error: "Project not found" });
         return;
       }
-      const { readLocalProjectState } = require('./project');
-      const pcSnapshot = readLocalProjectState(project);
+      const pcSnapshot = await readLocalProjectStateAsync(project);
       const studioSnapshot = body.studioSnapshot || { mounts: [] };
       const changes = this.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
       
@@ -2632,7 +2905,7 @@ class PluginRobloxApp {
       });
       jsonResponse(response, 200, {
         ok: true,
-        session: this.sessionSummary(session),
+        session: this.sessionSummary(session, { includeSessionToken: true }),
         project: this.projectPayload(project)
       });
       return;
@@ -2662,6 +2935,10 @@ class PluginRobloxApp {
       const session = this.sessions.get(sessionId);
       if (!session) {
         jsonResponse(response, 404, { ok: false, error: "Session not found." });
+        return;
+      }
+      if (!this.isSessionRequestAuthorized(request, session)) {
+        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
         return;
       }
       this.updateSessionPluginVersion(session, {
@@ -2715,6 +2992,10 @@ class PluginRobloxApp {
     if (request.method === "POST" && requestUrl.pathname === "/studio/complete") {
       const body = await readJsonBody(request);
       const session = this.sessions.get(body.sessionId);
+      if (session && !this.isSessionRequestAuthorized(request, session)) {
+        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
+        return;
+      }
       this.updateSessionPluginVersion(session, body);
       this.markStudioSessionContact(session);
       if (body.ok) {
@@ -2729,6 +3010,10 @@ class PluginRobloxApp {
     if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
       const body = await readJsonBody(request);
       const session = this.sessions.get(body.sessionId);
+      if (session && !this.isSessionRequestAuthorized(request, session)) {
+        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
+        return;
+      }
       this.updateSessionPluginVersion(session, body);
       this.markStudioSessionContact(session);
       if (session && this.isSessionVersionBlocked(session)) {
@@ -2750,6 +3035,10 @@ class PluginRobloxApp {
       const session = this.sessions.get(sessionId);
       if (!session) {
         jsonResponse(response, 404, { ok: false, error: "Session not found." });
+        return;
+      }
+      if (!this.isSessionRequestAuthorized(request, session)) {
+        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
         return;
       }
       this.updateSessionPluginVersion(session, body);
@@ -2799,7 +3088,7 @@ class PluginRobloxApp {
       return;
     }
 
-    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance)$/);
+    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance|insert-model)$/);
     if (sessionActionMatch) {
       const [, sessionId, action] = sessionActionMatch;
       const session = this.sessions.get(sessionId);
@@ -2828,7 +3117,7 @@ class PluginRobloxApp {
           return;
         }
         const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
-          project: readLocalProjectState(project, this.projectReadOptions(session)),
+          project: await readLocalProjectStateAsync(project, this.projectReadOptions(session)),
           reason: "manual_pull"
         }, true);
         jsonResponse(response, 200, { ok: true, result });
@@ -2872,7 +3161,7 @@ class PluginRobloxApp {
           return;
         }
         const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
-          project: readLocalProjectState(project, this.projectReadOptions(session)),
+          project: await readLocalProjectStateAsync(project, this.projectReadOptions(session)),
           reason: "manual_resync"
         }, true);
         jsonResponse(response, 200, {
@@ -2974,31 +3263,40 @@ class PluginRobloxApp {
 
       if (request.method === "POST" && action === "modify-property") {
         const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "modify_property", {
+        const result = await this.enqueueDestructiveCommand(sessionId, "modify_property", {
           path: body.path,
           property: body.property,
           value: body.value
-        }, true);
-        jsonResponse(response, 200, { ok: true, result });
+        });
+        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
         return;
       }
 
       if (request.method === "POST" && action === "create-instance") {
         const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "create_instance", {
+        const result = await this.enqueueDestructiveCommand(sessionId, "create_instance", {
           parentPath: body.parentPath,
           className: body.className,
           name: body.name || body.className,
           properties: body.properties || {}
-        }, true);
-        jsonResponse(response, 200, { ok: true, result });
+        });
+        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
         return;
       }
 
       if (request.method === "POST" && action === "delete-instance") {
         const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "delete_instance", { path: body.path }, true);
-        jsonResponse(response, 200, { ok: true, result });
+        const result = await this.enqueueDestructiveCommand(sessionId, "delete_instance", { path: body.path });
+        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
+        return;
+      }
+
+      if (request.method === "POST" && action === "insert-model") {
+        const body = await readJsonBody(request);
+        const result = await this.enqueueDestructiveCommand(sessionId, "insert_model", {
+          query: body.query
+        });
+        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
         return;
       }
     }
@@ -3099,6 +3397,13 @@ class PluginRobloxApp {
       ok: false,
       error: `Endpoint not found: ${request.method} ${requestUrl.pathname}`
     });
+    } catch (error) {
+      if (error instanceof HttpError) {
+        errorResponse(response, error, request);
+        return;
+      }
+      throw error;
+    }
   }
 }
 

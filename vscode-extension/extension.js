@@ -20,6 +20,10 @@ let sidebarHandshakeCycleKey = null;
 let sidebarStartPromptShown = false;
 let sidebarOfferRequested = false;
 let sidebarOfferRequestInFlight = false;
+let bridgeToken = null;
+let sidebarRefreshTimer = null;
+let sidebarRefreshInFlight = null;
+const projectFileCache = new Map();
 const AMARILLO_PROTOCOL_VERSION = 1;
 
 // ===== Logger with notification levels (Argon pattern) =====
@@ -76,6 +80,22 @@ function runtimePath(context, ...segments) {
 
 function extensionVersion(context = extensionContext) {
   return String(context?.extension?.packageJSON?.version || "unknown");
+}
+
+function getOrCreateBridgeToken(context = extensionContext) {
+  if (bridgeToken) {
+    return bridgeToken;
+  }
+  const existing = context?.workspaceState.get("amarillo.bridgeToken");
+  if (typeof existing === "string" && existing.length > 0) {
+    bridgeToken = existing;
+    return bridgeToken;
+  }
+  bridgeToken = crypto.randomBytes(24).toString("hex");
+  if (context) {
+    void context.workspaceState.update("amarillo.bridgeToken", bridgeToken);
+  }
+  return bridgeToken;
 }
 
 async function fileSha1(filePath) {
@@ -175,7 +195,7 @@ function workspaceDisplayName(workspaceRoot) {
   return path.basename(path.resolve(workspaceRoot)) || workspaceRoot;
 }
 
-function collectProjectFiles(rootDir, results = [], depth = 0) {
+function collectProjectFilesUncached(rootDir, results = [], depth = 0) {
   if (depth > 8) {
     return results;
   }
@@ -194,7 +214,7 @@ function collectProjectFiles(rootDir, results = [], depth = 0) {
 
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
-      collectProjectFiles(fullPath, results, depth + 1);
+      collectProjectFilesUncached(fullPath, results, depth + 1);
       continue;
     }
 
@@ -206,8 +226,49 @@ function collectProjectFiles(rootDir, results = [], depth = 0) {
   return results;
 }
 
+function collectProjectFiles(rootDir) {
+  const cacheKey = path.resolve(rootDir);
+  const cached = projectFileCache.get(cacheKey);
+  if (cached) {
+    return cached.slice();
+  }
+  const results = collectProjectFilesUncached(cacheKey);
+  projectFileCache.set(cacheKey, results.slice());
+  return results;
+}
+
+function invalidateProjectFileCache(workspaceRoot = null) {
+  if (!workspaceRoot) {
+    projectFileCache.clear();
+    return;
+  }
+  projectFileCache.delete(path.resolve(workspaceRoot));
+}
+
+function invalidateProjectFileCacheForEvents(events) {
+  if (!Array.isArray(events)) {
+    return;
+  }
+  const touchesProjectFile = events.some((event) => {
+    const candidates = [event?.path, event?.oldPath, event?.newPath, event?.uri, event?.oldUri, event?.newUri]
+      .filter((value) => typeof value === "string");
+    return candidates.some((filePath) => filePath.endsWith(".project.json"));
+  });
+  if (touchesProjectFile) {
+    try {
+      invalidateProjectFileCache(resolveWorkspaceRoot());
+    } catch (_error) {
+      invalidateProjectFileCache();
+    }
+  }
+}
+
 async function ensureWorkspaceHasProjects(workspaceRoot) {
-  return ensureWorkspaceProjectFile(workspaceRoot, collectProjectFiles);
+  const result = await ensureWorkspaceProjectFile(workspaceRoot, collectProjectFiles);
+  if (result.created) {
+    invalidateProjectFileCache(workspaceRoot);
+  }
+  return result;
 }
 
 async function ensurePluginConfig(workspaceRoot) {
@@ -298,7 +359,7 @@ function mcpStateLabel(mcpShield) {
     case "ready":
       return "Ready";
     case "fallback_ready":
-      return "Fallback ready";
+      return "Native missing; fallback ready";
     case "degraded":
       return "Needs attention";
     default:
@@ -316,6 +377,48 @@ function mcpStateTone(mcpShield) {
       return "danger";
     default:
       return "neutral";
+  }
+}
+
+function formatElapsedMs(value) {
+  if (!Number.isFinite(value) || value < 0) {
+    return "0s";
+  }
+  const totalSeconds = Math.round(value / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+}
+
+function studioContactTone(session) {
+  switch (session?.studioContactState) {
+    case "critical":
+      return "danger";
+    case "stale":
+      return "warning";
+    case "fresh":
+      return "success";
+    default:
+      return "neutral";
+  }
+}
+
+function studioContactLabel(session) {
+  const ageLabel = session?.studioContactAgeMs === null || session?.studioContactAgeMs === undefined
+    ? "unknown"
+    : formatElapsedMs(session.studioContactAgeMs);
+  switch (session?.studioContactState) {
+    case "critical":
+      return `No contact for ${ageLabel}`;
+    case "stale":
+      return `Delayed ${ageLabel}`;
+    case "fresh":
+      return `Fresh ${ageLabel}`;
+    default:
+      return "Unknown";
   }
 }
 
@@ -492,13 +595,6 @@ async function getSidebarState() {
 
   const running = Boolean(health?.ok) || Boolean(daemonProcess && !daemonProcess.killed);
   const workspaceMatches = daemonMatchesWorkspace(settings, health);
-  if (health?.ok && settings?.workspaceRoot && workspaceMatches) {
-    try {
-      await syncLuauSourcemapToDaemonState(settings.workspaceRoot, health, { silent: true });
-    } catch (_error) {
-      // Keep sidebar refresh resilient even if sourcemap sync fails.
-    }
-  }
   const sessions = workspaceMatches && Array.isArray(health?.sessions) ? health.sessions : [];
   const readySessions = readySessionsFromHealth({ sessions });
   const activeSession = resolveActiveSessionFromHealth({ sessions })
@@ -520,7 +616,13 @@ async function getSidebarState() {
 
   let statusTone = "neutral";
   if (running && activeSession && workspaceMatches) {
-    statusTone = activeSession.requiresPluginUpdate ? "danger" : (activeSession.requiresManualResync ? "warning" : "success");
+    statusTone = activeSession.requiresPluginUpdate
+      ? "danger"
+      : (activeSession.requiresManualResync
+        ? "warning"
+        : (activeSession.studioContactState === "critical"
+          ? "danger"
+          : (activeSession.studioContactState === "stale" ? "warning" : "success")));
   } else if (!running) {
     statusTone = "danger";
   } else if (!workspaceMatches || connectionOffer?.status === "declined") {
@@ -538,11 +640,39 @@ async function getSidebarState() {
 
   if (activeSession) {
     const sessionReady = (activeSession.connectionState || "ready") === "ready";
-    sessionTone = activeSession.requiresPluginUpdate ? "danger" : (activeSession.requiresManualResync ? "warning" : (sessionReady ? "success" : "warning"));
-    sessionBadge = activeSession.requiresPluginUpdate ? "Plugin update required" : (activeSession.requiresManualResync ? "sync paused" : (activeSession.connectionState || "ready"));
-    sessionMessage = activeSession.requiresPluginUpdate
-      ? (activeSession.versionMessage || "Plugin update required before sync can continue.")
-      : (activeSession.syncMessage || activeSession.projectSelectionMessage || "Session ready to sync with Studio.");
+    sessionTone = activeSession.requiresPluginUpdate
+      ? "danger"
+      : (activeSession.requiresManualResync
+        ? "warning"
+        : (activeSession.studioContactState === "critical"
+          ? "danger"
+          : (activeSession.studioContactState === "stale"
+            ? "warning"
+            : (sessionReady ? "success" : "warning"))));
+    sessionBadge = activeSession.requiresPluginUpdate
+      ? "Plugin update required"
+      : (activeSession.requiresManualResync
+        ? "sync paused"
+        : (activeSession.studioContactState === "critical"
+          ? "Plugin stale"
+          : (activeSession.studioContactState === "stale"
+            ? "Contact delayed"
+            : (activeSession.connectionState || "ready"))));
+    if (activeSession.requiresPluginUpdate) {
+      sessionMessage = activeSession.versionMessage || "Plugin update required before sync can continue.";
+    } else if (activeSession.requiresManualResync) {
+      sessionMessage = activeSession.syncMessage || "Sync paused until a manual resync is completed.";
+    } else if (activeSession.studioContactState === "critical") {
+      sessionMessage = `${activeSession.studioContactMessage || "Plugin contact is stale."} Destructive MCP actions are blocked until Studio polls the daemon again.`;
+    } else if (activeSession.studioContactState === "stale") {
+      sessionMessage = `${activeSession.studioContactMessage || "Plugin contact is delayed."} HTTP fallback is available, but destructive MCP actions wait for a fresh Studio poll.`;
+    } else if (mcpShield?.state === "fallback_ready") {
+      sessionMessage = "Native MCP not detected. HTTP fallback is available while the daemon stays online.";
+    } else if (mcpShield?.state === "degraded") {
+      sessionMessage = `MCP needs attention. ${mcpShield.message || "Check the MCP healthcheck for details."}`;
+    } else {
+      sessionMessage = activeSession.syncMessage || activeSession.projectSelectionMessage || "Session ready to sync with Studio.";
+    }
     sessionFacts.push(
       createSidebarFact(
         "Project",
@@ -556,6 +686,11 @@ async function getSidebarState() {
       createSidebarFact("Session", activeSession.id),
       createSidebarFact("Ready sessions", String(readySessions.length), readySessions.length > 0 ? "success" : "neutral")
     );
+    if (activeSession.studioContactState && activeSession.studioContactState !== "fresh") {
+      sessionFacts.push(
+        createSidebarFact("Studio", studioContactLabel(activeSession), studioContactTone(activeSession))
+      );
+    }
     if (visibleWorkspaceRoot) {
       sessionFacts.push(createSidebarFact("Workspace", workspaceDisplayName(visibleWorkspaceRoot)));
     }
@@ -1057,9 +1192,22 @@ function updateStatusBar(sessionCount) {
 }
 
 function refreshSidebar() {
-  if (sidebarProvider) {
-    void sidebarProvider.refresh();
+  if (!sidebarProvider) {
+    return;
   }
+  if (sidebarRefreshTimer) {
+    clearTimeout(sidebarRefreshTimer);
+  }
+  sidebarRefreshTimer = setTimeout(() => {
+    sidebarRefreshTimer = null;
+    if (!sidebarRefreshInFlight) {
+      sidebarRefreshInFlight = sidebarProvider.refresh()
+        .catch((error) => log(`Sidebar refresh failed: ${error.message}`))
+        .finally(() => {
+          sidebarRefreshInFlight = null;
+        });
+    }
+  }, 75);
 }
 
 function bridgeBaseUrl() {
@@ -1070,6 +1218,13 @@ function bridgeBaseUrl() {
 function requestJson(method, route, body, options = {}) {
   const url = new URL(route, `${bridgeBaseUrl()}/`);
   const timeout = options.timeout ?? 5000;
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  const token = options.bridgeToken || getOrCreateBridgeToken();
+  if (token) {
+    headers["X-Amarillo-Bridge-Token"] = token;
+  }
 
   return new Promise((resolve, reject) => {
     const request = http.request({
@@ -1078,9 +1233,7 @@ function requestJson(method, route, body, options = {}) {
       port: url.port,
       path: `${url.pathname}${url.search}`,
       timeout,
-      headers: {
-        "Content-Type": "application/json"
-      }
+      headers
     }, (response) => {
       let responseBody = "";
       response.setEncoding("utf8");
@@ -1161,6 +1314,7 @@ async function notifyWorkspaceFileOperation(source, events) {
   if (filteredEvents.length === 0) {
     return;
   }
+  invalidateProjectFileCacheForEvents(filteredEvents);
 
   try {
     const settings = getBridgeSettings();
@@ -1526,6 +1680,7 @@ async function installRobloxPlugin(context) {
 async function ensureBridgeStarted(context, options = {}) {
   const { workspaceRoot, host, port, nodePath, autoSyncToStudio } = getBridgeSettings();
   const daemonEntry = runtimePath(context, "daemon", "index.js");
+  const token = getOrCreateBridgeToken(context);
 
   if (daemonProcess && !daemonProcess.killed) {
     return {
@@ -1574,6 +1729,7 @@ async function ensureBridgeStarted(context, options = {}) {
     "--port", String(port),
     "--extension-version", extensionVersion(context),
     "--extension-protocol", String(AMARILLO_PROTOCOL_VERSION),
+    "--bridge-token", token,
     "--no-mcp",
     autoSyncToStudio ? "--auto-sync-to-studio" : "--no-auto-sync-to-studio"
   ];
@@ -1656,6 +1812,7 @@ function bridgeStartMessage(startResult) {
 async function ensureWorkspaceMcp(context) {
   const { workspaceRoot, host, port } = getBridgeSettings();
   const proxyEntry = runtimePath(context, "mcp-proxy", "index.js");
+  const token = getOrCreateBridgeToken(context);
 
   await ensurePathExists(workspaceRoot, "Roblox workspace");
   await ensurePathExists(proxyEntry, "Amarillo MCP proxy");
@@ -1663,7 +1820,8 @@ async function ensureWorkspaceMcp(context) {
   const mcpConfigResult = await ensureWorkspaceMcpConfig(workspaceRoot, {
     proxyEntry,
     host,
-    port
+    port,
+    bridgeToken: token
   });
   const message = describeMcpConfigResult(mcpConfigResult, workspaceRoot);
   log(message);
@@ -2036,6 +2194,7 @@ async function saveSessionConfig() {
       workspaceRoot: settings.workspaceRoot,
       host: settings.host,
       port: settings.port,
+      bridgeToken: getOrCreateBridgeToken(),
       savedAt: new Date().toISOString()
     });
   } catch (_error) {
@@ -2122,7 +2281,7 @@ function activate(context) {
       ];
 
       const picked = await vscode.window.showQuickPick(menuItems, {
-        title: "Amarillo v1.0.9",
+        title: `Amarillo v${extensionVersion(context)}`,
         placeHolder: "Select an action..."
       });
 

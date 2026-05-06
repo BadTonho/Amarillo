@@ -10,6 +10,8 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const { TOOL_DEFINITIONS } = require("../src/daemon/mcp-tools");
+const { TOOL_HANDLERS } = require("../src/daemon/mcp");
+const { textContent } = require("../src/daemon/mcp-stdio");
 
 function createTempWorkspace() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-proxy-"));
@@ -97,52 +99,52 @@ function toolText(result) {
   return JSON.parse(result.content[0].text);
 }
 
-test("advertised MCP tools are implemented by the daemon and proxy handlers", () => {
+test("advertised MCP tools are implemented by the daemon and generic proxy handler", () => {
   const proxySource = fs.readFileSync(path.join(__dirname, "..", "src", "mcp-proxy", "index.js"), "utf8");
-  const daemonSource = fs.readFileSync(path.join(__dirname, "..", "src", "daemon", "mcp.js"), "utf8");
 
   for (const tool of TOOL_DEFINITIONS) {
-    const matcher = new RegExp(`case "${tool.name}"`);
-    assert.match(proxySource, matcher, `${tool.name} missing from MCP proxy`);
-    assert.match(daemonSource, matcher, `${tool.name} missing from daemon MCP server`);
+    assert.equal(typeof TOOL_HANDLERS[tool.name], "function", `${tool.name} missing from daemon MCP handlers`);
   }
+  assert.match(proxySource, /SUPPORTED_TOOLS/);
+  assert.doesNotMatch(proxySource, /case "run_code"/);
 });
 
 test("mcp proxy answers initialize, tools/list and health through HTTP", async () => {
   const workspace = createTempWorkspace();
-  const seenRoutes = [];
-  const { server, port } = await startMockServer((request, response) => {
-    seenRoutes.push(`${request.method} ${request.url}`);
-    if (request.method === "GET" && request.url === "/health") {
-      writeJson(response, 200, {
-        ok: true,
-        workspaceRoot: workspace,
-        sessions: [
-          {
-            id: "session-1",
-            projectName: "Example"
-          }
-        ]
-      });
-      return;
+  const seenRequests = [];
+  const { server, port } = await startMockServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) {
+      body += chunk;
     }
-    if (request.method === "GET" && request.url === "/projects") {
-      writeJson(response, 200, {
-        ok: true,
-        projects: [
-          {
-            id: "ExampleGame.project.json",
-            name: "ExampleGame"
-          }
-        ]
-      });
-      return;
-    }
-
-    writeJson(response, 404, {
-      ok: false,
-      error: "not found"
+    seenRequests.push({
+      method: request.method,
+      url: request.url,
+      body: body ? JSON.parse(body) : null
     });
+    if (request.method === "POST" && request.url === "/mcp/call") {
+      writeJson(response, 200, {
+        ok: true,
+        name: "health",
+        result: textContent({
+          workspaceRoot: workspace,
+          projects: [
+            {
+              id: "ExampleGame.project.json",
+              name: "ExampleGame"
+            }
+          ],
+          sessions: [
+            {
+              id: "session-1",
+              projectName: "Example"
+            }
+          ]
+        })
+      });
+      return;
+    }
+    writeJson(response, 404, { ok: false, error: "not found" });
   });
 
   const client = createRpcClient(workspace, port);
@@ -189,9 +191,15 @@ test("mcp proxy answers initialize, tools/list and health through HTTP", async (
     assert.equal(payload.workspaceRoot, workspace);
     assert.equal(payload.projects[0].name, "ExampleGame");
     assert.equal(payload.sessions[0].id, "session-1");
-    assert.deepEqual(seenRoutes, [
-      "GET /health",
-      "GET /projects"
+    assert.deepEqual(seenRequests, [
+      {
+        method: "POST",
+        url: "/mcp/call",
+        body: {
+          name: "health",
+          arguments: {}
+        }
+      }
     ]);
   } finally {
     await client.close();
@@ -217,7 +225,6 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
       }
     ]
   };
-
   const { server, port } = await startMockServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) {
@@ -230,47 +237,58 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
       body: body ? JSON.parse(body) : null
     });
 
-    if (request.method === "POST" && request.url === "/project/active") {
+    if (request.method === "POST" && request.url === "/mcp/call") {
+      const toolName = body ? JSON.parse(body).name : null;
+      const args = body ? JSON.parse(body).arguments : {};
       writeJson(response, 200, {
         ok: true,
-        project: {
-          id: "ExampleGame.project.json",
-          name: "ExampleGame"
-        }
-      });
-      return;
-    }
-
-    if (request.method === "POST" && request.url === "/session/open") {
-      writeJson(response, 200, {
-        ok: true,
-        session: {
-          id: "session-1",
-          projectName: "ExampleGame"
-        },
-        project: {
-          id: "ExampleGame.project.json",
-          name: "ExampleGame"
-        }
-      });
-      return;
-    }
-
-    if (request.method === "GET" && request.url === "/session/session-1/tree") {
-      writeJson(response, 200, {
-        ok: true,
-        snapshot
-      });
-      return;
-    }
-
-    if (request.method === "POST" && request.url === "/session/session-1/exec") {
-      writeJson(response, 200, {
-        ok: true,
-        result: {
-          ok: true,
-          output: "ran"
-        }
+        name: toolName,
+        result: textContent(
+          toolName === "set_active_project"
+            ? {
+              id: "ExampleGame.project.json",
+              name: "ExampleGame"
+            }
+            : (toolName === "connect_session"
+              ? {
+                ok: true,
+                sessionId: "session-1",
+                session: {
+                  id: "session-1",
+                  projectName: "ExampleGame"
+                },
+                project: {
+                  id: "ExampleGame.project.json",
+                  name: "ExampleGame"
+                }
+              }
+              : (toolName === "get_tree"
+                ? {
+                  mounts: [
+                    {
+                      id: "ServerScriptService",
+                      segments: ["ServerScriptService"],
+                      children: [
+                        {
+                          name: "Hello",
+                          className: "ModuleScript",
+                          children: []
+                        }
+                      ]
+                    }
+                  ]
+                }
+                : (toolName === "inspect_instance"
+                  ? {
+                    name: "Hello",
+                    className: "ModuleScript",
+                    path: args.path
+                  }
+                  : {
+                    ok: true,
+                    output: "ran"
+                  })))
+        )
       });
       return;
     }
@@ -378,36 +396,55 @@ test("mcp proxy forwards set_active_project, get_tree, inspect_instance and run_
     assert.deepEqual(requests, [
       {
         method: "POST",
-        url: "/project/active",
+        url: "/mcp/call",
         body: {
-          projectId: "ExampleGame.project.json"
+          name: "set_active_project",
+          arguments: {
+            projectId: "ExampleGame.project.json"
+          }
         }
       },
       {
         method: "POST",
-        url: "/session/open",
+        url: "/mcp/call",
         body: {
-          projectId: "ExampleGame.project.json",
-          placeId: 123,
-          connectionState: "ready",
-          truthSource: "pc"
+          name: "connect_session",
+          arguments: {
+            projectId: "ExampleGame.project.json",
+            placeId: 123
+          }
         }
       },
       {
-        method: "GET",
-        url: "/session/session-1/tree",
-        body: null
-      },
-      {
-        method: "GET",
-        url: "/session/session-1/tree",
-        body: null
+        method: "POST",
+        url: "/mcp/call",
+        body: {
+          name: "get_tree",
+          arguments: {
+            sessionId: "session-1"
+          }
+        }
       },
       {
         method: "POST",
-        url: "/session/session-1/exec",
+        url: "/mcp/call",
         body: {
-          code: "print('hello')"
+          name: "inspect_instance",
+          arguments: {
+            sessionId: "session-1",
+            path: "game.ServerScriptService.Hello"
+          }
+        }
+      },
+      {
+        method: "POST",
+        url: "/mcp/call",
+        body: {
+          name: "run_code",
+          arguments: {
+            sessionId: "session-1",
+            code: "print('hello')"
+          }
         }
       }
     ]);

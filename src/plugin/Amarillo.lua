@@ -6,10 +6,11 @@ local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local LogService = game:GetService("LogService")
 local Players = game:GetService("Players")
+local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.16"
+local PLUGIN_VERSION = "1.0.17"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -25,6 +26,7 @@ local state = {
 	portCustomized = false,
 	studioInstanceId = HttpService:GenerateGUID(false),
 	sessionId = nil,
+	sessionToken = nil,
 	project = nil,
 	connected = false,
 	awaitingInitialSync = false,
@@ -49,8 +51,8 @@ local state = {
 	treeCache = nil,
 	pendingScriptPatches = {},
 	openDocumentCache = {},
-	pendingPropertyCommand = nil,
-	confirmPropertyChanges = true,
+	pendingDestructiveCommand = nil,
+	confirmDestructiveActions = true,
 	syncState = "ready",
 	syncMessage = nil,
 	versionState = "unknown",
@@ -63,6 +65,15 @@ local disconnectWatcher
 local startWatcher
 local resetSessionState
 local widget
+local executeModifyProperty
+local executeCreateInstance
+local executeDeleteInstance
+local executeInsertModel
+local executeDestructiveCommand
+local showDestructiveConfirmation
+local hideDestructiveConfirmation
+local acceptDestructiveAction
+local declineDestructiveAction
 
 local function now()
 	return os.clock()
@@ -226,7 +237,8 @@ local function saveSettings()
 		port = state.port,
 		projectId = state.selectedProjectId,
 		portCustomized = state.portCustomized,
-		confirmPropertyChanges = state.confirmPropertyChanges
+		confirmDestructiveActions = state.confirmDestructiveActions,
+		confirmPropertyChanges = state.confirmDestructiveActions
 	})
 end
 
@@ -246,8 +258,10 @@ local function loadSettings()
 			end
 		end
 		state.selectedProjectId = saved.projectId
-		if saved.confirmPropertyChanges ~= nil then
-			state.confirmPropertyChanges = saved.confirmPropertyChanges
+		if saved.confirmDestructiveActions ~= nil then
+			state.confirmDestructiveActions = saved.confirmDestructiveActions
+		elseif saved.confirmPropertyChanges ~= nil then
+			state.confirmDestructiveActions = saved.confirmPropertyChanges
 		end
 		if migratedLegacyPort then
 			saveSettings()
@@ -268,6 +282,9 @@ local function requestWithBase(urlBase, method, route, body)
 			["Content-Type"] = "application/json"
 		}
 	}
+	if state.sessionToken then
+		options.Headers["X-Amarillo-Session-Token"] = state.sessionToken
+	end
 
 	if body ~= nil then
 		options.Body = HttpService:JSONEncode(body)
@@ -328,6 +345,9 @@ local function requestRawBody(method, route, rawJsonBody)
 		},
 		Body = rawJsonBody
 	}
+	if state.sessionToken then
+		options.Headers["X-Amarillo-Session-Token"] = state.sessionToken
+	end
 
 	local ok, response = pcall(function()
 		return HttpService:RequestAsync(options)
@@ -1728,111 +1748,93 @@ local function handleCommand(command)
 		local instance = resolveInstanceByPath(command.payload.path)
 		if not instance then
 			postCommandResult(command.id, false, {
-				error = "Instance not found: " .. tostring(command.payload.path)
+				error = "Instance not found: " .. tostring(command.payload.path),
+				blocked = false,
+				declined = false,
+				confirmed = false,
+				reasonCode = "INSTANCE_NOT_FOUND"
 			})
 			appendLog("modify_property falhou: caminho invalido.")
 			return
 		end
 
-		-- Se confirmacao esta ativa, mostrar overlay de confirmacao
-		if state.confirmPropertyChanges then
-			-- Se ja existe um comando pendente, rejeitar o novo
-			if state.pendingPropertyCommand then
+		if state.confirmDestructiveActions then
+			if state.pendingDestructiveCommand then
 				postCommandResult(command.id, false, {
-					error = "Another property change is already awaiting confirmation."
+					error = "Another destructive action is already awaiting confirmation.",
+					blocked = true,
+					declined = false,
+					confirmed = false,
+					reasonCode = "CONFIRMATION_ALREADY_PENDING"
 				})
-				appendLog("modify_property rejeitado: ja existe uma confirmacao pendente.")
+				appendLog("modify_property rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
 				return
 			end
-			showPropertyConfirmation(command)
+			showDestructiveConfirmation(command)
 			return
 		end
 
-		-- Sem confirmacao, executar diretamente
 		executeModifyProperty(command)
 		return
 	end
 
 	if command.type == "create_instance" then
-		local parent = resolveInstanceByPath(command.payload.parentPath)
-		if not parent then
-			postCommandResult(command.id, false, {
-				error = "Parent not found: " .. tostring(command.payload.parentPath)
-			})
-			appendLog("create_instance falhou: parent invalido.")
+		if state.confirmDestructiveActions then
+			if state.pendingDestructiveCommand then
+				postCommandResult(command.id, false, {
+					error = "Another destructive action is already awaiting confirmation.",
+					blocked = true,
+					declined = false,
+					confirmed = false,
+					reasonCode = "CONFIRMATION_ALREADY_PENDING"
+				})
+				appendLog("create_instance rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				return
+			end
+			showDestructiveConfirmation(command)
 			return
 		end
-
-		local className = command.payload.className
-		local instanceName = command.payload.name or className
-
-		-- Verificacao: tentar criar a classe
-		local ok, result = pcall(function()
-			ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
-			local newInstance = Instance.new(className)
-			newInstance.Name = instanceName
-
-			-- Aplicar propriedades iniciais
-			for propName, propValue in pairs(command.payload.properties or {}) do
-				setProperty(newInstance, propName, propValue)
-			end
-
-			newInstance.Parent = parent
-			ChangeHistoryService:SetWaypoint("MCP create instance done")
-			return newInstance:GetFullName()
-		end)
-
-		postCommandResult(command.id, ok, {
-			result = ok and "Instance created successfully" or nil,
-			fullName = ok and result or nil,
-			error = ok and nil or tostring(result),
-			parentPath = command.payload.parentPath,
-			className = className,
-			name = instanceName
-		})
-		appendLog(ok and ("Instance " .. className .. " created at " .. command.payload.parentPath) or ("create_instance failed: " .. tostring(result)))
+		executeCreateInstance(command)
 		return
 	end
 
 	if command.type == "delete_instance" then
-		local instance = resolveInstanceByPath(command.payload.path)
-		if not instance then
-			postCommandResult(command.id, false, {
-				error = "Instance not found: " .. tostring(command.payload.path)
-			})
-			appendLog("delete_instance falhou: caminho invalido.")
+		if state.confirmDestructiveActions then
+			if state.pendingDestructiveCommand then
+				postCommandResult(command.id, false, {
+					error = "Another destructive action is already awaiting confirmation.",
+					blocked = true,
+					declined = false,
+					confirmed = false,
+					reasonCode = "CONFIRMATION_ALREADY_PENDING"
+				})
+				appendLog("delete_instance rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				return
+			end
+			showDestructiveConfirmation(command)
 			return
 		end
+		executeDeleteInstance(command)
+		return
+	end
 
-		-- Verificacao: nao permitir deletar services
-		if instance.Parent == game then
-			postCommandResult(command.id, false, {
-				error = "Deleting game services directly is not allowed."
-			})
-			appendLog("delete_instance bloqueado: tentativa de deletar service.")
+	if command.type == "insert_model" then
+		if state.confirmDestructiveActions then
+			if state.pendingDestructiveCommand then
+				postCommandResult(command.id, false, {
+					error = "Another destructive action is already awaiting confirmation.",
+					blocked = true,
+					declined = false,
+					confirmed = false,
+					reasonCode = "CONFIRMATION_ALREADY_PENDING"
+				})
+				appendLog("insert_model rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				return
+			end
+			showDestructiveConfirmation(command)
 			return
 		end
-		if isProtectedSyncInstance(instance) then
-			postCommandResult(command.id, false, {
-				error = "Deleting protected instances such as Workspace.Terrain or player characters is not allowed."
-			})
-			appendLog("delete_instance bloqueado: tentativa de deletar instancia protegida.")
-			return
-		end
-
-		local fullName = instance:GetFullName()
-		local ok, err = pcall(function()
-			ChangeHistoryService:SetWaypoint("MCP delete instance: " .. fullName)
-			instance:Destroy()
-			ChangeHistoryService:SetWaypoint("MCP delete instance done")
-		end)
-
-		postCommandResult(command.id, ok, {
-			result = ok and "Instance deleted successfully" or nil,
-			deletedPath = ok and fullName or nil,
-			error = ok and nil or tostring(err)
-		})
-		appendLog(ok and ("Instance deleted: " .. fullName) or ("delete_instance failed: " .. tostring(err)))
+		executeInsertModel(command)
 		return
 	end
 
@@ -1938,10 +1940,12 @@ function resetSessionState(statusText)
 	state.connected = false
 	state.awaitingInitialSync = false
 	state.sessionId = nil
+	state.sessionToken = nil
 	state.project = nil
 	state.projectSelectionReason = nil
 	state.projectSelectionMessage = nil
 	state.pendingConnectionContext = nil
+	state.pendingDestructiveCommand = nil
 	state.lastSnapshotJson = nil
 	state.syncState = "ready"
 	state.syncMessage = nil
@@ -1950,6 +1954,9 @@ function resetSessionState(statusText)
 	state.lastSyncStatusMessage = nil
 	if statusText then
 		updateStatus(statusText)
+	end
+	if state.ui.propertyConfirmOverlay then
+		state.ui.propertyConfirmOverlay.Visible = false
 	end
 	updateProject(currentWorkspaceLabel())
 	updateSession("-")
@@ -1965,7 +1972,7 @@ local function hideConnectionPrompt()
 	state.pendingConnectionContext = nil
 end
 
--- ===== Property Change Confirmation System =====
+-- ===== Destructive Action Confirmation System =====
 local function formatValueForDisplay(value)
 	if type(value) == "table" then
 		local okEncode, encoded = pcall(function()
@@ -1981,11 +1988,15 @@ local function formatValueForDisplay(value)
 	return tostring(value)
 end
 
-local function executeModifyProperty(command)
+executeModifyProperty = function(command)
 	local instance = resolveInstanceByPath(command.payload.path)
 	if not instance then
 		postCommandResult(command.id, false, {
-			error = "Instance not found: " .. tostring(command.payload.path)
+			error = "Instance not found: " .. tostring(command.payload.path),
+			blocked = false,
+			declined = false,
+			confirmed = false,
+			reasonCode = "INSTANCE_NOT_FOUND"
 		})
 		appendLog("modify_property falhou: caminho invalido.")
 		return
@@ -2010,7 +2021,11 @@ local function executeModifyProperty(command)
 				result = ok and "Attribute changed successfully" or nil,
 				error = ok and nil or tostring(err),
 				path = command.payload.path,
-				property = propName
+				property = propName,
+				blocked = false,
+				declined = false,
+				confirmed = true,
+				reasonCode = ok and nil or "MODIFY_FAILED"
 			})
 			appendLog(ok and ("Attribute " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
 			return
@@ -2026,55 +2041,298 @@ local function executeModifyProperty(command)
 		result = ok and "Property changed successfully" or nil,
 		error = ok and nil or tostring(err),
 		path = command.payload.path,
-		property = propName
+		property = propName,
+		blocked = false,
+		declined = false,
+		confirmed = true,
+		reasonCode = ok and nil or "MODIFY_FAILED"
 	})
 	appendLog(ok and ("Property " .. propName .. " changed at " .. command.payload.path) or ("modify_property failed: " .. tostring(err)))
 end
 
-local function showPropertyConfirmation(command)
-	state.pendingPropertyCommand = command
-	if state.ui.propertyConfirmOverlay then
+executeCreateInstance = function(command)
+	local parent = resolveInstanceByPath(command.payload.parentPath)
+	if not parent then
+		postCommandResult(command.id, false, {
+			error = "Parent not found: " .. tostring(command.payload.parentPath),
+			blocked = false,
+			declined = false,
+			confirmed = false,
+			reasonCode = "PARENT_NOT_FOUND"
+		})
+		appendLog("create_instance falhou: parent invalido.")
+		return
+	end
+
+	local className = command.payload.className
+	local instanceName = command.payload.name or className
+	local ok, result = pcall(function()
+		ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
+		local newInstance = Instance.new(className)
+		newInstance.Name = instanceName
+
+		for propName, propValue in pairs(command.payload.properties or {}) do
+			setProperty(newInstance, propName, propValue)
+		end
+
+		newInstance.Parent = parent
+		ChangeHistoryService:SetWaypoint("MCP create instance done")
+		return newInstance:GetFullName()
+	end)
+
+	postCommandResult(command.id, ok, {
+		result = ok and "Instance created successfully" or nil,
+		fullName = ok and result or nil,
+		error = ok and nil or tostring(result),
+		parentPath = command.payload.parentPath,
+		className = className,
+		name = instanceName,
+		blocked = false,
+		declined = false,
+		confirmed = true,
+		reasonCode = ok and nil or "CREATE_FAILED"
+	})
+	appendLog(ok and ("Instance " .. className .. " created at " .. command.payload.parentPath) or ("create_instance failed: " .. tostring(result)))
+end
+
+executeDeleteInstance = function(command)
+	local instance = resolveInstanceByPath(command.payload.path)
+	if not instance then
+		postCommandResult(command.id, false, {
+			error = "Instance not found: " .. tostring(command.payload.path),
+			blocked = false,
+			declined = false,
+			confirmed = false,
+			reasonCode = "INSTANCE_NOT_FOUND"
+		})
+		appendLog("delete_instance falhou: caminho invalido.")
+		return
+	end
+
+	if instance.Parent == game then
+		postCommandResult(command.id, false, {
+			error = "Deleting game services directly is not allowed.",
+			blocked = true,
+			declined = false,
+			confirmed = false,
+			reasonCode = "DELETE_SERVICE_BLOCKED"
+		})
+		appendLog("delete_instance bloqueado: tentativa de deletar service.")
+		return
+	end
+	if isProtectedSyncInstance(instance) then
+		postCommandResult(command.id, false, {
+			error = "Deleting protected instances such as Workspace.Terrain or player characters is not allowed.",
+			blocked = true,
+			declined = false,
+			confirmed = false,
+			reasonCode = "DELETE_PROTECTED_BLOCKED"
+		})
+		appendLog("delete_instance bloqueado: tentativa de deletar instancia protegida.")
+		return
+	end
+
+	local fullName = instance:GetFullName()
+	local ok, err = pcall(function()
+		ChangeHistoryService:SetWaypoint("MCP delete instance: " .. fullName)
+		instance:Destroy()
+		ChangeHistoryService:SetWaypoint("MCP delete instance done")
+	end)
+
+	postCommandResult(command.id, ok, {
+		result = ok and "Instance deleted successfully" or nil,
+		deletedPath = ok and fullName or nil,
+		error = ok and nil or tostring(err),
+		blocked = false,
+		declined = false,
+		confirmed = true,
+		reasonCode = ok and nil or "DELETE_FAILED"
+	})
+	appendLog(ok and ("Instance deleted: " .. fullName) or ("delete_instance failed: " .. tostring(err)))
+end
+
+executeInsertModel = function(command)
+	local query = tostring(command.payload.query or "")
+	if query == "" then
+		postCommandResult(command.id, false, {
+			error = "Model query is required.",
+			blocked = false,
+			declined = false,
+			confirmed = false,
+			reasonCode = "INVALID_QUERY"
+		})
+		appendLog("insert_model falhou: query vazia.")
+		return
+	end
+
+	local okSearch, results = pcall(function()
+		return InsertService:GetFreeModels(query, 0)
+	end)
+	if not okSearch then
+		postCommandResult(command.id, false, {
+			error = tostring(results),
+			blocked = false,
+			declined = false,
+			confirmed = true,
+			reasonCode = "INSERT_SEARCH_FAILED"
+		})
+		appendLog("insert_model falhou na busca: " .. tostring(results))
+		return
+	end
+	if type(results) ~= "table" or #results == 0 then
+		postCommandResult(command.id, false, {
+			error = "No free models were found for query: " .. query,
+			blocked = false,
+			declined = false,
+			confirmed = true,
+			reasonCode = "NO_MODEL_FOUND"
+		})
+		appendLog("insert_model nao encontrou resultados para: " .. query)
+		return
+	end
+
+	local assetId = results[1].AssetId
+	local okInsert, insertResult = pcall(function()
+		ChangeHistoryService:SetWaypoint("MCP insert model: " .. query)
+		local model = InsertService:LoadAsset(assetId)
+		local children = model:GetChildren()
+		if #children == 0 then
+			model:Destroy()
+			error("Inserted asset did not return any children.")
+		end
+		local insertedName = children[1].Name
+		for _, child in ipairs(children) do
+			child.Parent = workspace
+		end
+		model:Destroy()
+		ChangeHistoryService:SetWaypoint("MCP insert model done")
+		return {
+			insertedName = insertedName,
+			insertedCount = #children,
+			assetId = assetId
+		}
+	end)
+
+	postCommandResult(command.id, okInsert, {
+		result = okInsert and "Model inserted successfully" or nil,
+		insertedName = okInsert and insertResult.insertedName or nil,
+		insertedCount = okInsert and insertResult.insertedCount or nil,
+		assetId = okInsert and insertResult.assetId or assetId,
+		error = okInsert and nil or tostring(insertResult),
+		blocked = false,
+		declined = false,
+		confirmed = true,
+		reasonCode = okInsert and nil or "INSERT_FAILED"
+	})
+	appendLog(okInsert and ("Model inserted from query: " .. query) or ("insert_model failed: " .. tostring(insertResult)))
+end
+
+executeDestructiveCommand = function(command)
+	if command.type == "modify_property" then
+		executeModifyProperty(command)
+		return
+	end
+	if command.type == "create_instance" then
+		executeCreateInstance(command)
+		return
+	end
+	if command.type == "delete_instance" then
+		executeDeleteInstance(command)
+		return
+	end
+	if command.type == "insert_model" then
+		executeInsertModel(command)
+	end
+end
+
+local function destructiveConfirmationContent(command)
+	if command.type == "modify_property" then
 		local propName = tostring(command.payload.property or "?")
 		local instancePath = tostring(command.payload.path or "?")
 		local valueDisplay = formatValueForDisplay(command.payload.value)
-
-		setTextIfPresent(state.ui.propertyConfirmTitle, "Confirm Property Change")
-		setTextIfPresent(state.ui.propertyConfirmBody, "Instance: " .. instancePath)
-		setTextIfPresent(state.ui.propertyConfirmDetail, "Property: " .. propName .. "\nNew value: " .. valueDisplay)
-		state.ui.propertyConfirmOverlay.Visible = true
+		return {
+			title = "Confirm Property Change",
+			body = "Instance: " .. instancePath,
+			detail = "Property: " .. propName .. "\nNew value: " .. valueDisplay,
+			logMessage = "Property change awaiting confirmation: " .. propName .. " at " .. instancePath
+		}
 	end
-	widget.Enabled = true
-	appendLog("Property change awaiting confirmation: " .. tostring(command.payload.property) .. " at " .. tostring(command.payload.path))
+	if command.type == "create_instance" then
+		local propertyCount = 0
+		for _propName, _propValue in pairs(command.payload.properties or {}) do
+			propertyCount = propertyCount + 1
+		end
+		return {
+			title = "Confirm Instance Creation",
+			body = "Parent: " .. tostring(command.payload.parentPath or "?"),
+			detail = "Class: " .. tostring(command.payload.className or "?")
+				.. "\nName: " .. tostring(command.payload.name or command.payload.className or "?")
+				.. "\nInitial properties: " .. tostring(propertyCount),
+			logMessage = "Instance creation awaiting confirmation at " .. tostring(command.payload.parentPath)
+		}
+	end
+	if command.type == "delete_instance" then
+		return {
+			title = "Confirm Instance Deletion",
+			body = "Target: " .. tostring(command.payload.path or "?"),
+			detail = "This instance will be permanently destroyed in Roblox Studio.",
+			logMessage = "Instance deletion awaiting confirmation: " .. tostring(command.payload.path)
+		}
+	end
+	return {
+		title = "Confirm Model Insert",
+		body = "Marketplace query: " .. tostring(command.payload.query or "?"),
+		detail = "The first free model match will be inserted into Workspace.",
+		logMessage = "Model insert awaiting confirmation: " .. tostring(command.payload.query)
+	}
 end
 
-local function hidePropertyConfirmation()
+showDestructiveConfirmation = function(command)
+	state.pendingDestructiveCommand = command
+	if state.ui.propertyConfirmOverlay then
+		local content = destructiveConfirmationContent(command)
+		setTextIfPresent(state.ui.propertyConfirmTitle, content.title)
+		setTextIfPresent(state.ui.propertyConfirmBody, content.body)
+		setTextIfPresent(state.ui.propertyConfirmDetail, content.detail)
+		state.ui.propertyConfirmOverlay.Visible = true
+		updateStatus("waiting for confirmation")
+	end
+	widget.Enabled = true
+	appendLog(destructiveConfirmationContent(command).logMessage)
+end
+
+hideDestructiveConfirmation = function()
 	if state.ui.propertyConfirmOverlay then
 		state.ui.propertyConfirmOverlay.Visible = false
 	end
-	state.pendingPropertyCommand = nil
+	state.pendingDestructiveCommand = nil
 end
 
-local function acceptPropertyChange()
-	local command = state.pendingPropertyCommand
+acceptDestructiveAction = function()
+	local command = state.pendingDestructiveCommand
 	if not command then
 		return
 	end
-	state.pendingPropertyCommand = nil
-	hidePropertyConfirmation()
-	executeModifyProperty(command)
+	state.pendingDestructiveCommand = nil
+	hideDestructiveConfirmation()
+	executeDestructiveCommand(command)
 end
 
-local function declinePropertyChange()
-	local command = state.pendingPropertyCommand
+declineDestructiveAction = function()
+	local command = state.pendingDestructiveCommand
 	if not command then
 		return
 	end
-	state.pendingPropertyCommand = nil
-	hidePropertyConfirmation()
+	state.pendingDestructiveCommand = nil
+	hideDestructiveConfirmation()
 	postCommandResult(command.id, false, {
-		error = "Property change declined by user."
+		error = "Destructive action declined by user.",
+		blocked = false,
+		declined = true,
+		confirmed = false,
+		reasonCode = "DECLINED_BY_USER"
 	})
-	appendLog("Property change declined: " .. tostring(command.payload.property) .. " at " .. tostring(command.payload.path))
+	appendLog("Destructive action declined: " .. tostring(command.type))
 end
 
 local function openConnectionPrompt(context)
@@ -2114,6 +2372,7 @@ end
 
 local function applyAcceptedSession(response, truthSource)
 	state.sessionId = response.session and response.session.id or nil
+	state.sessionToken = response.session and response.session.sessionToken or nil
 	state.project = response.project
 	state.projectSelectionReason = response.session and response.session.projectSelectionReason or nil
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
@@ -2796,24 +3055,24 @@ projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(functi
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
--- Confirm property changes toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Property change confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+-- Confirm destructive actions toggle
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Destructive action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, a confirmation dialog is shown before any property modification via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPropertyChanges and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
-	state.confirmPropertyChanges = not state.confirmPropertyChanges
-	state.ui.confirmPropToggle.Text = state.confirmPropertyChanges and "Enabled" or "Disabled"
-	if state.confirmPropertyChanges then
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmDestructiveActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
+	state.confirmDestructiveActions = not state.confirmDestructiveActions
+	state.ui.confirmPropToggle.Text = state.confirmDestructiveActions and "Enabled" or "Disabled"
+	if state.confirmDestructiveActions then
 		setButtonStyle(state.ui.confirmPropToggle, "primary")
 	else
 		setButtonStyle(state.ui.confirmPropToggle, "secondary")
 	end
 	saveSettings()
-	appendLog("Property confirmation " .. (state.confirmPropertyChanges and "enabled" or "disabled") .. ".")
+	appendLog("Destructive action confirmation " .. (state.confirmDestructiveActions and "enabled" or "disabled") .. ".")
 end)
-if state.confirmPropertyChanges then
+if state.confirmDestructiveActions then
 	setButtonStyle(state.ui.confirmPropToggle, "primary")
 else
 	setButtonStyle(state.ui.confirmPropToggle, "secondary")
@@ -2894,7 +3153,7 @@ setButtonStyle(state.ui.connectionPromptChooseStudio, "secondary")
 state.ui.connectionPromptChooseStudio.Visible = false
 state.ui.connectionPromptChooseStudio.ZIndex = 22
 
--- ===== Property Confirmation Overlay =====
+-- ===== Destructive Action Confirmation Overlay =====
 state.ui.propertyConfirmOverlay = Instance.new("Frame")
 state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.propertyConfirmOverlay.BackgroundTransparency = 0.28
@@ -2907,7 +3166,7 @@ state.ui.propertyConfirmOverlay.Parent = root
 local propertyConfirmCard = makeCard(state.ui.propertyConfirmOverlay, UDim2.new(1, -48, 0, 250), UDim2.fromOffset(24, 150), Color3.fromRGB(24, 27, 33))
 propertyConfirmCard.ZIndex = 31
 
-state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Property Change", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
+state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Destructive Action", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
 state.ui.propertyConfirmTitle.Font = Enum.Font.GothamBold
 state.ui.propertyConfirmTitle.ZIndex = 32
 
@@ -2916,22 +3175,22 @@ propertyConfirmIcon.TextXAlignment = Enum.TextXAlignment.Right
 propertyConfirmIcon.TextColor3 = Color3.fromRGB(214, 183, 120)
 propertyConfirmIcon.ZIndex = 32
 
-state.ui.propertyConfirmBody = makeTextLabel(propertyConfirmCard, "Instance: ?", UDim2.new(1, -32, 0, 42), UDim2.fromOffset(16, 54), 14)
+state.ui.propertyConfirmBody = makeTextLabel(propertyConfirmCard, "Target: ?", UDim2.new(1, -32, 0, 42), UDim2.fromOffset(16, 54), 14)
 state.ui.propertyConfirmBody.ZIndex = 32
 state.ui.propertyConfirmBody.TextColor3 = Color3.fromRGB(200, 205, 215)
 
-state.ui.propertyConfirmDetail = makeTextLabel(propertyConfirmCard, "Property: ?\nNew value: ?", UDim2.new(1, -32, 0, 60), UDim2.fromOffset(16, 100), 13)
+state.ui.propertyConfirmDetail = makeTextLabel(propertyConfirmCard, "Details: ?", UDim2.new(1, -32, 0, 60), UDim2.fromOffset(16, 100), 13)
 state.ui.propertyConfirmDetail.ZIndex = 32
 state.ui.propertyConfirmDetail.TextColor3 = Color3.fromRGB(166, 172, 184)
 state.ui.propertyConfirmDetail.Font = Enum.Font.Code
 
-local propertyConfirmHint = makeTextLabel(propertyConfirmCard, "Accept to apply the change or decline to cancel.", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 168), 11)
+local propertyConfirmHint = makeTextLabel(propertyConfirmCard, "Accept to apply the action or decline to cancel.", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 168), 11)
 propertyConfirmHint.TextColor3 = Color3.fromRGB(140, 146, 156)
 propertyConfirmHint.ZIndex = 32
 
-local propertyAcceptBtn = makeButton(propertyConfirmCard, "Accept", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 198), acceptPropertyChange)
+local propertyAcceptBtn = makeButton(propertyConfirmCard, "Accept", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 198), acceptDestructiveAction)
 propertyAcceptBtn.ZIndex = 32
-local propertyDeclineBtn = makeButton(propertyConfirmCard, "Decline", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 198), declinePropertyChange)
+local propertyDeclineBtn = makeButton(propertyConfirmCard, "Decline", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 198), declineDestructiveAction)
 setButtonStyle(propertyDeclineBtn, "secondary")
 propertyDeclineBtn.ZIndex = 32
 
