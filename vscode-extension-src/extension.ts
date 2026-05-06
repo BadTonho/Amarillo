@@ -1933,6 +1933,64 @@ async function runHealthcheck() {
   );
 }
 
+function doctorValue(value) {
+  return value === undefined || value === null || value === "" ? "-" : String(value);
+}
+
+function logDoctorSessions(report) {
+  const sessions = Array.isArray(report.sessions) ? report.sessions : [];
+  if (sessions.length === 0) {
+    log("Doctor sessions: none");
+    return;
+  }
+  for (const session of sessions) {
+    log(
+      `Doctor session ${doctorValue(session.projectName)} (${doctorValue(session.id)}): ` +
+      `state=${doctorValue(session.connectionState)} truth=${doctorValue(session.truthSource)} ` +
+      `version=${doctorValue(session.versionState)} requiresPluginUpdate=${session.requiresPluginUpdate === true ? "yes" : "no"} ` +
+      `sync=${doctorValue(session.syncState)} studio=${doctorValue(session.studioContactState)}`
+    );
+    log(
+      `Doctor session detail ${doctorValue(session.projectName)}: ` +
+      `versionMessage=${doctorValue(session.versionMessage)} ` +
+      `studioContact=${doctorValue(session.studioContactMessage)} ` +
+      `lastCommandError=${doctorValue(session.lastCommandError)} ` +
+      `lastSyncError=${doctorValue(session.lastSyncError)}`
+    );
+    if ((session.connectionState || "ready") !== "ready" && session.truthSource === "studio" && !session.lastAppliedAt) {
+      log(`WARNING: ${doctorValue(session.projectName)} initial Studio sync is still accepted but no Studio snapshot has been applied. Check the Roblox plugin Advanced log for the first snapshot failure.`);
+    }
+  }
+}
+
+function diagnosticContextLabel(entry) {
+  const context = entry?.context || {};
+  const parts = [];
+  if (context.route) parts.push(`route=${context.route}`);
+  if (context.statusCode) parts.push(`status=${context.statusCode}`);
+  if (context.reason) parts.push(`reason=${context.reason}`);
+  if (context.hasSessionToken !== undefined) parts.push(`sessionToken=${context.hasSessionToken ? "present" : "missing"}`);
+  if (context.truthSource) parts.push(`truth=${context.truthSource}`);
+  return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
+function logDoctorErrors(report) {
+  const errors = report.errors || {};
+  const recentUnresolved = Array.isArray(errors.recentUnresolved)
+    ? errors.recentUnresolved
+    : (Array.isArray(errors.recent) ? errors.recent.filter((entry) => entry && entry.resolved !== true).slice(0, 5) : []);
+  if (recentUnresolved.length === 0) {
+    return;
+  }
+  log("Recent unresolved diagnostic errors:");
+  for (const entry of recentUnresolved) {
+    log(
+      `Diagnostic ${doctorValue(entry.code)} ${doctorValue(entry.component)}/${doctorValue(entry.severity)}: ` +
+      `${doctorValue(entry.message)} session=${doctorValue(entry.sessionId)} project=${doctorValue(entry.projectId)}${diagnosticContextLabel(entry)}`
+    );
+  }
+}
+
 async function runDoctor() {
   const report = await requestJson("GET", "/doctor", undefined, { timeout: 10000 });
   const status = report.status || "unknown";
@@ -1940,6 +1998,8 @@ async function runDoctor() {
   log(`Doctor summary: ${report.summary?.message || "No summary message."}`);
   log(`Versions: daemon=${report.versions?.daemon?.version || "unknown"} protocol=${report.versions?.daemon?.protocolVersion ?? "unknown"} extension=${report.versions?.extension?.version || "unknown"}`);
   log(`Workspace: ${report.workspace?.root || "unknown"} projects=${report.workspace?.projectCount ?? 0} sessions=${report.summary?.sessionCount ?? 0}`);
+  logDoctorSessions(report);
+  logDoctorErrors(report);
   for (const reason of report.summary?.blockedReasons || []) {
     log(`BLOCKED: ${reason}`);
   }

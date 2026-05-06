@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.17"
+local PLUGIN_VERSION = "1.0.19"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -274,6 +274,31 @@ local function baseUrl()
 	return string.format("http://%s:%d", state.host, state.port)
 end
 
+local function describeHttpFailure(response)
+	local statusLabel = response.StatusMessage
+	if not statusLabel or statusLabel == "" then
+		statusLabel = "HTTP " .. tostring(response.StatusCode or "error")
+	end
+	local detail = nil
+	if response.Body and response.Body ~= "" then
+		local decodeOk, decoded = pcall(function()
+			return HttpService:JSONDecode(response.Body)
+		end)
+		if decodeOk and type(decoded) == "table" then
+			detail = decoded.error or decoded.message or decoded.code
+			if decoded.code and detail and not string.find(tostring(detail), tostring(decoded.code), 1, true) then
+				detail = tostring(detail) .. " (" .. tostring(decoded.code) .. ")"
+			end
+		else
+			detail = string.sub(tostring(response.Body), 1, 240)
+		end
+	end
+	if detail and detail ~= "" then
+		return tostring(statusLabel) .. ": " .. tostring(detail)
+	end
+	return tostring(statusLabel)
+end
+
 local function requestWithBase(urlBase, method, route, body)
 	local options = {
 		Url = urlBase .. route,
@@ -298,7 +323,7 @@ local function requestWithBase(urlBase, method, route, body)
 		return false, tostring(response)
 	end
 	if not response.Success then
-		return false, response.StatusMessage or ("HTTP " .. tostring(response.StatusCode))
+		return false, describeHttpFailure(response)
 	end
 
 	local parsed = nil
@@ -357,7 +382,7 @@ local function requestRawBody(method, route, rawJsonBody)
 		return false, tostring(response)
 	end
 	if not response.Success then
-		return false, response.StatusMessage or ("HTTP " .. tostring(response.StatusCode))
+		return false, describeHttpFailure(response)
 	end
 
 	local parsed = nil
@@ -1902,7 +1927,7 @@ local function syncSnapshot(reason)
 
 	local snapshot = snapshotCurrentProject()
 	if not snapshot then
-		return
+		return false, "Snapshot unavailable."
 	end
 	-- OPT-005: Build the full body JSON once, reuse for comparison and HTTP send
 	local bodyTable = {
@@ -2415,6 +2440,13 @@ local function applyAcceptedSession(response, truthSource)
 			updateStatus("connected")
 		else
 			appendLog("Initial Studio sync failed: " .. tostring(syncResponse))
+			reportPluginError(syncResponse, "PLUGIN-INITIAL-SYNC", {
+				route = "/studio/snapshot",
+				sessionId = state.sessionId,
+				projectId = state.project and state.project.id or state.selectedProjectId,
+				truthSource = "studio",
+				hasSessionToken = state.sessionToken ~= nil
+			}, "error")
 			resetSessionState("initial sync failed")
 		end
 	else
@@ -2932,6 +2964,9 @@ local function saveSettingsFromView()
 	openHomeView()
 end
 
+-- Keep UI construction in a short-lived scope so Luau releases these locals
+-- before the watcher loop below. Studio errors once a script chunk exceeds 200.
+do
 local toolbar = plugin:CreateToolbar("Amarillo")
 local toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxasset://textures/DeveloperFramework/PluginLogo.png")
 toolbarButton.ClickableWhenViewportHidden = true
@@ -3262,6 +3297,7 @@ updateSession("-")
 updateQueue("-")
 updateConflict("0")
 openHomeView()
+end
 
 -- ===== Event-driven Watcher (OPT-008: DescendantAdded/Removing) =====
 local watcherConnections = {}

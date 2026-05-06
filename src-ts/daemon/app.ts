@@ -255,6 +255,12 @@ function recentTimestamp(entries = []) {
     .sort((left, right) => right - left)[0] || null;
 }
 
+function isInitialStudioSyncPending(session) {
+  return (session?.connectionState || "ready") !== "ready"
+    && session?.truthSource === "studio"
+    && !session?.lastAppliedAt;
+}
+
 class PluginRobloxApp {
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -354,7 +360,7 @@ class PluginRobloxApp {
       return true;
     }
     if (requestUrl.pathname.startsWith("/studio/")) {
-      return this.isSessionRequestAuthorized(request);
+      return true;
     }
     if (requestUrl.pathname === "/errors/add") {
       return this.isBridgeRequestAuthorized(request) || this.isSessionRequestAuthorized(request);
@@ -2378,6 +2384,7 @@ class PluginRobloxApp {
     const versions = this.versionPayload();
     const mcp = mcpShieldSummary(this);
     const errors = this.errorTracker.summary();
+    const recentUnresolvedErrors = this.errorTracker.query({ resolved: false, limit: 5 });
     const activity = this.activityLog.summary();
     const mcpAudit = this.mcpAuditLog.summary();
     const blockedReasons = [];
@@ -2390,6 +2397,9 @@ class PluginRobloxApp {
       blockedReasons.push(versions.extension.message);
     }
     for (const session of sessions) {
+      if (isInitialStudioSyncPending(session)) {
+        warnings.push(`${session.projectName}: initial Studio sync is still accepted but no Studio snapshot has been applied yet.`);
+      }
       if (session.requiresPluginUpdate) {
         blockedReasons.push(`${session.projectName}: ${session.versionMessage}`);
       }
@@ -2448,6 +2458,7 @@ class PluginRobloxApp {
         sessionCount: sessions.length,
         syncBlockedSessionCount: sessions.filter((session) => session.syncBlockedReason).length,
         unresolvedErrorCount: errors.unresolved,
+        initialSyncStuckSessionCount: sessions.filter(isInitialStudioSyncPending).length,
         mcpAuditCount: mcpAudit.total
       },
       versions,
@@ -2474,6 +2485,7 @@ class PluginRobloxApp {
       mcp,
       errors: {
         ...errors,
+        recentUnresolved: recentUnresolvedErrors,
         lastErrorAt: recentTimestamp(errors.recent)
       },
       activity: {

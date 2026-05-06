@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noCheck": false,
+    "noEmit": true
+  },
+  "include": [
+    "src-ts/daemon/contracts/connection.ts",
+    "src-ts/daemon/contracts/diagnostics.ts",
+    "src-ts/daemon/http-utils.ts",
+    "src-ts/daemon/routes/connection.ts"
+  ]
+}

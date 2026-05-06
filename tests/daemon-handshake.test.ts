@@ -76,6 +76,16 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+type InvokeOptions = {
+  rawBody?: string;
+  headers?: Record<string, string>;
+};
+
+type InvokeResult = {
+  statusCode: number;
+  payload: any;
+};
+
 function seedStudioSnapshotFromLocalProject(app, session) {
   app.recordAppliedProjectSnapshot(
     session,
@@ -104,8 +114,8 @@ function findSnapshotNodeByPath(snapshot, segments) {
   return null;
 }
 
-async function invoke(app, method, url, body, options = {}) {
-  const request = options.rawBody !== undefined
+async function invoke(app, method, url, body?: any, options: InvokeOptions = {}): Promise<InvokeResult> {
+  const request: any = options.rawBody !== undefined
     ? Readable.from([Buffer.from(options.rawBody, "utf8")])
     : (body === undefined
     ? Readable.from([])
@@ -117,10 +127,10 @@ async function invoke(app, method, url, body, options = {}) {
     ...(options.headers || {})
   };
 
-  return new Promise((resolve, reject) => {
+  return new Promise<InvokeResult>((resolve, reject) => {
     let statusCode = 200;
     let responseBody = "";
-    const response = {
+    const response: any = {
       writeHead(code) {
         statusCode = code;
       },
@@ -243,6 +253,88 @@ test("Studio sessions receive and must use a session token after handshake", asy
   assert.equal(validToken.payload.commands.length, 1);
 });
 
+test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-snapshot-auth",
+    placeId: 0,
+    truthSource: "studio",
+    pluginVersion: "1.0.19",
+    pluginProtocolVersion: 1
+  });
+  assert.equal(accept.statusCode, 200);
+  const sessionId = accept.payload.session.id;
+
+  const rejected = await invoke(app, "POST", "/studio/snapshot", {
+    sessionId,
+    reason: "initial_accept",
+    pluginVersion: "1.0.19",
+    pluginProtocolVersion: 1,
+    snapshot: { mounts: [] }
+  });
+
+  assert.equal(rejected.statusCode, 401);
+  assert.equal(rejected.payload.code, "UNAUTHORIZED");
+
+  const session = app.sessions.get(sessionId);
+  assert.equal(session.lastCommandError, "Missing or invalid Studio session token.");
+
+  const errors = app.errorTracker.query({ resolved: false, code: "STUDIO-SNAPSHOT-AUTH", limit: 1 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].sessionId, sessionId);
+  assert.equal(errors[0].projectId, "Game.project.json");
+  assert.equal(errors[0].context.route, "/studio/snapshot");
+  assert.equal(errors[0].context.statusCode, 401);
+  assert.equal(errors[0].context.reason, "initial_accept");
+  assert.equal(errors[0].context.truthSource, "studio");
+  assert.equal(errors[0].context.hasSessionToken, false);
+});
+
+test("Doctor includes unresolved diagnostics and accepted Studio initial sync warnings", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const { session } = app.openSession(0, null, {
+    connectionState: "accepted",
+    truthSource: "studio",
+    studioInstanceId: "studio-stuck",
+    pluginVersion: "1.0.19",
+    pluginProtocolVersion: 1,
+    requirePluginVersion: true
+  });
+  app.recordError({
+    component: "studio",
+    severity: "error",
+    code: "STUDIO-SNAPSHOT-AUTH",
+    message: "Missing or invalid Studio session token.",
+    sessionId: session.id,
+    projectId: session.projectId,
+    context: {
+      route: "/studio/snapshot",
+      statusCode: 401,
+      reason: "initial_accept",
+      hasSessionToken: false
+    }
+  });
+
+  const report = app.doctorReport();
+  assert.equal(report.summary.initialSyncStuckSessionCount, 1);
+  assert.ok(report.summary.warnings.some((warning) => /initial Studio sync is still accepted/.test(warning)));
+  assert.equal(report.errors.recentUnresolved.length, 1);
+  assert.equal(report.errors.recentUnresolved[0].code, "STUDIO-SNAPSHOT-AUTH");
+  assert.equal(report.sessions[0].connectionState, "accepted");
+  assert.equal(report.sessions[0].lastCommandError, null);
+});
+
 test("session open no longer auto-enqueues apply_project_tree on session_opened", () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -338,6 +430,64 @@ test("connection offer can be requested, polled without session and declined", a
   assert.equal(declineResponse.payload.offer.status, "declined");
 });
 
+test("connection request defaults requestedBy to vscode", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/connection/request", {});
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.offer.requestedBy, "vscode");
+});
+
+test("connection accept with a minimal body still creates a session", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/connection/accept", {});
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+  assert.equal(typeof response.payload.session.id, "string");
+  assert.equal(response.payload.session.placeId, 0);
+  assert.equal(response.payload.session.truthSource, "pc");
+  assert.equal(app.sessions.size, 1);
+});
+
+test("connection accept normalizes an invalid truthSource to pc", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/connection/accept", {
+    truthSource: "invalid",
+    pluginVersion: "1.0.17",
+    pluginProtocolVersion: 1
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.session.truthSource, "pc");
+  const session = Array.from(app.sessions.values())[0] as any;
+  assert.equal(session.truthSource, "pc");
+  assert.equal(session.pendingCommands[0].payload.reason, "initial_pc_truth");
+});
+
+test("connection diff returns 404 for an unknown project", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/connection/diff", {
+    projectId: "missing-project"
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.payload.ok, false);
+  assert.equal(response.payload.error, "Project not found");
+});
+
 test("first studio acceptance wins and creates a pending PC-truth initial sync", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -356,7 +506,7 @@ test("first studio acceptance wins and creates a pending PC-truth initial sync",
   assert.equal(acceptResponse.payload.session.connectionState, "accepted");
   assert.equal(acceptResponse.payload.offer.status, "accepted");
 
-  const session = Array.from(app.sessions.values())[0];
+  const session = Array.from(app.sessions.values())[0] as any;
   assert.equal(session.pendingCommands.length, 1);
   assert.equal(session.pendingCommands[0].payload.reason, "initial_pc_truth");
 
@@ -389,7 +539,7 @@ test("HTTP connection accept blocks old plugins that do not report a version", a
   assert.equal(response.payload.session.requiresPluginUpdate, true);
   assert.match(response.payload.session.versionMessage, /Plugin update required/);
 
-  const session = Array.from(app.sessions.values())[0];
+  const session = Array.from(app.sessions.values())[0] as any;
   assert.equal(session.pendingCommands.length, 0);
 });
 
@@ -411,7 +561,7 @@ test("HTTP connection accept blocks incompatible plugin protocol versions", asyn
   assert.equal(response.statusCode, 200);
   assert.equal(response.payload.session.versionState, "blocked");
   assert.equal(response.payload.session.requiresPluginUpdate, true);
-  assert.equal(Array.from(app.sessions.values())[0].pendingCommands.length, 0);
+  assert.equal((Array.from(app.sessions.values())[0] as any).pendingCommands.length, 0);
 });
 
 test("PC truth becomes ready after the Studio completes the initial apply", () => {
@@ -436,7 +586,7 @@ test("PC truth becomes ready after the Studio completes the initial apply", () =
     result: "Snapshot aplicado"
   });
 
-  const session = app.sessions.get(result.session.id);
+  const session = app.sessions.get(result.session.id) as any;
   assert.equal(session.connectionState, "ready");
   assert.ok(session.lastStudioSnapshot);
 });
@@ -1185,13 +1335,26 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
   });
   app.refreshWorkspace();
 
-  await invoke(app, "POST", "/connection/accept", {
+  const accept = await invoke(app, "POST", "/connection/accept", {
     studioInstanceId: "studio-a",
     placeId: 0,
     truthSource: "studio",
     pluginVersion: "1.0.16",
     pluginProtocolVersion: 1
   });
+  const sessionId = accept.payload.session.id;
+  await invoke(app, "POST", "/studio/snapshot", {
+    sessionId,
+    reason: "initial_accept",
+    pluginVersion: "1.0.16",
+    pluginProtocolVersion: 1,
+    snapshot: readLocalProjectState(app.getProjectById(accept.payload.session.projectId))
+  }, {
+    headers: {
+      "x-amarillo-session-token": accept.payload.session.sessionToken
+    }
+  });
+  await wait(25);
 
   const doctor = await invoke(app, "GET", "/doctor");
   assert.equal(doctor.statusCode, 200);

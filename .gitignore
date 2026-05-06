@@ -29,6 +29,11 @@ id_ed25519*
 dist/
 *.vsix
 *.vsixmanifest
+src/daemon/**/*.js
+src/mcp-proxy/**/*.js
+vscode-extension/*.js
+tests/**/*.js
+scripts/**/*.js
 
 # Generated diagnostics and local state
 debug.log

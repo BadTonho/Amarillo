@@ -1,7 +1,39 @@
 "use strict";
 
 const { patchStudioFileSource } = require("../project");
-const { jsonResponse, readJsonBody } = require("../http-utils");
+const { SESSION_TOKEN_HEADER, jsonResponse, readJsonBody } = require("../http-utils");
+
+const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
+
+function requestHasSessionToken(request) {
+  const token = request.headers?.[SESSION_TOKEN_HEADER];
+  return typeof token === "string" && token.trim().length > 0;
+}
+
+function recordStudioSnapshotFailure(app, session, body, statusCode, code, message, request) {
+  if (session) {
+    session.lastCommandError = message;
+  }
+  app.recordError({
+    component: "studio",
+    severity: "error",
+    code,
+    message,
+    sessionId: session?.id || body?.sessionId || null,
+    projectId: session?.projectId || null,
+    context: {
+      route: "/studio/snapshot",
+      statusCode,
+      reason: body?.reason || null,
+      truthSource: session?.truthSource || null,
+      connectionState: session?.connectionState || null,
+      hasSessionToken: requestHasSessionToken(request),
+      pluginVersion: body?.pluginVersion || null,
+      pluginProtocolVersion: body?.pluginProtocolVersion || null,
+      initialStudioSync: body?.reason === INITIAL_STUDIO_SYNC_REASON
+    }
+  });
+}
 
 async function handleStudioRoutes(app, request, response, requestUrl) {
   if (request.method === "GET" && requestUrl.pathname === "/studio/poll") {
@@ -90,21 +122,40 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
   if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
     const body = await readJsonBody(request);
     const session = app.sessions.get(body.sessionId);
-    if (session && !app.isSessionRequestAuthorized(request, session)) {
-      jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
+    if (!session) {
+      const message = "Studio session not found for snapshot.";
+      recordStudioSnapshotFailure(app, null, body, 404, "STUDIO-SNAPSHOT-SESSION", message, request);
+      jsonResponse(response, 404, { ok: false, code: "SESSION_NOT_FOUND", error: message }, request);
+      return true;
+    }
+    if (!app.isSessionRequestAuthorized(request, session)) {
+      const message = "Missing or invalid Studio session token.";
+      recordStudioSnapshotFailure(app, session, body, 401, "STUDIO-SNAPSHOT-AUTH", message, request);
+      jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: message }, request);
       return true;
     }
     app.updateSessionPluginVersion(session, body);
     app.markStudioSessionContact(session);
-    if (session && app.isSessionVersionBlocked(session)) {
+    if (app.isSessionVersionBlocked(session)) {
+      const message = app.syncBlockedReason(session);
+      recordStudioSnapshotFailure(app, session, body, 409, "STUDIO-SNAPSHOT-BLOCKED", message, request);
       jsonResponse(response, 409, {
         ok: false,
-        error: app.syncBlockedReason(session),
+        error: message,
         session: app.sessionSummary(session)
       });
       return true;
     }
-    app.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto");
+    try {
+      app.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto");
+    } catch (error) {
+      const statusCode = error.statusCode || 500;
+      const code = error.code || "STUDIO-SNAPSHOT";
+      const message = error.message || "Studio snapshot could not be applied.";
+      recordStudioSnapshotFailure(app, session, body, statusCode, code, message, request);
+      jsonResponse(response, statusCode, { ok: false, code, error: message }, request);
+      return true;
+    }
     jsonResponse(response, 200, { ok: true });
     return true;
   }
