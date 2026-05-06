@@ -85,6 +85,13 @@ Example requests for an AI client:
 
 Use the dedicated workspace in `examples/roblox-workspace/`.
 
+The Node runtime and VS Code extension are authored from TypeScript sources:
+
+- `src-ts/` compiles to `src/`
+- `vscode-extension-src/` compiles to `vscode-extension/`
+
+Run `npm run build` after editing TypeScript. The generated JavaScript stays in the existing runtime paths so Roblox Studio, tests, and VS Code packaging keep working.
+
 The root of this repository intentionally does not load a Rojo `.project.json`. To use Luau sourcemaps, validate Roblox sync, or test MCP as an end user, open `examples/roblox-workspace/` or the real Roblox workspace for your game.
 
 If you use `aftman`, run `aftman install` at the repository root to install the `rojo` version declared in `aftman.toml`.

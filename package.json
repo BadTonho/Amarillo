@@ -5,14 +5,19 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "check": "node scripts/check-js-syntax.js",
-    "start": "node src/daemon/index.js",
-    "start:workspace": "node src/daemon/index.js --workspace .",
-    "package:vsix": "powershell -ExecutionPolicy Bypass -File scripts/package-vsix.ps1",
-    "test": "node --test",
+    "build": "tsc -p tsconfig.daemon.json && tsc -p tsconfig.extension.json",
+    "check": "npm run build && node scripts/check-js-syntax.js",
+    "start": "npm run build && node src/daemon/index.js",
+    "start:workspace": "npm run build && node src/daemon/index.js --workspace .",
+    "package:vsix": "npm run build && powershell -ExecutionPolicy Bypass -File scripts/package-vsix.ps1",
+    "test": "npm run build && node --test",
     "test:ci": "npm run check && npm test && npm run package:vsix"
   },
   "engines": {
     "node": ">=22.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3"
   }
 }
