@@ -125,7 +125,7 @@ if (fs.existsSync(path.join(repoRoot, "package-lock.json"))) {
   });
 }
 
-replaceInFile("src-ts/daemon/version.ts", [
+replaceInFile("src/daemon/version.ts", [
   [/const DAEMON_VERSION = "[^"]+";/, `const DAEMON_VERSION = "${version.daemonVersion}";`],
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
 ]);

@@ -24,7 +24,7 @@ Status: implementado.
 
 `scripts/start-daemon.ps1` e `scripts/run-mcp.ps1` agora rodam `npm.cmd run build:runtime` automaticamente quando o JS gerado necessario nao existe.
 
-### 3. Rotas duplicadas em `src-ts/daemon/app.ts`
+### 3. Rotas duplicadas em `src/daemon/app.ts`
 
 Status: implementado.
 

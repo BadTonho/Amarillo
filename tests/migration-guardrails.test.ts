@@ -50,14 +50,17 @@ test("root package version is synchronized with Amarillo product version", () =>
 test("runtime and extension participate in npm typecheck", () => {
   const packageJson = JSON.parse(readText("package.json"));
   const baseTsconfig = JSON.parse(readText("tsconfig.base.json"));
+  const daemonTsconfig = JSON.parse(readText("tsconfig.daemon.json"));
 
   assert.equal(baseTsconfig.compilerOptions.noCheck, false);
+  assert.deepEqual(daemonTsconfig.include, ["src/daemon/**/*.ts", "src/mcp-proxy/**/*.ts"]);
+  assert.doesNotMatch(JSON.stringify(daemonTsconfig), /src-ts/);
   assert.match(packageJson.scripts.typecheck, /typecheck:runtime/);
   assert.match(packageJson.scripts.typecheck, /typecheck:extension/);
 });
 
 test("daemon HTTP dispatch no longer keeps duplicate legacy route implementations", () => {
-  const appSource = readText("src-ts", "daemon", "app.ts");
+  const appSource = readText("src", "daemon", "app.ts");
   const handleHttpSource = appSource.slice(appSource.indexOf("async handleHttp"));
 
   assert.match(appSource, /handleDiagnosticsRoutes/);

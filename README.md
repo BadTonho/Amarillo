@@ -6,10 +6,10 @@ This repository contains the **source code for the bridge and the VS Code extens
 
 ## Components
 
-- `src-ts/`: canonical TypeScript source for the HTTP daemon and MCP proxy.
+- `src/daemon/` and `src/mcp-proxy/`: canonical TypeScript source for the HTTP daemon and MCP proxy. The generated `.js` files in these folders are build artifacts.
 - `vscode-extension-src/`: canonical TypeScript source for the VS Code extension.
 - `src/plugin/Amarillo.lua`: local Roblox Studio plugin; this remains Luau because Studio runs it directly.
-- `src/`, `src/mcp-proxy/`, `vscode-extension/*.js`, `tests/*.js`, and `scripts/*.js`: generated JavaScript artifacts created by the TypeScript build.
+- `src/daemon/**/*.js`, `src/mcp-proxy/**/*.js`, `vscode-extension/*.js`, `tests/*.js`, and `scripts/*.js`: generated JavaScript artifacts created by the TypeScript build.
 - `tests/`: canonical TypeScript tests for project parsing, bootstrap, diagnostics, VSIX packaging, and MCP proxy behavior.
 
 ## Current Architecture
@@ -86,7 +86,7 @@ Use the dedicated workspace in `examples/roblox-workspace/`.
 
 The Node runtime and VS Code extension are authored from TypeScript sources:
 
-- `src-ts/` compiles to `src/`
+- `src/daemon/**/*.ts` and `src/mcp-proxy/**/*.ts` compile to generated `.js` files in the same runtime folders
 - `vscode-extension-src/` compiles to `vscode-extension/`
 - `scripts/*.ts` compiles to `scripts/*.js`
 - `tests/*.ts` compiles to `tests/*.js`
