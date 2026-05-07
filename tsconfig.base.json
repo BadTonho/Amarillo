@@ -6,7 +6,7 @@
     "ignoreDeprecations": "6.0",
     "types": ["node"],
     "strict": false,
-    "noCheck": true,
+    "noCheck": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,

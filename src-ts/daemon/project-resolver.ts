@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -165,7 +165,7 @@ function normalizeTreePaths(node, projectDir, workspaceRoot) {
 
 function collectMounts(treeNode, parentSegments = []) {
   const mounts = [];
-  for (const [name, value] of Object.entries(treeNode || {})) {
+  for (const [name, value] of Object.entries(treeNode || {}) as any) {
     if (name.startsWith("$") || !isPlainObject(value)) {
       continue;
     }
@@ -296,7 +296,7 @@ function createProjectDescriptor(projectPath, workspaceRoot) {
   };
 }
 
-function createIssue(code, descriptor, message, details = {}) {
+function createIssue(code, descriptor, message, details: any = {}) {
   return {
     key: `${code}:${descriptor ? descriptor.id : "workspace"}:${details.baseProjectId || details.cycle || ""}`,
     code,
@@ -535,3 +535,4 @@ module.exports = {
   resolveProjectForPlace,
   resolveProjectSelectionForPlace
 };
+

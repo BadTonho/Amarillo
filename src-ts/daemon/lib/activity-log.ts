@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -66,7 +66,9 @@ function readJsonlRecords(filePath) {
 }
 
 class ActivityLog {
-  constructor(options = {}) {
+  [key: string]: any;
+
+  constructor(options: any = {}) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.jsonlFileName = options.jsonlFileName || DEFAULT_JSONL_FILE;
     this.markdownFileName = options.markdownFileName || DEFAULT_MARKDOWN_FILE;
@@ -128,7 +130,7 @@ class ActivityLog {
     return paths;
   }
 
-  add(entry = {}) {
+  add(entry: any = {}) {
     const timestamp = entry.timestamp || new Date().toISOString();
     const absolutePath = entry.path ? path.resolve(entry.path) : null;
     const relativePath = entry.relativePath
@@ -173,7 +175,7 @@ class ActivityLog {
     fs.appendFileSync(markdownPath, `| ${line} |\n`, "utf8");
   }
 
-  query(options = {}) {
+  query(options: any = {}) {
     const limit = Number(options.limit || 0);
     const records = this.collectJsonlPaths()
       .flatMap((filePath) => readJsonlRecords(filePath))
@@ -218,3 +220,4 @@ module.exports = {
   ActivityLog,
   getFileInfo
 };
+

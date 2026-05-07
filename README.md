@@ -6,12 +6,11 @@ This repository contains the **source code for the bridge and the VS Code extens
 
 ## Components
 
-- `src/daemon/`: HTTP daemon that coordinates Studio sessions, sync, and bridge state
-- `src/mcp-proxy/`: `stdio` MCP client that forwards tools to the already-running HTTP daemon
-- `src/plugin/Amarillo.lua`: local Roblox Studio plugin
-- `vscode-extension/`: VS Code extension
-- `examples/roblox-workspace/`: dedicated Roblox workspace for manual validation
-- `tests/`: Node tests for project parsing, bootstrap, and MCP proxy behavior
+- `src-ts/`: canonical TypeScript source for the HTTP daemon and MCP proxy.
+- `vscode-extension-src/`: canonical TypeScript source for the VS Code extension.
+- `src/plugin/Amarillo.lua`: local Roblox Studio plugin; this remains Luau because Studio runs it directly.
+- `src/`, `src/mcp-proxy/`, `vscode-extension/*.js`, `tests/*.js`, and `scripts/*.js`: generated JavaScript artifacts created by the TypeScript build.
+- `tests/`: canonical TypeScript tests for project parsing, bootstrap, diagnostics, VSIX packaging, and MCP proxy behavior.
 
 ## Current Architecture
 
@@ -89,8 +88,17 @@ The Node runtime and VS Code extension are authored from TypeScript sources:
 
 - `src-ts/` compiles to `src/`
 - `vscode-extension-src/` compiles to `vscode-extension/`
+- `scripts/*.ts` compiles to `scripts/*.js`
+- `tests/*.ts` compiles to `tests/*.js`
 
-Run `npm run build` after editing TypeScript. The generated JavaScript stays in the existing runtime paths so Roblox Studio, tests, and VS Code packaging keep working.
+Run `npm run build` after editing runtime or extension TypeScript. Run `npm run build:scripts` before invoking generated script CLIs directly. Generated JavaScript stays in the existing runtime paths so Roblox Studio, tests, and VS Code packaging keep working, but it should not be edited or committed.
+
+Useful commands:
+
+- `npm.cmd run typecheck`: typechecks runtime, extension, contracts, scripts, and tests.
+- `npm.cmd run check`: builds generated JavaScript and validates it with `node --check`.
+- `npm.cmd test`: builds all generated JavaScript required by tests, then runs `node --test`.
+- `npm.cmd run clean:generated`: removes ignored generated JavaScript from runtime, extension, scripts, and tests.
 
 The root of this repository intentionally does not load a Rojo `.project.json`. To use Luau sourcemaps, validate Roblox sync, or test MCP as an end user, open `examples/roblox-workspace/` or the real Roblox workspace for your game.
 

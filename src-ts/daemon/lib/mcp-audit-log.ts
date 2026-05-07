@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -56,7 +56,9 @@ function auditOutcome(record) {
 }
 
 class McpAuditLog {
-  constructor(options = {}) {
+  [key: string]: any;
+
+  constructor(options: any = {}) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.jsonlFileName = options.jsonlFileName || DEFAULT_JSONL_FILE;
     this.markdownFileName = options.markdownFileName || DEFAULT_MARKDOWN_FILE;
@@ -100,7 +102,7 @@ class McpAuditLog {
     return paths;
   }
 
-  add(entry = {}) {
+  add(entry: any = {}) {
     const timestamp = entry.timestamp || new Date().toISOString();
     const record = {
       id: entry.id || `${Date.now().toString(36)}-${hashValue(`${timestamp}:${entry.tool}:${Math.random()}`).slice(0, 8)}`,
@@ -143,7 +145,7 @@ class McpAuditLog {
     fs.appendFileSync(markdownPath, `| ${line} |\n`, "utf8");
   }
 
-  query(options = {}) {
+  query(options: any = {}) {
     const limit = Number(options.limit || 0);
     const records = this.collectJsonlPaths()
       .flatMap((filePath) => readJsonlRecords(filePath))
@@ -195,3 +197,4 @@ class McpAuditLog {
 module.exports = {
   McpAuditLog
 };
+

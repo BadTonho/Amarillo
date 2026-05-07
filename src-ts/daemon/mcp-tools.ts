@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const TOOL_DEFINITIONS = [
   {
@@ -373,12 +373,12 @@ function listTools() {
 
 const TOOL_DEFINITION_BY_NAME = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
 
-function validateToolArguments(name, args = {}) {
+function validateToolArguments(name, args: any = {}) {
   const tool = TOOL_DEFINITION_BY_NAME.get(name);
   if (!tool) {
     throw new Error(`Unsupported MCP tool: ${name}`);
   }
-  const schema = tool.inputSchema || {};
+  const schema: any = tool.inputSchema || {};
   const properties = schema.properties || {};
   const required = Array.isArray(schema.required) ? schema.required : [];
 
@@ -388,7 +388,7 @@ function validateToolArguments(name, args = {}) {
     }
   }
 
-  for (const [key, definition] of Object.entries(properties)) {
+  for (const [key, definition] of Object.entries(properties) as any) {
     if (args[key] === undefined || args[key] === null || definition.type === undefined) {
       continue;
     }
@@ -495,3 +495,4 @@ module.exports = {
   listTools,
   validateToolArguments
 };
+

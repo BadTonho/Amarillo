@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -133,7 +133,7 @@ function buildRojoSourcemapArgs(workspaceRoot, projectFilePath, sourcemapPath) {
   ];
 }
 
-function defaultRunCommand(command, args, options = {}) {
+function defaultRunCommand(command, args, options: any = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
@@ -155,7 +155,7 @@ function defaultRunCommand(command, args, options = {}) {
         resolve({ stdout, stderr });
         return;
       }
-      const error = new Error(stderr.trim() || stdout.trim() || `Command exited with code ${code}`);
+      const error: any = new Error(stderr.trim() || stdout.trim() || `Command exited with code ${code}`);
       error.code = code;
       reject(error);
     });
@@ -171,7 +171,7 @@ function rojoCommandCandidates(userProfile = process.env.USERPROFILE || "") {
   return candidates.filter((value, index, values) => values.indexOf(value) === index);
 }
 
-async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, options = {}) {
+async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, options: any = {}) {
   const runCommand = options.runCommand || defaultRunCommand;
   const candidates = options.commandCandidates || rojoCommandCandidates(options.userProfile);
   const args = buildRojoSourcemapArgs(workspaceRoot, projectFilePath, sourcemapPath);
@@ -196,7 +196,7 @@ async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, 
   throw lastError || new Error("Rojo was not found to generate the sourcemap.");
 }
 
-async function ensureWorkspaceSourcemap(workspaceRoot, options = {}) {
+async function ensureWorkspaceSourcemap(workspaceRoot, options: any = {}) {
   const projectFilePath = resolveSourcemapProjectFile(
     workspaceRoot,
     options.projectFiles || [],
@@ -242,3 +242,5 @@ module.exports = {
   rojoCommandCandidates,
   sourcemapNeedsGeneration
 };
+
+
