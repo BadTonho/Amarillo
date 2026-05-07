@@ -5,9 +5,9 @@
     "noEmit": true
   },
   "include": [
-    "src-ts/daemon/contracts/connection.ts",
-    "src-ts/daemon/contracts/diagnostics.ts",
-    "src-ts/daemon/http-utils.ts",
-    "src-ts/daemon/routes/connection.ts"
+    "src/daemon/contracts/connection.ts",
+    "src/daemon/contracts/diagnostics.ts",
+    "src/daemon/http-utils.ts",
+    "src/daemon/routes/connection.ts"
   ]
 }

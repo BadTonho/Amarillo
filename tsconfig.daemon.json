@@ -1,10 +1,7 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": {
-    "rootDir": "./src-ts",
-    "outDir": "./src"
-  },
   "include": [
-    "src-ts/**/*.ts"
+    "src/daemon/**/*.ts",
+    "src/mcp-proxy/**/*.ts"
   ]
 }
