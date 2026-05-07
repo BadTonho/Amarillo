@@ -38,6 +38,10 @@ test("Amarillo component versions stay synchronized from amarillo-version.json",
     path.join(__dirname, "..", "vscode-extension", "package.json"),
     "utf8"
   ));
+  const rootPackage = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "package.json"),
+    "utf8"
+  ));
   const daemonVersionSource = fs.readFileSync(
     path.join(__dirname, "..", "src", "daemon", "version.js"),
     "utf8"
@@ -48,6 +52,7 @@ test("Amarillo component versions stay synchronized from amarillo-version.json",
   );
 
   assert.equal(extensionManifest.version, version.extensionVersion);
+  assert.equal(rootPackage.version, version.extensionVersion);
   assert.match(daemonVersionSource, new RegExp(`const DAEMON_VERSION = "${version.daemonVersion}"`));
   assert.match(daemonVersionSource, new RegExp(`const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion}`));
   assert.match(pluginSource, new RegExp(`local PLUGIN_VERSION = "${version.pluginVersion}"`));

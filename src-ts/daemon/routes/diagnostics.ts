@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 import type { DiagnosticErrorEntry, HealthPayload } from "../contracts/diagnostics";
 
@@ -107,13 +107,13 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
         session: {
           ...single,
           snapshotSize: session.lastStudioSnapshot ? JSON.stringify(session.lastStudioSnapshot).length : 0,
-          pendingCommands: session.pendingCommands.map((command) => ({
+          pendingCommands: session.pendingCommands.map((command: any) => ({
             id: command.id,
             type: command.type,
             expectedHash: command.expectedHash || null
           })),
           inFlightCommandCount: session.inFlightCommands.size,
-          inFlightCommands: Array.from(session.inFlightCommands.values()).map((command) => ({
+          inFlightCommands: Array.from(session.inFlightCommands.values()).map((command: any) => ({
             id: command.id,
             type: command.type,
             expectedHash: command.expectedHash || null
@@ -164,7 +164,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
   }
 
   if (request.method === "GET" && requestUrl.pathname === "/errors") {
-    const filters = {};
+    const filters: any = {};
     const severity = requestUrl.searchParams.get("severity");
     const component = requestUrl.searchParams.get("component");
     const resolved = requestUrl.searchParams.get("resolved");
@@ -238,3 +238,4 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
 module.exports = {
   handleDiagnosticsRoutes
 };
+

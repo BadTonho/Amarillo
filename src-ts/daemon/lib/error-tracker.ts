@@ -1,19 +1,19 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
 
 /**
- * ErrorTracker — Sistema de rastreamento estruturado de erros para o Amarillo.
+ * ErrorTracker â€” Sistema de rastreamento estruturado de erros para o Amarillo.
  *
- * Registra erros com contexto (componente, severidade, sessão) e persiste
+ * Registra erros com contexto (componente, severidade, sessÃ£o) e persiste
  * em arquivo JSON para consulta futura via HTTP endpoint ou CLI.
  *
- * Níveis de severidade:
- *   "critical"  — Falha que impede o funcionamento do sistema
- *   "error"     — Falha de operação, mas o sistema continua
- *   "warning"   — Comportamento inesperado que não impede operação
- *   "info"      — Informação útil para debug
+ * NÃ­veis de severidade:
+ *   "critical"  â€” Falha que impede o funcionamento do sistema
+ *   "error"     â€” Falha de operaÃ§Ã£o, mas o sistema continua
+ *   "warning"   â€” Comportamento inesperado que nÃ£o impede operaÃ§Ã£o
+ *   "info"      â€” InformaÃ§Ã£o Ãºtil para debug
  */
 
 const DEFAULT_MAX_ENTRIES = 500;
@@ -48,7 +48,7 @@ function getTimeZoneParts(date, timeZone) {
     second: "2-digit",
     hourCycle: "h23"
   });
-  const parts = {};
+  const parts: any = {};
   for (const part of formatter.formatToParts(date)) {
     if (part.type !== "literal") {
       parts[part.type] = part.value;
@@ -106,14 +106,16 @@ function readEntriesFile(filePath) {
 }
 
 class ErrorTracker {
+  [key: string]: any;
+
   /**
    * @param {object} options
-   * @param {string} options.workspaceRoot — Diretório base para persistir o log
-   * @param {number} [options.maxEntries] — Máximo de entradas mantidas (FIFO)
-   * @param {string} [options.logFileName] — Nome do arquivo de log
-   * @param {boolean} [options.persistOnAdd] — Se true, salva no disco a cada erro adicionado
+   * @param {string} options.workspaceRoot â€” DiretÃ³rio base para persistir o log
+   * @param {number} [options.maxEntries] â€” MÃ¡ximo de entradas mantidas (FIFO)
+   * @param {string} [options.logFileName] â€” Nome do arquivo de log
+   * @param {boolean} [options.persistOnAdd] â€” Se true, salva no disco a cada erro adicionado
    */
-  constructor(options = {}) {
+  constructor(options: any = {}) {
     this.workspaceRoot = options.workspaceRoot || process.cwd();
     this.maxEntries = options.maxEntries || DEFAULT_MAX_ENTRIES;
     this.logFileName = options.logFileName || DEFAULT_LOG_FILE;
@@ -169,17 +171,17 @@ class ErrorTracker {
    * Registra um novo erro.
    *
    * @param {object} entry
-   * @param {string} entry.component — Componente de origem (daemon, plugin, mcp-proxy, extension)
-   * @param {string} entry.severity — "critical" | "error" | "warning" | "info"
-   * @param {string} entry.code — Código identificador único do erro (ex: "ERR-001")
-   * @param {string} entry.message — Mensagem descritiva do erro
-   * @param {string} [entry.file] — Arquivo onde o erro ocorre
-   * @param {number} [entry.line] — Linha do erro
-   * @param {string} [entry.sessionId] — Sessão do Studio associada (se aplicável)
-   * @param {string} [entry.projectId] — Projeto associado (se aplicável)
-   * @param {object} [entry.context] — Dados adicionais de contexto
-   * @param {string} [entry.suggestion] — Sugestão de correção
-   * @param {boolean} [entry.resolved] — Se o erro já foi resolvido
+   * @param {string} entry.component â€” Componente de origem (daemon, plugin, mcp-proxy, extension)
+   * @param {string} entry.severity â€” "critical" | "error" | "warning" | "info"
+   * @param {string} entry.code â€” CÃ³digo identificador Ãºnico do erro (ex: "ERR-001")
+   * @param {string} entry.message â€” Mensagem descritiva do erro
+   * @param {string} [entry.file] â€” Arquivo onde o erro ocorre
+   * @param {number} [entry.line] â€” Linha do erro
+   * @param {string} [entry.sessionId] â€” SessÃ£o do Studio associada (se aplicÃ¡vel)
+   * @param {string} [entry.projectId] â€” Projeto associado (se aplicÃ¡vel)
+   * @param {object} [entry.context] â€” Dados adicionais de contexto
+   * @param {string} [entry.suggestion] â€” SugestÃ£o de correÃ§Ã£o
+   * @param {boolean} [entry.resolved] â€” Se o erro jÃ¡ foi resolvido
    * @returns {object} O registro criado
    */
   add(entry) {
@@ -213,7 +215,7 @@ class ErrorTracker {
       try {
         listener(record);
       } catch (_error) {
-        // Listener não pode crashar o tracker
+        // Listener nÃ£o pode crashar o tracker
       }
     }
 
@@ -227,7 +229,7 @@ class ErrorTracker {
   /**
    * Atalho para registrar a partir de um Error object.
    */
-  addFromError(error, options = {}) {
+  addFromError(error, options: any = {}) {
     return this.add({
       component: options.component || "daemon",
       severity: options.severity || "error",
@@ -260,7 +262,7 @@ class ErrorTracker {
   }
 
   /**
-   * Marca todos os erros não resolvidos como resolvidos.
+   * Marca todos os erros nÃ£o resolvidos como resolvidos.
    */
   resolveAll() {
     const now = this.nowTimestamp();
@@ -292,16 +294,16 @@ class ErrorTracker {
    * Retorna entradas filtradas.
    *
    * @param {object} [filters]
-   * @param {string} [filters.severity] — Filtrar por severidade
-   * @param {string} [filters.component] — Filtrar por componente
-   * @param {boolean} [filters.resolved] — Filtrar por status de resolução
-   * @param {string} [filters.code] — Filtrar por código de erro
-   * @param {string} [filters.sessionId] — Filtrar por sessão
-   * @param {number} [filters.limit] — Limitar número de resultados
-   * @param {string} [filters.since] — Filtrar por timestamp (ISO string)
+   * @param {string} [filters.severity] â€” Filtrar por severidade
+   * @param {string} [filters.component] â€” Filtrar por componente
+   * @param {boolean} [filters.resolved] â€” Filtrar por status de resoluÃ§Ã£o
+   * @param {string} [filters.code] â€” Filtrar por cÃ³digo de erro
+   * @param {string} [filters.sessionId] â€” Filtrar por sessÃ£o
+   * @param {number} [filters.limit] â€” Limitar nÃºmero de resultados
+   * @param {string} [filters.since] â€” Filtrar por timestamp (ISO string)
    * @returns {object[]}
    */
-  query(filters = {}) {
+  query(filters: any = {}) {
     let results = this.entries;
 
     if (filters.severity) {
@@ -333,7 +335,7 @@ class ErrorTracker {
   }
 
   /**
-   * Retorna um resumo estatístico.
+   * Retorna um resumo estatÃ­stico.
    */
   summary() {
     const stats = {
@@ -416,7 +418,7 @@ class ErrorTracker {
         .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0))
         .slice(0, this.maxEntries);
     } catch (_error) {
-      // Arquivo corrompido ou inexistente — começar vazio
+      // Arquivo corrompido ou inexistente â€” comeÃ§ar vazio
       this.entries = [];
     }
   }
@@ -447,7 +449,7 @@ class ErrorTracker {
         this._writeEntriesFile(path.join(this.logRootPath, day, this.logFileName), entries);
       }
     } catch (_error) {
-      // Falha silenciosa na persistência — não crashar o daemon
+      // Falha silenciosa na persistÃªncia â€” nÃ£o crashar o daemon
     }
   }
 
@@ -465,3 +467,4 @@ class ErrorTracker {
 }
 
 module.exports = { ErrorTracker, formatTimestamp };
+

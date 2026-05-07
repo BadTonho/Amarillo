@@ -1,6 +1,6 @@
 {
   "name": "amarillo-argon-bridge",
-  "version": "0.1.0",
+  "version": "1.0.19",
   "description": "Windows-first Roblox Studio Amarillo plugin + local daemon inspired by Argon.",
   "private": true,
   "type": "commonjs",
@@ -12,10 +12,13 @@
     "build": "npm run build:runtime && npm run build:extension",
     "version:sync": "npm run build:scripts && node scripts/sync-version.js",
     "version:set": "npm run build:scripts && node scripts/sync-version.js",
+    "clean:generated": "npm run build:scripts && node scripts/clean-generated.js",
+    "typecheck:runtime": "tsc -p tsconfig.daemon.json --noEmit",
+    "typecheck:extension": "tsc -p tsconfig.extension.json --noEmit",
     "typecheck:connection": "tsc -p tsconfig.connection.json",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
-    "typecheck": "npm run typecheck:connection && npm run typecheck:scripts && npm run typecheck:tests",
+    "typecheck": "npm run typecheck:runtime && npm run typecheck:extension && npm run typecheck:connection && npm run typecheck:scripts && npm run typecheck:tests",
     "check": "npm run build:scripts && npm run build && npm run build:tests && npm run typecheck && node scripts/check-js-syntax.js",
     "start": "npm run build && node src/daemon/index.js",
     "start:workspace": "npm run build && node src/daemon/index.js --workspace .",
@@ -27,7 +30,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^22.19.18",
     "typescript": "^6.0.3"
   }
 }

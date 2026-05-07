@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const http = require("node:http");
 const path = require("node:path");
@@ -54,7 +54,7 @@ function resolveBridgeOptions(options) {
 // OPT-007: Persistent HTTP agent with keepAlive for reduced latency
 const keepAliveAgent = new http.Agent({ keepAlive: true, maxSockets: 4 });
 
-function requestJson(baseUrl, method, route, body, options = {}) {
+function requestJson(baseUrl, method, route, body, options: any = {}) {
   const url = new URL(route, `${baseUrl}/`);
   const timeoutMs = options.timeoutMs || 130000;
   const headers = {
@@ -113,7 +113,7 @@ function sessionRoute(sessionId, action, query = "") {
 }
 
 async function healthPayload(baseUrl, bridgeToken) {
-  const response = await requestJson(baseUrl, "POST", "/mcp/call", {
+  const response: any = await requestJson(baseUrl, "POST", "/mcp/call", {
     name: "health",
     arguments: {}
   }, { bridgeToken });
@@ -129,7 +129,7 @@ async function callProxyTool(baseUrl, bridgeToken, name, args) {
   if (name === "health") {
     return healthPayload(baseUrl, bridgeToken);
   }
-  const response = await requestJson(baseUrl, "POST", "/mcp/call", {
+  const response: any = await requestJson(baseUrl, "POST", "/mcp/call", {
     name,
     arguments: args || {}
   }, { bridgeToken });
@@ -154,3 +154,4 @@ main().catch((error) => {
   process.stderr.write(`${error.stack || error.message}\n`);
   process.exit(1);
 });
+

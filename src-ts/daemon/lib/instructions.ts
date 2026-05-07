@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -123,7 +123,7 @@ function schemaSummary(schema) {
   const required = Array.isArray(schema.required) && schema.required.length > 0
     ? schema.required.join(", ")
     : "none";
-  const properties = Object.entries(schema.properties || {}).map(([name, value]) => {
+  const properties = (Object.entries(schema.properties || {}) as any).map(([name, value]) => {
     const type = value && value.type ? value.type : "any";
     const description = value && value.description ? ` - ${value.description}` : "";
     return `    - \`${name}\` (${type})${description}`;
@@ -135,7 +135,7 @@ function schemaSummary(schema) {
   ].join("\n");
 }
 
-function buildInstructionsMarkdown(context = {}) {
+function buildInstructionsMarkdown(context: any = {}) {
   const generatedAt = new Date().toISOString();
   const workspaceRoot = context.workspaceRoot || process.cwd();
   const projectLines = (context.projects || []).map((project) => (
@@ -210,7 +210,7 @@ function buildInstructionsMarkdown(context = {}) {
   ].join("\n");
 }
 
-function ensurePluginInstructionsFile(options = {}) {
+function ensurePluginInstructionsFile(options: any = {}) {
   const workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
   const outputDir = path.join(workspaceRoot, ".amarillo");
   const outputPath = path.join(outputDir, INSTRUCTIONS_FILE_NAME);
@@ -238,3 +238,4 @@ module.exports = {
   buildInstructionsMarkdown,
   ensurePluginInstructionsFile
 };
+

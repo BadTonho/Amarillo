@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const http = require("node:http");
@@ -76,7 +76,7 @@ function createDeferred() {
   return { promise, resolve, reject };
 }
 
-function logSync(event, details = {}) {
+function logSync(event, details: any = {}) {
   if (process.env.AMARILLO_DEBUG !== "1") {
     return;
   }
@@ -262,6 +262,37 @@ function isInitialStudioSyncPending(session) {
 }
 
 class PluginRobloxApp {
+  [key: string]: any;
+  workspaceRoot: string;
+  host: string;
+  port: number;
+  strictPort: boolean;
+  autoSyncToStudioExplicit: boolean;
+  autoSyncToStudio: boolean;
+  bridgeToken: string | null;
+  extensionVersion: string | null;
+  extensionProtocolVersion: number | null;
+  initialStudioContactGraceMs: number;
+  studioSessionStaleMs: number;
+  httpServer: any;
+  allProjects: any[];
+  projects: any[];
+  projectCatalogIssues: any[];
+  config: any;
+  defaultProjectId: string | null;
+  sessions: Map<string, any>;
+  connectionOffer: any;
+  fileWatchers: any[];
+  pendingStudioWrites: Map<string, any>;
+  lastWorkspaceRefresh: string | null;
+  lastDiskWriteTime: number | null;
+  lastProjectIssueKeys: Set<any>;
+  errorTracker: any;
+  activityLog: any;
+  mcpAuditLog: any;
+  activityFileState: Map<string, any>;
+  mcpShield: any;
+
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.host = options.host || "127.0.0.1";
@@ -287,10 +318,10 @@ class PluginRobloxApp {
       plugin: {}
     };
     this.defaultProjectId = null;
-    this.sessions = new Map();
+    this.sessions = new Map<string, any>();
     this.connectionOffer = null;
     this.fileWatchers = [];
-    this.pendingStudioWrites = new Map();
+    this.pendingStudioWrites = new Map<string, any>();
     this.lastWorkspaceRefresh = null;
     this.lastDiskWriteTime = null;
     this.lastProjectIssueKeys = new Set();
@@ -304,7 +335,7 @@ class PluginRobloxApp {
     this.mcpAuditLog = new McpAuditLog({
       workspaceRoot: this.workspaceRoot
     });
-    this.activityFileState = new Map();
+    this.activityFileState = new Map<string, any>();
     this.mcpShield = createMcpShieldState();
   }
 
@@ -445,7 +476,7 @@ class PluginRobloxApp {
     }
   }
 
-  recordError(entry = {}) {
+  recordError(entry: any = {}) {
     return this.errorTracker.add({
       component: entry.component || "daemon",
       severity: entry.severity || "error",
@@ -461,7 +492,7 @@ class PluginRobloxApp {
     });
   }
 
-  recordMcpContact(source = "unknown", details = {}) {
+  recordMcpContact(source = "unknown", details: any = {}) {
     if (!this.mcpShield) {
       this.mcpShield = createMcpShieldState();
     }
@@ -483,7 +514,7 @@ class PluginRobloxApp {
     }
   }
 
-  recordMcpFailure(source = "unknown", error, details = {}) {
+  recordMcpFailure(source = "unknown", error: any, details: any = {}) {
     if (!this.mcpShield) {
       this.mcpShield = createMcpShieldState();
     }
@@ -530,7 +561,7 @@ class PluginRobloxApp {
     };
   }
 
-  updateSessionPluginVersion(session, metadata = {}) {
+  updateSessionPluginVersion(session: any, metadata: any = {}) {
     if (!session || !metadata || typeof metadata !== "object") {
       return;
     }
@@ -705,14 +736,14 @@ class PluginRobloxApp {
   assertSessionSyncAllowed(session, action = "sync") {
     const reason = this.syncBlockedReason(session);
     if (reason) {
-      const error = new Error(`${action} blocked: ${reason}`);
+      const error: any = new Error(`${action} blocked: ${reason}`);
       error.statusCode = 409;
       error.code = "SYNC-BLOCKED";
       throw error;
     }
   }
 
-  recordMcpAudit(entry = {}) {
+  recordMcpAudit(entry: any = {}) {
     return this.mcpAuditLog.add(entry);
   }
 
@@ -840,7 +871,7 @@ class PluginRobloxApp {
     return null;
   }
 
-  recordActivity(change = {}, defaults = {}) {
+  recordActivity(change: any = {}, defaults: any = {}) {
     const filePath = change.filePath || change.path;
     if (!filePath) {
       return null;
@@ -880,7 +911,7 @@ class PluginRobloxApp {
     return record;
   }
 
-  recordWorkspaceFileActivity(filePath, defaults = {}) {
+  recordWorkspaceFileActivity(filePath, defaults: any = {}) {
     const normalized = normalizeFsPath(filePath);
     const context = this.findMountedFileContext(normalized);
     if (!context) {
@@ -972,7 +1003,7 @@ class PluginRobloxApp {
     session._pollWaiter = null;
   }
 
-  reclaimStudioSession(session, selection, placeId, options = {}) {
+  reclaimStudioSession(session: any, selection: any, placeId, options: any = {}) {
     this.clearSessionRuntimeState(session);
     session.placeId = Number(placeId || 0);
     session.createdAt = new Date().toISOString();
@@ -1444,7 +1475,7 @@ class PluginRobloxApp {
     return this.connectionOfferSummary();
   }
 
-  resolveConnectionOffer(status, details = {}) {
+  resolveConnectionOffer(status, details: any = {}) {
     if (!this.connectionOffer) {
       return null;
     }
@@ -1489,7 +1520,7 @@ class PluginRobloxApp {
     return resolveProjectSelectionForPlace(this.projects, placeId, this.defaultProjectId);
   }
 
-  openSession(placeId, preferredProjectId = null, options = {}) {
+  openSession(placeId, preferredProjectId = null, options: any = {}) {
     const selection = this.resolveProjectSelection(placeId, preferredProjectId);
     const project = selection.project;
     if (!project) {
@@ -1534,7 +1565,7 @@ class PluginRobloxApp {
         project
       };
     }
-    const session = {
+    const session: any = {
       id: crypto.randomUUID(),
       sessionToken: this.createSessionToken(),
       placeId: Number(placeId || 0),
@@ -1759,7 +1790,7 @@ class PluginRobloxApp {
     });
   }
 
-  markSyncDegraded(session, reason, details = {}) {
+  markSyncDegraded(session, reason, details: any = {}) {
     const sync = this.ensureSessionSyncState(session);
     const message = String(reason || "Sync verification failed.");
     const timestamp = new Date().toISOString();
@@ -1870,7 +1901,7 @@ class PluginRobloxApp {
       throw new Error("Studio session not found.");
     }
     if (isSyncCommandType(type) && this.isSessionVersionBlocked(session)) {
-      const error = new Error(`${type} blocked: ${this.syncBlockedReason(session)}`);
+      const error: any = new Error(`${type} blocked: ${this.syncBlockedReason(session)}`);
       error.statusCode = 409;
       error.code = "VERSION-BLOCKED";
       throw error;
@@ -1897,7 +1928,7 @@ class PluginRobloxApp {
         return keep;
       });
     }
-    const command = {
+    const command: any = {
       id: crypto.randomUUID(),
       type,
       payload
@@ -2147,7 +2178,7 @@ class PluginRobloxApp {
     }
     if (this.isSessionVersionBlocked(session)) {
       const reason = this.syncBlockedReason(session);
-      const error = new Error(`Studio snapshot write blocked: ${reason}`);
+      const error: any = new Error(`Studio snapshot write blocked: ${reason}`);
       error.statusCode = 409;
       error.code = "VERSION-BLOCKED";
       throw error;
@@ -2281,8 +2312,8 @@ class PluginRobloxApp {
     return result;
   }
 
-  normalizeDestructiveCommandResult(session, result = {}) {
-    const normalized = result && typeof result === "object"
+  normalizeDestructiveCommandResult(session, result: any = {}) {
+    const normalized: any = result && typeof result === "object"
       ? { ...result }
       : {
         ok: false,
@@ -2332,7 +2363,7 @@ class PluginRobloxApp {
     return project;
   }
 
-  sessionSummary(session, options = {}) {
+  sessionSummary(session, options: any = {}) {
     const project = this.getProjectById(session.projectId);
     const sync = this.ensureSessionSyncState(session);
     const version = this.sessionVersionStatus(session);
@@ -2614,798 +2645,6 @@ class PluginRobloxApp {
       }
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/health") {
-      jsonResponse(response, 200, {
-        ok: true,
-        workspaceRoot: this.workspaceRoot,
-        host: this.host,
-        port: this.port,
-        versions: this.versionPayload(),
-        autoSyncToStudio: this.autoSyncToStudio,
-        projectCount: this.projects.length,
-        defaultProjectId: this.defaultProjectId,
-        defaultProjectPath: this.defaultProjectId
-          ? (this.getProjectById(this.defaultProjectId)?.id || null)
-          : null,
-        connectionOffer: this.connectionOfferSummary(),
-        sessions: Array.from(this.sessions.values()).map((session) => this.sessionSummary(session)),
-        mcpShield: mcpShieldSummary(this),
-        refreshedAt: this.lastWorkspaceRefresh
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/mcp/status") {
-      jsonResponse(response, 200, {
-        ok: true,
-        mcp: mcpShieldSummary(this)
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/doctor") {
-      jsonResponse(response, 200, this.doctorReport());
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/debug/mcp-state") {
-      jsonResponse(response, 200, {
-        ok: true,
-        timestamp: new Date().toISOString(),
-        mcp: mcpShieldSummary(this)
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/mcp/tools") {
-      const tools = listTools();
-      jsonResponse(response, 200, {
-        ok: true,
-        toolCount: tools.tools.length,
-        ...tools,
-        mcp: mcpShieldSummary(this)
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/mcp/probe") {
-      try {
-        const result = await handleMcpTool(this, "health", {}, { source: "http_probe" });
-        jsonResponse(response, 200, {
-          ok: true,
-          probe: "health",
-          mcp: mcpShieldSummary(this),
-          ...mcpToolResultToHttpPayload(result)
-        });
-      } catch (error) {
-        jsonResponse(response, 502, {
-          ok: false,
-          error: error.message,
-          mcp: mcpShieldSummary(this)
-        });
-      }
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/mcp/call") {
-      const body = await readJsonBody(request);
-      const toolName = String(body.name || body.tool || "");
-      if (!toolName) {
-        jsonResponse(response, 400, {
-          ok: false,
-          error: "Missing MCP tool name. Send { \"name\": \"health\", \"arguments\": {} }."
-        });
-        return;
-      }
-      try {
-        const source = request.headers["x-amarillo-mcp-proxy"] ? "proxy_http" : "http_fallback";
-        const result = await handleMcpTool(this, toolName, body.arguments || body.args || {}, { source });
-        jsonResponse(response, 200, {
-          ok: true,
-          name: toolName,
-          mcp: mcpShieldSummary(this),
-          ...mcpToolResultToHttpPayload(result)
-        });
-      } catch (error) {
-        jsonResponse(response, 502, {
-          ok: false,
-          name: toolName,
-          error: error.message,
-          mcp: mcpShieldSummary(this)
-        });
-      }
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/projects") {
-      jsonResponse(response, 200, {
-        ok: true,
-        projects: this.listProjects(),
-        defaultProjectId: this.defaultProjectId
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/project/active") {
-      const body = await readJsonBody(request);
-      const project = await this.setActiveProject(body.projectId);
-      jsonResponse(response, 200, {
-        ok: true,
-        project
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/workspace/files-changed") {
-      const body = await readJsonBody(request);
-      const result = this.handleWorkspaceFileEvents(body.events || [body]);
-      jsonResponse(response, 200, {
-        ok: true,
-        ...result
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/debug/sync-state") {
-      const sessionId = requestUrl.searchParams.get("sessionId");
-      const session = sessionId ? this.sessions.get(sessionId) : null;
-      
-      if (sessionId && !session) {
-        jsonResponse(response, 404, { ok: false, error: "Session not found" });
-        return;
-      }
-
-      if (session) {
-        const project = this.getProjectById(session.projectId);
-        const sync = this.ensureSessionSyncState(session);
-        jsonResponse(response, 200, {
-          ok: true,
-          mode: "single_session",
-          timestamp: new Date().toISOString(),
-          session: {
-            id: session.id,
-            projectId: session.projectId,
-            projectName: project ? project.name : "unknown",
-            placeId: session.placeId,
-            connectionState: session.connectionState || "ready",
-            truthSource: session.truthSource || null,
-            syncState: sync.state,
-            syncMessage: this.syncMessage(session),
-            lastAckAt: sync.lastAckAt,
-            lastVerifiedAt: sync.lastVerifiedAt,
-            lastFailure: sync.lastFailure,
-            lastExpectedHash: sync.lastExpectedHash,
-            lastObservedHash: sync.lastObservedHash,
-            degradedReason: sync.degradedReason,
-            requiresManualResync: sync.state === "degraded",
-            lastStudioContactAt: session.lastStudioContactAt,
-            lastStudioSeenAt: session.lastStudioSeenAt,
-            lastAppliedAt: session.lastAppliedAt,
-            lastStudioHash: session.lastStudioHash,
-            hasSnapshot: !!session.lastStudioSnapshot,
-            snapshotSize: session.lastStudioSnapshot ? JSON.stringify(session.lastStudioSnapshot).length : 0,
-            pendingCommandCount: session.pendingCommands.length,
-            pendingCommands: session.pendingCommands.map(c => ({
-              id: c.id,
-              type: c.type,
-              expectedHash: c.expectedHash || null
-            })),
-            inFlightCommandCount: session.inFlightCommands.size,
-            inFlightCommands: Array.from(session.inFlightCommands.values()).map(c => ({
-              id: c.id,
-              type: c.type,
-              expectedHash: c.expectedHash || null
-            })),
-            fileChangeTimerActive: !!session.fileChangeTimer
-          },
-          lastDiskWriteTime: this.lastDiskWriteTime,
-          autoSyncToStudio: this.autoSyncToStudio
-        });
-        return;
-      }
-
-      // All sessions
-      jsonResponse(response, 200, {
-        ok: true,
-        mode: "all_sessions",
-        timestamp: new Date().toISOString(),
-        daemon: {
-          workspaceRoot: this.workspaceRoot,
-          projectCount: this.projects.length,
-          sessionCount: this.sessions.size,
-          autoSyncToStudio: this.autoSyncToStudio,
-          lastDiskWriteTime: this.lastDiskWriteTime,
-          connectionOffer: this.connectionOfferSummary()
-        },
-        sessions: Array.from(this.sessions.values()).map((session) => {
-          const project = this.getProjectById(session.projectId);
-          const sync = this.ensureSessionSyncState(session);
-          return {
-            id: session.id,
-            projectId: session.projectId,
-            projectName: project ? project.name : "unknown",
-            placeId: session.placeId,
-            syncState: sync.state,
-            syncMessage: this.syncMessage(session),
-            lastAckAt: sync.lastAckAt,
-            lastVerifiedAt: sync.lastVerifiedAt,
-            lastFailure: sync.lastFailure,
-            lastExpectedHash: sync.lastExpectedHash,
-            lastObservedHash: sync.lastObservedHash,
-            degradedReason: sync.degradedReason,
-            requiresManualResync: sync.state === "degraded",
-            lastStudioContactAt: session.lastStudioContactAt,
-            lastStudioSeenAt: session.lastStudioSeenAt,
-            lastAppliedAt: session.lastAppliedAt,
-            lastStudioHash: session.lastStudioHash,
-            hasSnapshot: !!session.lastStudioSnapshot,
-            pendingCommandCount: session.pendingCommands.length,
-            pendingCommandTypes: session.pendingCommands.map(c => c.type)
-          };
-        })
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/connection/request") {
-      const body = await readJsonBody(request);
-      jsonResponse(response, 200, {
-        ok: true,
-        offer: this.beginConnectionOffer(body.requestedBy || "vscode")
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/connection/decline") {
-      const body = await readJsonBody(request);
-      const result = this.declineConnectionOffer(body.offerId, body.studioInstanceId || null);
-      jsonResponse(response, result.ok ? 200 : 409, result);
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/connection/accept") {
-      const body = await readJsonBody(request);
-      const result = this.acceptConnection({
-        offerId: body.offerId || null,
-        studioInstanceId: body.studioInstanceId || null,
-        placeId: body.placeId || 0,
-        projectId: body.projectId || null,
-        truthSource: body.truthSource || "pc",
-        pluginVersion: body.pluginVersion || null,
-        pluginProtocolVersion: body.pluginProtocolVersion || null,
-        requirePluginVersion: true
-      });
-      if (!result.ok) {
-        jsonResponse(response, 409, result);
-        return;
-      }
-      jsonResponse(response, 200, {
-        ok: true,
-        offer: result.offer,
-        session: this.sessionSummary(result.session, { includeSessionToken: true }),
-        project: this.projectPayload(result.project)
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/connection/diff") {
-      const body = await readJsonBody(request);
-      const project = this.getProjectById(body.projectId);
-      if (!project) {
-        jsonResponse(response, 404, { ok: false, error: "Project not found" });
-        return;
-      }
-      const pcSnapshot = await readLocalProjectStateAsync(project);
-      const studioSnapshot = body.studioSnapshot || { mounts: [] };
-      const changes = this.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
-      
-      jsonResponse(response, 200, {
-        ok: true,
-        changes
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/session/open") {
-      const body = await readJsonBody(request);
-      const { session, project } = this.openSession(body.placeId || 0, body.projectId || null, {
-        studioInstanceId: body.studioInstanceId || null,
-        truthSource: body.truthSource || null,
-        connectionState: body.connectionState || "ready",
-        pluginVersion: body.pluginVersion || null,
-        pluginProtocolVersion: body.pluginProtocolVersion || null,
-        requirePluginVersion: body.requirePluginVersion === true
-      });
-      jsonResponse(response, 200, {
-        ok: true,
-        session: this.sessionSummary(session, { includeSessionToken: true }),
-        project: this.projectPayload(project)
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/session/close") {
-      const body = await readJsonBody(request);
-      jsonResponse(response, 200, {
-        ok: this.closeSession(body.sessionId)
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/studio/poll") {
-      const sessionId = requestUrl.searchParams.get("sessionId");
-      if (!sessionId) {
-        jsonResponse(response, 200, {
-          ok: true,
-          mode: "offer",
-          offer: this.connectionOffer && this.connectionOffer.status === "pending"
-            ? this.connectionOfferSummary()
-            : null
-        });
-        return;
-      }
-
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        jsonResponse(response, 404, { ok: false, error: "Session not found." });
-        return;
-      }
-      if (!this.isSessionRequestAuthorized(request, session)) {
-        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
-        return;
-      }
-      this.updateSessionPluginVersion(session, {
-        pluginVersion: requestUrl.searchParams.get("pluginVersion"),
-        pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion")
-      });
-      this.markStudioSessionContact(session);
-
-      // If commands are already pending, respond immediately
-      if (session.pendingCommands.length > 0) {
-        const data = this.dequeueCommands(sessionId);
-        jsonResponse(response, 200, { ok: true, ...data });
-        return;
-      }
-
-      // Long-poll: hold connection open until commands arrive or timeout
-      const LONG_POLL_TIMEOUT = 25000;
-      let resolved = false;
-
-      const respond = () => {
-        if (resolved) return;
-        resolved = true;
-        clearTimeout(timer);
-        if (session._pollWaiter === respond) {
-          session._pollWaiter = null;
-        }
-        try {
-          const data = this.dequeueCommands(sessionId);
-          jsonResponse(response, 200, { ok: true, ...data });
-        } catch (_) {
-          jsonResponse(response, 200, { ok: true, commands: [] });
-        }
-      };
-
-      const timer = setTimeout(respond, LONG_POLL_TIMEOUT);
-      session._pollWaiter = respond;
-
-      // Handle client disconnect
-      request.on("close", () => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timer);
-          if (session._pollWaiter === respond) {
-            session._pollWaiter = null;
-          }
-        }
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/studio/complete") {
-      const body = await readJsonBody(request);
-      const session = this.sessions.get(body.sessionId);
-      if (session && !this.isSessionRequestAuthorized(request, session)) {
-        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
-        return;
-      }
-      this.updateSessionPluginVersion(session, body);
-      this.markStudioSessionContact(session);
-      if (body.ok) {
-        this.completeCommand(body.sessionId, body.commandId, body);
-      } else {
-        this.rejectCommand(body.sessionId, body.commandId, body.error || "Studio reported an error.");
-      }
-      jsonResponse(response, 200, { ok: true });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
-      const body = await readJsonBody(request);
-      const session = this.sessions.get(body.sessionId);
-      if (session && !this.isSessionRequestAuthorized(request, session)) {
-        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
-        return;
-      }
-      this.updateSessionPluginVersion(session, body);
-      this.markStudioSessionContact(session);
-      if (session && this.isSessionVersionBlocked(session)) {
-        jsonResponse(response, 409, {
-          ok: false,
-          error: this.syncBlockedReason(session),
-          session: this.sessionSummary(session)
-        });
-        return;
-      }
-      this.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto");
-      jsonResponse(response, 200, { ok: true });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/studio/patch-source") {
-      const body = await readJsonBody(request);
-      const sessionId = body.sessionId;
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        jsonResponse(response, 404, { ok: false, error: "Session not found." });
-        return;
-      }
-      if (!this.isSessionRequestAuthorized(request, session)) {
-        jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
-        return;
-      }
-      this.updateSessionPluginVersion(session, body);
-      this.markStudioSessionContact(session);
-      if (this.isSessionVersionBlocked(session)) {
-        jsonResponse(response, 409, {
-          ok: false,
-          error: this.syncBlockedReason(session),
-          session: this.sessionSummary(session)
-        });
-        return;
-      }
-      const project = this.getProjectById(session.projectId);
-      if (!project) {
-        jsonResponse(response, 404, { ok: false, error: "Project not found." });
-        return;
-      }
-      
-      this.lastDiskWriteTime = Date.now();
-      const result = require("./project").patchStudioFileSource(project, body.path, body.source, {
-        project,
-        onFileChange: (change) => {
-          this.recordActivity(change, {
-            direction: "studio_to_pc",
-            source: "studio_patch",
-            reason: "script_patch",
-            sessionId
-          });
-        }
-      });
-      if (!result.ok) {
-        this.recordError({
-          component: "daemon",
-          severity: "warning",
-          code: "STUDIO-PATCH",
-          message: result.error || "Studio patch could not be written to disk.",
-          sessionId,
-          projectId: project.id,
-          context: { path: body.path }
-        });
-      }
-      if (result.ok) {
-        this.recordPatchedStudioSource(session, body.path, body.source);
-      }
-      
-      jsonResponse(response, 200, result);
-      return;
-    }
-
-    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance|insert-model)$/);
-    if (sessionActionMatch) {
-      const [, sessionId, action] = sessionActionMatch;
-      const session = this.sessions.get(sessionId);
-      if (!session) {
-        jsonResponse(response, 404, {
-          ok: false,
-          error: "Session not found."
-        });
-        return;
-      }
-      const project = this.getProjectById(session.projectId);
-
-      if (request.method === "GET" && action === "status") {
-        jsonResponse(response, 200, {
-          ok: true,
-          session: this.sessionSummary(session),
-          project: project ? { id: project.id, name: project.name } : null
-        });
-        return;
-      }
-
-      if (request.method === "POST" && action === "pull") {
-        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
-        if (blockedReason) {
-          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
-          return;
-        }
-        const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
-          project: await readLocalProjectStateAsync(project, this.projectReadOptions(session)),
-          reason: "manual_pull"
-        }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "push") {
-        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
-        if (blockedReason) {
-          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
-          return;
-        }
-        const snapshot = await this.requestStudioTree(sessionId);
-        jsonResponse(response, 200, {
-          ok: true,
-          snapshot,
-          snapshotHash: session.lastStudioHash
-        });
-        return;
-      }
-
-      if (request.method === "POST" && action === "resync") {
-        const blockedReason = this.isSessionVersionBlocked(session) ? this.syncBlockedReason(session) : null;
-        if (blockedReason) {
-          jsonResponse(response, 409, { ok: false, error: blockedReason, session: this.sessionSummary(session) });
-          return;
-        }
-        const body = await readJsonBody(request);
-        const direction = body.direction === "studio_to_pc" || body.direction === "push"
-          ? "studio_to_pc"
-          : "pc_to_studio";
-        if (direction === "studio_to_pc") {
-          const snapshot = await this.requestStudioTree(sessionId);
-          this.markSyncVerified(session, session.lastStudioHash);
-          jsonResponse(response, 200, {
-            ok: true,
-            direction,
-            snapshotHash: session.lastStudioHash,
-            snapshot
-          });
-          return;
-        }
-        const result = await this.enqueueCommand(sessionId, "apply_project_tree", {
-          project: await readLocalProjectStateAsync(project, this.projectReadOptions(session)),
-          reason: "manual_resync"
-        }, true);
-        jsonResponse(response, 200, {
-          ok: true,
-          direction,
-          result,
-          sync: this.ensureSessionSyncState(session)
-        });
-        return;
-      }
-
-      if (request.method === "GET" && action === "tree") {
-        const snapshot = session.lastStudioSnapshot || await this.requestStudioTree(sessionId);
-        jsonResponse(response, 200, {
-          ok: true,
-          snapshot
-        });
-        return;
-      }
-
-      if (request.method === "POST" && action === "exec") {
-        const body = await readJsonBody(request);
-        const result = await this.runStudioCode(sessionId, body.code || "");
-        jsonResponse(response, 200, {
-          ok: true,
-          result
-        });
-        return;
-      }
-
-      if (request.method === "GET" && action === "selection") {
-        const selection = await this.requestStudioSelection(sessionId);
-        jsonResponse(response, 200, {
-          ok: true,
-          selection
-        });
-        return;
-      }
-
-      if (request.method === "POST" && action === "playtest") {
-        const body = await readJsonBody(request);
-        const mode = body.mode === "stop" ? "stop" : "start";
-        const result = await this.enqueueCommand(sessionId, "playtest", { mode }, true);
-        jsonResponse(response, 200, {
-          ok: true,
-          result
-        });
-        return;
-      }
-
-      if (request.method === "POST" && action === "properties") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "get_properties", { path: body.path }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "descendants") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "get_descendants", {
-          path: body.path,
-          maxDepth: Math.min(Math.max(Number(body.maxDepth) || 10, 1), 10),
-          classFilter: body.classFilter || null
-        }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "search") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "search_instances", {
-          query: body.query,
-          searchBy: body.searchBy || "both",
-          scope: body.scope || null
-        }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "GET" && action === "services") {
-        const result = await this.enqueueCommand(sessionId, "get_services", {}, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "instance-info") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueCommand(sessionId, "get_instance_info", { path: body.path }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "GET" && action === "output-log") {
-        const count = Math.min(Math.max(Number(requestUrl.searchParams.get("count")) || 50, 1), 200);
-        const result = await this.enqueueCommand(sessionId, "get_output_log", { count }, true);
-        jsonResponse(response, 200, { ok: true, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "modify-property") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueDestructiveCommand(sessionId, "modify_property", {
-          path: body.path,
-          property: body.property,
-          value: body.value
-        });
-        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "create-instance") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueDestructiveCommand(sessionId, "create_instance", {
-          parentPath: body.parentPath,
-          className: body.className,
-          name: body.name || body.className,
-          properties: body.properties || {}
-        });
-        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "delete-instance") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueDestructiveCommand(sessionId, "delete_instance", { path: body.path });
-        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
-        return;
-      }
-
-      if (request.method === "POST" && action === "insert-model") {
-        const body = await readJsonBody(request);
-        const result = await this.enqueueDestructiveCommand(sessionId, "insert_model", {
-          query: body.query
-        });
-        jsonResponse(response, result.blocked ? 409 : 200, { ok: !result.blocked, result });
-        return;
-      }
-    }
-
-    // ===== Activity log endpoints =====
-    if (request.method === "GET" && requestUrl.pathname === "/activity") {
-      jsonResponse(response, 200, {
-        ok: true,
-        entries: this.activityLog.query({
-          limit: Number(requestUrl.searchParams.get("limit") || 100),
-          action: requestUrl.searchParams.get("action") || null,
-          direction: requestUrl.searchParams.get("direction") || null,
-          projectId: requestUrl.searchParams.get("projectId") || null
-        })
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/activity/summary") {
-      jsonResponse(response, 200, {
-        ok: true,
-        summary: this.activityLog.summary()
-      });
-      return;
-    }
-
-    // ===== Error Tracker endpoints =====
-    if (request.method === "GET" && requestUrl.pathname === "/errors") {
-      const filters = {};
-      const severity = requestUrl.searchParams.get("severity");
-      const component = requestUrl.searchParams.get("component");
-      const resolved = requestUrl.searchParams.get("resolved");
-      const code = requestUrl.searchParams.get("code");
-      const limit = requestUrl.searchParams.get("limit");
-      const since = requestUrl.searchParams.get("since");
-      const sessionIdFilter = requestUrl.searchParams.get("sessionId");
-
-      if (severity) filters.severity = severity;
-      if (component) filters.component = component;
-      if (resolved !== null && resolved !== undefined && resolved !== "") {
-        filters.resolved = resolved === "true";
-      }
-      if (code) filters.code = code;
-      if (limit) filters.limit = Number(limit);
-      if (since) filters.since = since;
-      if (sessionIdFilter) filters.sessionId = sessionIdFilter;
-
-      const entries = this.errorTracker.query(filters);
-      jsonResponse(response, 200, {
-        ok: true,
-        totalEntries: entries.length,
-        entries
-      });
-      return;
-    }
-
-    if (request.method === "GET" && requestUrl.pathname === "/errors/summary") {
-      jsonResponse(response, 200, {
-        ok: true,
-        summary: this.errorTracker.summary()
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/errors/add") {
-      const body = await readJsonBody(request);
-      const record = this.recordError(body);
-      jsonResponse(response, 200, {
-        ok: true,
-        entry: record
-      });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/errors/resolve") {
-      const body = await readJsonBody(request);
-      if (body.all === true) {
-        const count = this.errorTracker.resolveAll();
-        jsonResponse(response, 200, { ok: true, resolvedCount: count });
-        return;
-      }
-      const entry = this.errorTracker.resolve(body.id);
-      if (!entry) {
-        jsonResponse(response, 404, { ok: false, error: "Entry not found." });
-        return;
-      }
-      jsonResponse(response, 200, { ok: true, entry });
-      return;
-    }
-
-    if (request.method === "POST" && requestUrl.pathname === "/errors/clear") {
-      this.errorTracker.clear();
-      jsonResponse(response, 200, { ok: true });
-      return;
-    }
-
     jsonResponse(response, 404, {
       ok: false,
       error: `Endpoint not found: ${request.method} ${requestUrl.pathname}`
@@ -3424,3 +2663,6 @@ module.exports = {
   PluginRobloxApp,
   hashSnapshot
 };
+
+
+

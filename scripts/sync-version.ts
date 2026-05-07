@@ -112,6 +112,19 @@ updateJson("vscode-extension/package.json", (manifest) => {
   manifest.version = version.extensionVersion;
 });
 
+updateJson("package.json", (manifest) => {
+  manifest.version = version.extensionVersion;
+});
+
+if (fs.existsSync(path.join(repoRoot, "package-lock.json"))) {
+  updateJson("package-lock.json", (lockfile) => {
+    lockfile.version = version.extensionVersion;
+    if (lockfile.packages && lockfile.packages[""]) {
+      lockfile.packages[""].version = version.extensionVersion;
+    }
+  });
+}
+
 replaceInFile("src-ts/daemon/version.ts", [
   [/const DAEMON_VERSION = "[^"]+";/, `const DAEMON_VERSION = "${version.daemonVersion}";`],
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]

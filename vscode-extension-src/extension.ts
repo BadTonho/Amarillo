@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const vscode = require("vscode");
 const syncFs = require("node:fs");
@@ -45,7 +45,7 @@ function log(message) {
   outputChannel.appendLine(`[${timestamp}] ${message}`);
 }
 
-function logInfo(message, silent) {
+function logInfo(message, silent = false) {
   log(message);
   if (silent || getNotificationLevel() < 3) {
     return;
@@ -53,7 +53,7 @@ function logInfo(message, silent) {
   vscode.window.showInformationMessage(`Amarillo: ${message}`);
 }
 
-function logWarn(message, silent) {
+function logWarn(message, silent = false) {
   log(`WARN: ${message}`);
   if (silent || getNotificationLevel() < 2) {
     return;
@@ -61,7 +61,7 @@ function logWarn(message, silent) {
   vscode.window.showWarningMessage(`Amarillo: ${message}`);
 }
 
-function logError(message, silent) {
+function logError(message, silent = false) {
   log(`ERROR: ${message}`);
   reportExtensionError(message, { code: "EXTENSION" });
   if (silent || getNotificationLevel() < 1) {
@@ -274,10 +274,10 @@ async function ensureWorkspaceHasProjects(workspaceRoot) {
 async function ensurePluginConfig(workspaceRoot) {
   const configPath = path.join(workspaceRoot, ".pluginroblox.json");
   if (syncFs.existsSync(configPath)) {
-    return false; // Arquivo já existe
+    return false; // Arquivo jÃ¡ existe
   }
   
-  // Arquivo não existe, criar com valores padrão
+  // Arquivo nÃ£o existe, criar com valores padrÃ£o
   const defaultConfig = {
     daemonPort: 8323,
     autoConnect: false,
@@ -293,7 +293,7 @@ async function ensurePluginConfig(workspaceRoot) {
   }
 }
 
-async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState, options = {}) {
+async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState, options: any = {}) {
   const result = await ensureWorkspaceSourcemap(workspaceRoot, {
     projectFilePath: projectState?.projectFilePath || null,
     projectFiles: projectState?.projectFiles || collectProjectFiles(workspaceRoot),
@@ -499,7 +499,7 @@ function effectiveSourcemapProjectFileFromHealth(workspaceRoot, health) {
   return path.resolve(workspaceRoot, projectPath);
 }
 
-async function syncLuauSourcemapToDaemonState(workspaceRoot, health, options = {}) {
+async function syncLuauSourcemapToDaemonState(workspaceRoot, health, options: any = {}) {
   const projectFiles = collectProjectFiles(workspaceRoot);
   if (projectFiles.length === 0) {
     return null;
@@ -1169,7 +1169,7 @@ async function ensurePathExists(targetPath, label) {
   }
 }
 
-function updateStatusBar(sessionCount) {
+function updateStatusBar(sessionCount = null) {
   if (!statusBar) {
     return;
   }
@@ -1181,11 +1181,11 @@ function updateStatusBar(sessionCount) {
       ? `$(sync) Amarillo (${count})`
       : "$(radio-tower) Amarillo";
     statusBar.tooltip = count > 0
-      ? `${count} sessão(ões) ativa(s) — Clique para abrir menu`
-      : "Bridge online — Clique para abrir menu";
+      ? `${count} sessÃ£o(Ãµes) ativa(s) â€” Clique para abrir menu`
+      : "Bridge online â€” Clique para abrir menu";
   } else {
     statusBar.text = "$(debug-disconnect) Amarillo";
-    statusBar.tooltip = "Bridge offline — Clique para abrir menu";
+    statusBar.tooltip = "Bridge offline â€” Clique para abrir menu";
   }
   statusBar.command = "amarillo.openMenu";
   statusBar.show();
@@ -1215,7 +1215,7 @@ function bridgeBaseUrl() {
   return `http://${host}:${port}`;
 }
 
-function requestJson(method, route, body, options = {}) {
+function requestJson(method, route, body: any = undefined, options: any = {}): Promise<any> {
   const url = new URL(route, `${bridgeBaseUrl()}/`);
   const timeout = options.timeout ?? 5000;
   const headers = {
@@ -1267,7 +1267,7 @@ function requestJson(method, route, body, options = {}) {
   });
 }
 
-function reportExtensionError(message, options = {}) {
+function reportExtensionError(message, options: any = {}) {
   if (!message) {
     return;
   }
@@ -1407,8 +1407,8 @@ async function requestConnectionOffer(requestedBy = "vscode") {
 function sessionQuickPickItem(session, activeSessionId) {
   return {
     label: session.projectName,
-    description: `Place ${session.placeId || 0}${session.id === activeSessionId ? " • active" : ""}`,
-    detail: `Session ${session.id} • pending ${session.pendingCommands} • last Studio ${session.lastStudioSeenAt || "never"}`,
+    description: `Place ${session.placeId || 0}${session.id === activeSessionId ? " â€¢ active" : ""}`,
+    detail: `Session ${session.id} â€¢ pending ${session.pendingCommands} â€¢ last Studio ${session.lastStudioSeenAt || "never"}`,
     session
   };
 }
@@ -1482,6 +1482,8 @@ async function chooseSession(forcePick = false) {
 }
 
 class AmarilloSidebarProvider {
+  [key: string]: any;
+
   constructor(context) {
     this.context = context;
     this.view = null;
@@ -1677,7 +1679,7 @@ async function installRobloxPlugin(context) {
   vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${targetPath}`);
 }
 
-async function ensureBridgeStarted(context, options = {}) {
+async function ensureBridgeStarted(context, options: any = {}) {
   const { workspaceRoot, host, port, nodePath, autoSyncToStudio } = getBridgeSettings();
   const daemonEntry = runtimePath(context, "daemon", "index.js");
   const token = getOrCreateBridgeToken(context);
@@ -1839,7 +1841,7 @@ async function ensureWorkspaceMcp(context) {
   };
 }
 
-async function startBridge(context, options = {}) {
+async function startBridge(context, options: any = {}) {
   // Auto-install the plugin before starting the bridge
   await silentPluginInstall(context);
 
@@ -2225,7 +2227,7 @@ async function restoreLastSession(context) {
         refreshSidebar();
         return;
       }
-      // Daemon is running but no sessions — request connection
+      // Daemon is running but no sessions â€” request connection
       await requestConnectionOffer("session_restore");
       sidebarOfferRequested = true;
       log("Session restore: connection offer created automatically.");
@@ -2233,7 +2235,7 @@ async function restoreLastSession(context) {
       return;
     }
   } catch (_error) {
-    // Daemon not running — try to start it
+    // Daemon not running â€” try to start it
   }
 
   try {
@@ -2463,3 +2465,4 @@ module.exports = {
   activate,
   deactivate
 };
+

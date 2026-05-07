@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -146,7 +146,7 @@ function collectProjectFiles(rootDir, results = []) {
 
 function collectMounts(treeNode, parentSegments = []) {
   const mounts = [];
-  for (const [name, value] of Object.entries(treeNode || {})) {
+  for (const [name, value] of Object.entries(treeNode || {}) as any) {
     if (name.startsWith("$") || !isPlainObject(value)) {
       continue;
     }
@@ -358,7 +358,7 @@ function collectScriptMetaRepairState(rootDir, state = { missingMetaScripts: new
   return state;
 }
 
-function moveOrphanScriptMetaForFile(mount, scriptFilePath, options = {}) {
+function moveOrphanScriptMetaForFile(mount, scriptFilePath, options: any = {}) {
   const absoluteScriptPath = path.resolve(scriptFilePath);
   const mountRoot = path.resolve(mount.absolutePath || mount);
   if (!fs.existsSync(absoluteScriptPath) || !isPathInside(absoluteScriptPath, mountRoot)) {
@@ -407,7 +407,7 @@ function moveOrphanScriptMetaForFile(mount, scriptFilePath, options = {}) {
   };
 }
 
-function repairOrphanScriptMetasInMount(mount, options = {}) {
+function repairOrphanScriptMetasInMount(mount, options: any = {}) {
   const mountRoot = path.resolve(mount.absolutePath || mount);
   const state = collectScriptMetaRepairState(mountRoot);
   const repaired = [];
@@ -424,7 +424,7 @@ function repairOrphanScriptMetasInMount(mount, options = {}) {
   return repaired;
 }
 
-function repairProjectOrphanScriptMetas(project, options = {}) {
+function repairProjectOrphanScriptMetas(project, options: any = {}) {
   const repaired = [];
   for (const mount of project.mounts || []) {
     repaired.push(...repairOrphanScriptMetasInMount(mount, {
@@ -448,7 +448,7 @@ function buildNodeFromJsonModel(modelName, modelData) {
   };
 }
 
-function buildNodeFromFile(filePath, explicitName = null, options = {}) {
+function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
   const name = path.basename(filePath);
   const scriptType = detectScriptFileType(name);
   if (scriptType) {
@@ -492,7 +492,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
   if (name.endsWith(".model.json")) {
     const baseName = explicitName || name.replace(/\.model\.json$/i, "");
     const model = parseJsonFile(filePath);
-    const rootNode = buildNodeFromJsonModel(baseName, model);
+    const rootNode: any = buildNodeFromJsonModel(baseName, model);
     rootNode.sourceFile = "model.json";
     return rootNode;
   }
@@ -514,12 +514,12 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
 
   // ===== FASE 2: Expanded file type support (Argon pattern) =====
 
-  // .json → ModuleScript (excluding .project.json, .model.json, .meta.json)
+  // .json â†’ ModuleScript (excluding .project.json, .model.json, .meta.json)
   if (name.endsWith(".json") && !name.endsWith(PROJECT_SUFFIX) && !name.endsWith(".model.json") && !name.endsWith(META_SUFFIX)) {
     const baseName = explicitName || name.replace(/\.json$/i, "");
     try {
       const rawJson = JSON.parse(fs.readFileSync(filePath, "utf8"));
-      const luauSource = `return ${jsonToLuauTable(rawJson)}`;
+      const luauSource = `return ${jsonToLuauTable(rawJson, 0)}`;
       return {
         name: baseName,
         className: "ModuleScript",
@@ -534,7 +534,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     }
   }
 
-  // .txt → StringValue
+  // .txt â†’ StringValue
   if (name.endsWith(".txt")) {
     const baseName = explicitName || name.replace(/\.txt$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -548,7 +548,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     };
   }
 
-  // .md → StringValue (with basic Rich Text conversion)
+  // .md â†’ StringValue (with basic Rich Text conversion)
   if (name.endsWith(".md")) {
     const baseName = explicitName || name.replace(/\.md$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -563,7 +563,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
     };
   }
 
-  // .csv → LocalizationTable
+  // .csv â†’ LocalizationTable
   if (name.endsWith(".csv")) {
     const baseName = explicitName || name.replace(/\.csv$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -580,7 +580,7 @@ function buildNodeFromFile(filePath, explicitName = null, options = {}) {
   return null;
 }
 
-// ===== JSON → Luau table serializer =====
+// ===== JSON â†’ Luau table serializer =====
 function jsonToLuauTable(value, indent) {
   const depth = indent || 0;
   const pad = "\t".repeat(depth);
@@ -621,7 +621,7 @@ function jsonToLuauTable(value, indent) {
   return "nil";
 }
 
-// ===== Markdown → Roblox Rich Text (basic conversion) =====
+// ===== Markdown â†’ Roblox Rich Text (basic conversion) =====
 function markdownToRichText(markdown) {
   return markdown
     // Bold: **text** or __text__
@@ -637,12 +637,12 @@ function markdownToRichText(markdown) {
     // Blockquotes: > text
     .replace(/^>\s+(.+)$/gm, "<i>$1</i>")
     // Unordered list: - item
-    .replace(/^[-*]\s+(.+)$/gm, "<b>•</b> $1")
+    .replace(/^[-*]\s+(.+)$/gm, "<b>â€¢</b> $1")
     // Strikethrough: ~~text~~
     .replace(/~~(.+?)~~/g, "<s>$1</s>");
 }
 
-function buildNodeFromDirectory(dirPath, options = {}) {
+function buildNodeFromDirectory(dirPath, options: any = {}) {
   const entries = listDirectoryEntries(dirPath);
   const dirName = path.basename(dirPath);
   const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
@@ -718,7 +718,7 @@ function buildNodeFromDirectory(dirPath, options = {}) {
   return baseNode;
 }
 
-function readLocalProjectState(project, extraOptions = {}) {
+function readLocalProjectState(project, extraOptions: any = {}) {
   if (extraOptions.repairOrphanScriptMetas) {
     repairProjectOrphanScriptMetas(project, extraOptions);
   }
@@ -763,7 +763,7 @@ function readLocalProjectState(project, extraOptions = {}) {
 }
 
 // OPT-006: Async version that reads script files in parallel instead of blocking the event loop
-async function buildNodeFromFileAsync(filePath, explicitName = null, options = {}) {
+async function buildNodeFromFileAsync(filePath, explicitName = null, options: any = {}) {
   const name = path.basename(filePath);
   const scriptType = detectScriptFileType(name);
   if (scriptType) {
@@ -807,7 +807,7 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options = {
   return buildNodeFromFile(filePath, explicitName, options);
 }
 
-async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
+async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
   const entries = listDirectoryEntries(dirPath);
   const dirName = path.basename(dirPath);
   const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
@@ -872,7 +872,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options = {}) {
   return baseNode;
 }
 
-async function readLocalProjectStateAsync(project, extraOptions = {}) {
+async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
   if (extraOptions.repairOrphanScriptMetas) {
     repairProjectOrphanScriptMetas(project, extraOptions);
   }
@@ -973,11 +973,11 @@ function notifyFileChange(options, change) {
   });
 }
 
-function writeJsonFile(filePath, value, options = {}) {
+function writeJsonFile(filePath, value, options: any = {}) {
   return writeTextFileIfChanged(filePath, JSON.stringify(value, null, 2), options);
 }
 
-function writeTextFileIfChanged(filePath, value, options = {}) {
+function writeTextFileIfChanged(filePath, value, options: any = {}) {
   const existed = fs.existsSync(filePath);
   if (existed) {
     const current = fs.readFileSync(filePath, "utf8");
@@ -1015,7 +1015,7 @@ function collectExistingFileInfos(targetPath, results = []) {
   return results;
 }
 
-function removePath(targetPath, options = {}) {
+function removePath(targetPath, options: any = {}) {
   const removedFiles = collectExistingFileInfos(targetPath);
   if (removedFiles.length === 0 && !fs.existsSync(targetPath)) {
     return;
@@ -1031,15 +1031,15 @@ function removePath(targetPath, options = {}) {
   }
 }
 
-function syncbackConfig(options = {}) {
+function syncbackConfig(options: any = {}) {
   return options.syncback || {};
 }
 
-function ignoredSyncbackProperties(options = {}) {
+function ignoredSyncbackProperties(options: any = {}) {
   return new Set(syncbackConfig(options).ignoreProperties || []);
 }
 
-function filterSyncbackProperties(properties, options = {}) {
+function filterSyncbackProperties(properties, options: any = {}) {
   if (!properties || Object.keys(properties).length === 0) {
     return {};
   }
@@ -1065,7 +1065,7 @@ function scriptExtensionForNode(node) {
   );
 }
 
-function matchesSyncbackGlob(fullPath, entryName, options = {}) {
+function matchesSyncbackGlob(fullPath, entryName, options: any = {}) {
   const syncback = syncbackConfig(options);
   if (!syncback.ignoreGlobs || syncback.ignoreGlobs.length === 0) {
     return false;
@@ -1077,7 +1077,7 @@ function matchesSyncbackGlob(fullPath, entryName, options = {}) {
   return matchesAnyGlob(relativePath, syncback.ignoreGlobs) || matchesAnyGlob(entryName, syncback.ignoreGlobs);
 }
 
-function shouldIgnoreSyncbackNode(node, options = {}, parentDir = null) {
+function shouldIgnoreSyncbackNode(node, options: any = {}, parentDir = null) {
   const syncback = syncbackConfig(options);
   if ((syncback.ignoreNames || []).includes(node.name) || (syncback.ignoreClasses || []).includes(node.className)) {
     return true;
@@ -1098,7 +1098,7 @@ function syncbackEntryBaseName(entryName) {
     .replace(/(?:\.server|\.client)?\.(?:lua|luau)$/i, "");
 }
 
-function shouldPreserveSyncbackEntry(fullPath, entryName, options = {}) {
+function shouldPreserveSyncbackEntry(fullPath, entryName, options: any = {}) {
   const syncback = syncbackConfig(options);
   const baseName = syncbackEntryBaseName(entryName);
   if ((syncback.ignoreNames || []).includes(baseName)) {
@@ -1123,8 +1123,8 @@ function shouldPreserveSyncbackEntry(fullPath, entryName, options = {}) {
   return false;
 }
 
-function metaForNode(node, options = {}) {
-  const meta = {};
+function metaForNode(node, options: any = {}) {
+  const meta: any = {};
   if (node.className && node.className !== "Folder" && !node.fileKind) {
     meta.className = node.className;
   }
@@ -1138,8 +1138,8 @@ function metaForNode(node, options = {}) {
   return meta;
 }
 
-function metaForScriptNode(node, options = {}) {
-  const meta = {};
+function metaForScriptNode(node, options: any = {}) {
+  const meta: any = {};
   const properties = filterSyncbackProperties(node.properties, options);
   if (properties && Object.keys(properties).length > 0) {
     meta.properties = serializePropertyValue(properties);
@@ -1150,7 +1150,7 @@ function metaForScriptNode(node, options = {}) {
   return meta;
 }
 
-function writeScriptNode(parentDir, node, asInit = false, options = {}) {
+function writeScriptNode(parentDir, node, asInit = false, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
@@ -1165,7 +1165,7 @@ function writeScriptNode(parentDir, node, asInit = false, options = {}) {
   }
 }
 
-function writeFolderNode(parentDir, node, options = {}) {
+function writeFolderNode(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
@@ -1188,7 +1188,7 @@ function writeFolderNode(parentDir, node, options = {}) {
   }
 }
 
-function writeNode(parentDir, node, options = {}) {
+function writeNode(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
@@ -1212,7 +1212,7 @@ function writeNode(parentDir, node, options = {}) {
   writeFolderNode(parentDir, node, options);
 }
 
-function expectedEntriesForNode(node, withInitScript = false, options = {}, parentDir = null) {
+function expectedEntriesForNode(node, withInitScript = false, options: any = {}, parentDir = null) {
   const expected = new Set();
   if (withInitScript && node.fileKind) {
     const extension = scriptExtensionForNode(node);
@@ -1240,7 +1240,7 @@ function expectedEntriesForNode(node, withInitScript = false, options = {}, pare
   return expected;
 }
 
-function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options = {}) {
+function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options: any = {}) {
   const expected = expectedEntriesForNode(node, withInitScript, options, nodeDir);
   for (const entry of listDirectoryEntries(nodeDir)) {
     const fullPath = path.join(nodeDir, entry.name);
@@ -1250,7 +1250,7 @@ function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options
   }
 }
 
-function writeMountSnapshot(mount, children, options = {}) {
+function writeMountSnapshot(mount, children, options: any = {}) {
   const mountOptions = {
     ...options,
     mount
@@ -1289,7 +1289,7 @@ function writeMountSnapshot(mount, children, options = {}) {
   }
 }
 
-function writeStudioProjectState(project, snapshot, options = {}) {
+function writeStudioProjectState(project, snapshot, options: any = {}) {
   const changes = [];
   const writeOptions = {
     ...options,
@@ -1386,7 +1386,7 @@ function normalizeInstancePathSegments(instancePath) {
     .filter((segment) => segment.length > 0 && segment !== "game" && segment !== "DataModel");
 }
 
-function patchStudioFileSource(project, instancePath, newSource, options = {}) {
+function patchStudioFileSource(project, instancePath, newSource, options: any = {}) {
   const targetSegments = normalizeInstancePathSegments(instancePath);
   if (targetSegments.length === 0) {
     return {
@@ -1498,3 +1498,4 @@ module.exports = {
   writeStudioProjectState,
   patchStudioFileSource
 };
+

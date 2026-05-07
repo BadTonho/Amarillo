@@ -38,10 +38,23 @@ if ([string]::IsNullOrWhiteSpace($WorkspaceRoot)) {
 
 $resolvedWorkspace = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $resolvedPort = Resolve-DaemonPort -WorkspacePath $resolvedWorkspace -RequestedPort $Port
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $daemonPath = Join-Path $PSScriptRoot "..\src\daemon\index.js"
 
 if (-not (Test-Path -LiteralPath $daemonPath)) {
-    throw "Daemon nao encontrado em: $daemonPath"
+    Push-Location $repoRoot
+    try {
+        & npm.cmd run build:runtime
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+if (-not (Test-Path -LiteralPath $daemonPath)) {
+    throw "Daemon not found after build: $daemonPath"
 }
 
 $args = @(

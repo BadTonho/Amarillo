@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 
 const { findNodeByPath, listTools, validateToolArguments } = require("./mcp-tools");
 const { readLocalProjectStateAsync } = require("./project");
@@ -6,7 +6,7 @@ const { startStdioMcpServer, textContent } = require("./mcp-stdio");
 
 function healthPayload(app) {
   const sessions = Array.from(app.sessions.values()).map((session) => app.sessionSummary(session));
-  const payload = {
+  const payload: any = {
     workspaceRoot: app.workspaceRoot,
     projects: app.listProjects(),
     connectionOffer: app.connectionOfferSummary(),
@@ -51,7 +51,7 @@ function summarizeValue(value) {
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
-function summarizeToolArguments(name, args = {}) {
+function summarizeToolArguments(name, args: any = {}) {
   switch (name) {
     case "set_active_project":
       return { projectId: args.projectId || null };
@@ -283,7 +283,7 @@ async function executeTool(app, name, args) {
   return handler(app, args || {});
 }
 
-async function handleTool(app, name, args = {}, options = {}) {
+async function handleTool(app, name, args: any = {}, options: any = {}) {
   const source = options.source || "native_stdio";
   const startedAt = Date.now();
   if (source && typeof app.recordMcpContact === "function") {
@@ -350,3 +350,4 @@ module.exports = {
   healthPayload,
   startMcpServer
 };
+
