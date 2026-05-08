@@ -1,11 +1,40 @@
 "use strict";
 
-import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 
 const DEFAULT_MAX_JSON_BODY_BYTES = 1024 * 1024;
+const STUDIO_SYNC_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024;
 const BRIDGE_TOKEN_HEADER = "x-amarillo-bridge-token";
+const BRIDGE_TOKEN_HEADER_DISPLAY = "X-Amarillo-Bridge-Token";
+const AUTHORIZATION_HEADER = "authorization";
 const SESSION_TOKEN_HEADER = "x-amarillo-session-token";
+const SESSION_TOKEN_HEADER_DISPLAY = "X-Amarillo-Session-Token";
+const MCP_AUTH_HELP_PATH = "/mcp/auth-help";
+
+function authHelpPayload() {
+  return {
+    expectedHeader: BRIDGE_TOKEN_HEADER_DISPLAY,
+    acceptedHeaders: [
+      `${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token>`,
+      "Authorization: Bearer <bridge token>"
+    ],
+    sessionHeader: `${SESSION_TOKEN_HEADER_DISPLAY}: <Studio session token>`,
+    publicHelpUrl: MCP_AUTH_HELP_PATH,
+    protectedRoutes: [
+      "GET /mcp/status",
+      "GET /mcp/tools",
+      "POST /mcp/probe",
+      "POST /mcp/call",
+      "GET /doctor"
+    ],
+    tokenSources: [
+      "Generated .vscode/mcp.json args after running Amarillo: Start Bridge or Amarillo: Configure MCP for Workspace.",
+      "The --bridge-token argument used by the daemon or MCP proxy.",
+      "The AMARILLO_BRIDGE_TOKEN environment variable when the daemon is started manually."
+    ]
+  };
+}
 
 interface ReadJsonBodyOptions {
   maxBytes?: number;
@@ -37,7 +66,7 @@ function corsHeaders(request: IncomingMessage | null = null): OutgoingHttpHeader
   const headers: OutgoingHttpHeaders = {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Amarillo-Bridge-Token, X-Amarillo-Session-Token, X-Amarillo-MCP-Proxy"
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Amarillo-Bridge-Token, X-Amarillo-Session-Token, X-Amarillo-MCP-Proxy"
   };
 
   const origin = request?.headers?.origin;
@@ -106,6 +135,20 @@ function normalizeToken(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function bearerTokenFromAuthorization(value: unknown): string | null {
+  const authorization = normalizeToken(value);
+  if (!authorization) {
+    return null;
+  }
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match ? normalizeToken(match[1]) : null;
+}
+
+function bridgeTokenFromHeaders(headers: IncomingHttpHeaders | undefined): string | null {
+  return normalizeToken(headers?.[BRIDGE_TOKEN_HEADER])
+    || bearerTokenFromAuthorization(headers?.[AUTHORIZATION_HEADER]);
+}
+
 function timingSafeEqualString(left: unknown, right: unknown): boolean {
   const leftToken = normalizeToken(left);
   const rightToken = normalizeToken(right);
@@ -118,10 +161,17 @@ function timingSafeEqualString(left: unknown, right: unknown): boolean {
 }
 
 export {
+  AUTHORIZATION_HEADER,
   BRIDGE_TOKEN_HEADER,
+  BRIDGE_TOKEN_HEADER_DISPLAY,
   DEFAULT_MAX_JSON_BODY_BYTES,
   HttpError,
+  MCP_AUTH_HELP_PATH,
   SESSION_TOKEN_HEADER,
+  SESSION_TOKEN_HEADER_DISPLAY,
+  STUDIO_SYNC_MAX_JSON_BODY_BYTES,
+  authHelpPayload,
+  bridgeTokenFromHeaders,
   errorResponse,
   jsonResponse,
   normalizeToken,

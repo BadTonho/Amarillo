@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.19"
+local PLUGIN_VERSION = "1.0.25"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -19,6 +19,8 @@ local POLL_INTERVAL = 0.25
 local SNAPSHOT_INTERVAL = 0.5
 local REMOTE_PUSH_SUPPRESSION_SECONDS = 1.0
 local SCRIPT_PATCH_DEBOUNCE_SECONDS = 0.35
+local INITIAL_STUDIO_SYNC_RETRY_SECONDS = 2.0
+local INITIAL_STUDIO_SYNC_LOG_SECONDS = 10.0
 
 local state = {
 	host = DEFAULT_HOST,
@@ -30,6 +32,10 @@ local state = {
 	project = nil,
 	connected = false,
 	awaitingInitialSync = false,
+	awaitingInitialStudioSync = false,
+	lastInitialStudioSyncAttemptAt = 0,
+	lastInitialStudioSyncErrorAt = 0,
+	lastInitialStudioSyncErrorMessage = nil,
 	selectedProjectId = nil,
 	selectedProjectName = nil,
 	projectSelectionReason = nil,
@@ -1915,6 +1921,9 @@ local function syncSnapshot(reason)
 	if state.awaitingInitialSync and reason ~= "initial_accept" then
 		return
 	end
+	if state.awaitingInitialStudioSync and reason ~= "initial_accept" then
+		return
+	end
 	if now() < state.suppressPushUntil then
 		return
 	end
@@ -1949,6 +1958,57 @@ local function syncSnapshot(reason)
 	return ok, response
 end
 
+local function attemptInitialStudioSync(context, force)
+	if not state.connected or not state.sessionId or not state.project or not state.awaitingInitialStudioSync then
+		return false
+	end
+
+	local currentTime = now()
+	if not force and currentTime - (state.lastInitialStudioSyncAttemptAt or 0) < INITIAL_STUDIO_SYNC_RETRY_SECONDS then
+		return false
+	end
+	state.lastInitialStudioSyncAttemptAt = currentTime
+
+	local callOk, ok, syncResponse = xpcall(function()
+		return syncSnapshot("initial_accept")
+	end, function(errorValue)
+		return tostring(errorValue)
+	end)
+	if not callOk then
+		syncResponse = ok
+		ok = false
+	end
+
+	if ok then
+		state.awaitingInitialStudioSync = false
+		state.lastInitialStudioSyncErrorMessage = nil
+		state.lastInitialStudioSyncErrorAt = 0
+		appendLog("Roblox Studio set as the initial source of truth.")
+		pcall(startWatcher)
+		updateStatus("connected")
+		return true, syncResponse
+	end
+
+	local message = syncResponse or "Initial Studio snapshot was not sent."
+	local shouldReport = state.lastInitialStudioSyncErrorMessage ~= message
+		or currentTime - (state.lastInitialStudioSyncErrorAt or 0) >= INITIAL_STUDIO_SYNC_LOG_SECONDS
+	if shouldReport then
+		state.lastInitialStudioSyncErrorMessage = message
+		state.lastInitialStudioSyncErrorAt = currentTime
+		appendLog("Initial Studio sync still pending: " .. tostring(message))
+		reportPluginError(message, "PLUGIN-INITIAL-SYNC", {
+			route = "/studio/snapshot",
+			sessionId = state.sessionId,
+			projectId = state.project and state.project.id or state.selectedProjectId,
+			truthSource = "studio",
+			hasSessionToken = state.sessionToken ~= nil,
+			context = context or "retry"
+		}, "warning")
+	end
+	updateStatus("syncing from Studio")
+	return false, message
+end
+
 local function refreshTreePreview()
 	local snapshot = snapshotCurrentProject()
 	state.treeCache = snapshot
@@ -1964,6 +2024,10 @@ end
 function resetSessionState(statusText)
 	state.connected = false
 	state.awaitingInitialSync = false
+	state.awaitingInitialStudioSync = false
+	state.lastInitialStudioSyncAttemptAt = 0
+	state.lastInitialStudioSyncErrorAt = 0
+	state.lastInitialStudioSyncErrorMessage = nil
 	state.sessionId = nil
 	state.sessionToken = nil
 	state.project = nil
@@ -2403,6 +2467,10 @@ local function applyAcceptedSession(response, truthSource)
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
 	state.connected = state.sessionId ~= nil
 	state.awaitingInitialSync = truthSource == "pc"
+	state.awaitingInitialStudioSync = truthSource == "studio"
+	state.lastInitialStudioSyncAttemptAt = 0
+	state.lastInitialStudioSyncErrorAt = 0
+	state.lastInitialStudioSyncErrorMessage = nil
 	state.connectionOffer = response.offer or nil
 	state.syncState = "ready"
 	state.syncMessage = nil
@@ -2432,23 +2500,7 @@ local function applyAcceptedSession(response, truthSource)
 	end
 
 	if truthSource == "studio" then
-		local ok, syncResponse = syncSnapshot("initial_accept")
-		if ok then
-			state.awaitingInitialSync = false
-			appendLog("Roblox Studio set as the initial source of truth.")
-			pcall(startWatcher)
-			updateStatus("connected")
-		else
-			appendLog("Initial Studio sync failed: " .. tostring(syncResponse))
-			reportPluginError(syncResponse, "PLUGIN-INITIAL-SYNC", {
-				route = "/studio/snapshot",
-				sessionId = state.sessionId,
-				projectId = state.project and state.project.id or state.selectedProjectId,
-				truthSource = "studio",
-				hasSessionToken = state.sessionToken ~= nil
-			}, "error")
-			resetSessionState("initial sync failed")
-		end
+		attemptInitialStudioSync("accept", true)
 	else
 		appendLog("PC set as the initial source of truth. Waiting for the daemon's initial apply.")
 	end
@@ -3006,6 +3058,7 @@ state.ui.advancedPage.Size = UDim2.fromScale(1, 1)
 state.ui.advancedPage.Visible = false
 state.ui.advancedPage.Parent = root
 
+do
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local homeTitle = makeTextLabel(homeHero, "Amarillo", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
@@ -3036,7 +3089,9 @@ local receiveButton = makeButton(homeActions, "Send to PC", UDim2.fromOffset(200
 setButtonStyle(receiveButton, "secondary")
 local homeHint = makeTextLabel(homeActions, "Use Advanced for tree, selection, playtest, and Luau.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 118), 12)
 homeHint.TextColor3 = Color3.fromRGB(152, 158, 168)
+end
 
+do
 local settingsHeader = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local settingsBackButton = makeButton(settingsHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 18), openHomeView)
 setButtonStyle(settingsBackButton, "secondary")
@@ -3115,7 +3170,9 @@ end
 
 local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 648), 12)
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+end
 
+do
 local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local advancedBackButton = makeButton(advancedHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 20), openHomeView)
 setButtonStyle(advancedBackButton, "secondary")
@@ -3154,7 +3211,9 @@ state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection 
 state.ui.treeBox.TextEditable = false
 state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 566), true)
 state.ui.logBox.TextEditable = false
+end
 
+do
 state.ui.connectionPromptOverlay = Instance.new("Frame")
 state.ui.connectionPromptOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.connectionPromptOverlay.BackgroundTransparency = 0.28
@@ -3187,8 +3246,10 @@ state.ui.connectionPromptChooseStudio = makeButton(connectionPromptCard, "Keep R
 setButtonStyle(state.ui.connectionPromptChooseStudio, "secondary")
 state.ui.connectionPromptChooseStudio.Visible = false
 state.ui.connectionPromptChooseStudio.ZIndex = 22
+end
 
 -- ===== Destructive Action Confirmation Overlay =====
+do
 state.ui.propertyConfirmOverlay = Instance.new("Frame")
 state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.propertyConfirmOverlay.BackgroundTransparency = 0.28
@@ -3228,8 +3289,10 @@ propertyAcceptBtn.ZIndex = 32
 local propertyDeclineBtn = makeButton(propertyConfirmCard, "Decline", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 198), declineDestructiveAction)
 setButtonStyle(propertyDeclineBtn, "secondary")
 propertyDeclineBtn.ZIndex = 32
+end
 
 -- ===== Diff Confirmation Overlay =====
+do
 state.ui.diffOverlay = Instance.new("Frame")
 state.ui.diffOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.diffOverlay.BackgroundTransparency = 0.28
@@ -3281,6 +3344,7 @@ state.ui.diffConfirmBtn.ZIndex = 42
 local diffCancelBtn = makeButton(diffCard, "Cancel", UDim2.fromOffset(132, 36), UDim2.fromOffset(160, 348), cancelDiff)
 setButtonStyle(diffCancelBtn, "secondary")
 diffCancelBtn.ZIndex = 42
+end
 
 toolbarButton.Click:Connect(function()
 	widget.Enabled = not widget.Enabled
@@ -3539,7 +3603,13 @@ task.spawn(function()
 				consecutivePollFailures = 0
 				applySyncSummary(reqResponse.session)
 				if state.syncState ~= "degraded" then
-					updateStatus(state.awaitingInitialSync and "syncing from PC" or "connected")
+					if state.awaitingInitialSync then
+						updateStatus("syncing from PC")
+					elseif state.awaitingInitialStudioSync then
+						updateStatus("syncing from Studio")
+					else
+						updateStatus("connected")
+					end
 				end
 				local commands = reqResponse.commands or {}
 				updateQueue(tostring(#commands))
@@ -3563,6 +3633,17 @@ task.spawn(function()
 			end
 		else
 			task.wait(0.5)
+		end
+	end
+end)
+
+-- ===== Initial Studio truth retry loop =====
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+
+		if state.connected and state.sessionId and state.awaitingInitialStudioSync then
+			attemptInitialStudioSync("retry", false)
 		end
 	end
 end)

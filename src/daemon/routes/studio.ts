@@ -1,7 +1,7 @@
 "use strict";
 
 const { patchStudioFileSource } = require("../project");
-const { SESSION_TOKEN_HEADER, jsonResponse, readJsonBody } = require("../http-utils");
+const { SESSION_TOKEN_HEADER, STUDIO_SYNC_MAX_JSON_BODY_BYTES, jsonResponse, readJsonBody } = require("../http-utils");
 
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
 
@@ -102,7 +102,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/studio/complete") {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES });
     const session = app.sessions.get(body.sessionId);
     if (session && !app.isSessionRequestAuthorized(request, session)) {
       jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
@@ -120,7 +120,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES });
     const session = app.sessions.get(body.sessionId);
     if (!session) {
       const message = "Studio session not found for snapshot.";
@@ -161,7 +161,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/studio/patch-source") {
-    const body = await readJsonBody(request);
+    const body = await readJsonBody(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES });
     const sessionId = body.sessionId;
     const session = app.sessions.get(sessionId);
     if (!session) {

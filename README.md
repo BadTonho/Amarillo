@@ -98,6 +98,7 @@ Useful commands:
 - `npm.cmd run typecheck`: typechecks runtime, extension, contracts, scripts, and tests.
 - `npm.cmd run check`: builds generated JavaScript and validates it with `node --check`.
 - `npm.cmd test`: builds all generated JavaScript required by tests, then runs `node --test`.
+- `npm.cmd run diagnose:mcp -- --workspace .`: checks daemon reachability, MCP fallback auth headers, tools, and health probe.
 - `npm.cmd run clean:generated`: removes ignored generated JavaScript from runtime, extension, scripts, and tests.
 
 The root of this repository intentionally does not load a Rojo `.project.json`. To use Luau sourcemaps, validate Roblox sync, or test MCP as an end user, open `examples/roblox-workspace/` or the real Roblox workspace for your game.
@@ -143,7 +144,7 @@ The extension package is not committed. Build it locally whenever you want to pu
 npm run package:vsix
 ```
 
-The final file will be created in `dist/`.
+The final file will be created in `dist/`. Packaging includes only the generated JavaScript runtime and fails if a local machine reference such as `C:\Users\...`, editor extension paths, or `rbx-studio-mcp.exe` appears in the VSIX payload.
 
 ## Validated Status
 

@@ -24,9 +24,15 @@ const { handleMcpRoutes } = require("./routes/mcp");
 const { handleSessionRoutes } = require("./routes/session");
 const { handleStudioRoutes } = require("./routes/studio");
 const {
+  AUTHORIZATION_HEADER,
   BRIDGE_TOKEN_HEADER,
+  BRIDGE_TOKEN_HEADER_DISPLAY,
   HttpError,
+  MCP_AUTH_HELP_PATH,
   SESSION_TOKEN_HEADER,
+  SESSION_TOKEN_HEADER_DISPLAY,
+  authHelpPayload,
+  bridgeTokenFromHeaders,
   errorResponse,
   jsonResponse,
   normalizeToken,
@@ -292,6 +298,7 @@ class PluginRobloxApp {
   mcpAuditLog: any;
   activityFileState: Map<string, any>;
   mcpShield: any;
+  recentUnauthorizedHttpRequests: Map<string, number>;
 
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -337,6 +344,7 @@ class PluginRobloxApp {
     });
     this.activityFileState = new Map<string, any>();
     this.mcpShield = createMcpShieldState();
+    this.recentUnauthorizedHttpRequests = new Map<string, number>();
   }
 
   createSessionToken() {
@@ -347,7 +355,7 @@ class PluginRobloxApp {
     if (!this.bridgeToken) {
       return true;
     }
-    return timingSafeEqualString(request.headers?.[BRIDGE_TOKEN_HEADER], this.bridgeToken);
+    return timingSafeEqualString(bridgeTokenFromHeaders(request.headers), this.bridgeToken);
   }
 
   isSessionRequestAuthorized(request, session = null) {
@@ -371,6 +379,9 @@ class PluginRobloxApp {
     if (request.method === "GET" && requestUrl.pathname === "/health") {
       return true;
     }
+    if (request.method === "GET" && requestUrl.pathname === MCP_AUTH_HELP_PATH) {
+      return true;
+    }
     if (request.method === "GET" && requestUrl.pathname === "/projects") {
       return true;
     }
@@ -380,6 +391,7 @@ class PluginRobloxApp {
     if (request.method === "POST" && (
       requestUrl.pathname === "/connection/accept"
       || requestUrl.pathname === "/connection/decline"
+      || requestUrl.pathname === "/connection/diff"
     )) {
       return true;
     }
@@ -393,10 +405,57 @@ class PluginRobloxApp {
     if (requestUrl.pathname.startsWith("/studio/")) {
       return true;
     }
+    const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\//);
+    if (sessionActionMatch) {
+      const session = this.sessions.get(decodeURIComponent(sessionActionMatch[1]));
+      return this.isBridgeRequestAuthorized(request) || this.isSessionRequestAuthorized(request, session);
+    }
+    if (requestUrl.pathname === "/session/close") {
+      return this.isBridgeRequestAuthorized(request) || this.isSessionRequestAuthorized(request);
+    }
     if (requestUrl.pathname === "/errors/add") {
       return this.isBridgeRequestAuthorized(request) || this.isSessionRequestAuthorized(request);
     }
     return this.isBridgeRequestAuthorized(request);
+  }
+
+  recordUnauthorizedHttpRequest(request, requestUrl) {
+    const now = Date.now();
+    const route = requestUrl.pathname;
+    const method = request.method || "UNKNOWN";
+    const hasBridgeTokenHeader = Boolean(normalizeToken(request.headers?.[BRIDGE_TOKEN_HEADER]));
+    const hasAuthorizationHeader = Boolean(normalizeToken(request.headers?.[AUTHORIZATION_HEADER]));
+    const hasSessionTokenHeader = Boolean(normalizeToken(request.headers?.[SESSION_TOKEN_HEADER]));
+    const key = [
+      method,
+      route,
+      hasBridgeTokenHeader ? "bridge" : "no-bridge",
+      hasAuthorizationHeader ? "authorization" : "no-authorization",
+      hasSessionTokenHeader ? "session" : "no-session"
+    ].join("|");
+    const previous = this.recentUnauthorizedHttpRequests.get(key) || 0;
+    if (now - previous < 30000) {
+      return;
+    }
+    this.recentUnauthorizedHttpRequests.set(key, now);
+    this.recordError({
+      component: "daemon",
+      severity: "warning",
+      code: "HTTP-UNAUTHORIZED",
+      message: `Unauthorized HTTP request to ${method} ${route}. Missing or invalid Amarillo authorization token.`,
+      context: {
+        method,
+        route,
+        expectedHeader: BRIDGE_TOKEN_HEADER_DISPLAY,
+        acceptedAuthorization: "Authorization: Bearer <bridge token>",
+        sessionHeader: SESSION_TOKEN_HEADER_DISPLAY,
+        hasBridgeTokenHeader,
+        hasAuthorizationHeader,
+        hasSessionTokenHeader,
+        userAgent: request.headers?.["user-agent"] || null,
+        help: authHelpPayload()
+      }
+    });
   }
 
   async start() {
@@ -2625,12 +2684,15 @@ class PluginRobloxApp {
       jsonResponse(response, 204, { ok: true }, request);
       return;
     }
-    if (!this.authorizeHttpRequest(request, requestUrl)) {
-      jsonResponse(response, 401, {
-        ok: false,
-        code: "UNAUTHORIZED",
-        error: "Missing or invalid Amarillo authorization token."
-      }, request);
+        if (!this.authorizeHttpRequest(request, requestUrl)) {
+          this.recordUnauthorizedHttpRequest(request, requestUrl);
+          jsonResponse(response, 401, {
+            ok: false,
+            code: "UNAUTHORIZED",
+            error: "Missing or invalid Amarillo authorization token.",
+            ...authHelpPayload(),
+            hint: `Send ${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token> or Authorization: Bearer <bridge token>. The bridge token is stored in the generated .vscode/mcp.json proxy args or provided by VS Code when Amarillo starts the bridge.`
+          }, request);
       return;
     }
     for (const routeHandler of [

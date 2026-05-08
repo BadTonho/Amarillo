@@ -115,6 +115,10 @@ function mcpFallbackExample(baseUrl) {
   return {
     method: "POST",
     url: `${baseUrl}/mcp/call`,
+    headers: {
+      "X-Amarillo-Bridge-Token": "<bridge token>"
+    },
+    alternativeAuthorizationHeader: "Authorization: Bearer <bridge token>",
     body: {
       name: "health",
       arguments: {}
@@ -154,6 +158,7 @@ function mcpShieldSummary(app) {
     },
     fallback: {
       available: true,
+      authHelpUrl: `${baseUrl}/mcp/auth-help`,
       statusUrl: `${baseUrl}/mcp/status`,
       toolsUrl: `${baseUrl}/mcp/tools`,
       probeUrl: `${baseUrl}/mcp/probe`,

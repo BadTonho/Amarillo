@@ -24,6 +24,11 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
 
   if (request.method === "POST" && requestUrl.pathname === "/session/close") {
     const body = await readJsonBody(request);
+    const session = app.sessions.get(body.sessionId);
+    if (session && !app.isSessionRequestAuthorized(request, session)) {
+      jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
+      return true;
+    }
     jsonResponse(response, 200, {
       ok: app.closeSession(body.sessionId)
     });

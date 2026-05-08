@@ -188,6 +188,7 @@ function buildInstructionsMarkdown(context: any = {}) {
     "## MCP Shield Fallback",
     "",
     "- If the AI client cannot see native MCP tools, the daemon still exposes the same tool layer over HTTP while the bridge is online.",
+    "- Protected fallback routes require `X-Amarillo-Bridge-Token: <bridge token>`; `Authorization: Bearer <bridge token>` is also accepted for manual HTTP clients.",
     "- Check `GET /mcp/status` for config/runtime diagnostics, `GET /mcp/tools` for the tool list, and `POST /mcp/probe` to verify the fallback can call `health`.",
     "- Use `POST /mcp/call` with `{ \"name\": \"health\", \"arguments\": {} }` or any documented tool name/arguments when native MCP is unavailable.",
     "- Destructive tool responses may include `reasonCode`, `blocked`, `declined`, and `confirmed` so callers can distinguish health gates from user rejection.",

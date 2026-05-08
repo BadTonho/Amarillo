@@ -6,9 +6,18 @@ const {
   mcpShieldSummary,
   mcpToolResultToHttpPayload
 } = require("../mcp-shield");
-const { jsonResponse, readJsonBody } = require("../http-utils");
+const { authHelpPayload, jsonResponse, readJsonBody } = require("../http-utils");
 
 async function handleMcpRoutes(app, request, response, requestUrl) {
+  if (request.method === "GET" && requestUrl.pathname === "/mcp/auth-help") {
+    jsonResponse(response, 200, {
+      ok: true,
+      message: "Use these headers when testing Amarillo MCP HTTP fallback routes manually.",
+      ...authHelpPayload()
+    });
+    return true;
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/mcp/status") {
     jsonResponse(response, 200, {
       ok: true,

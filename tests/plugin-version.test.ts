@@ -33,6 +33,22 @@ test("Roblox plugin stores and sends the daemon session token", () => {
   assert.match(pluginSource, /X-Amarillo-Session-Token/);
 });
 
+test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => {
+  assert.match(pluginSource, /awaitingInitialStudioSync = false/);
+  assert.match(pluginSource, /local function attemptInitialStudioSync/);
+  assert.match(pluginSource, /syncSnapshot\("initial_accept"\)/);
+  assert.match(pluginSource, /Initial Studio sync still pending/);
+  assert.match(pluginSource, /attemptInitialStudioSync\("retry", false\)/);
+});
+
+test("Roblox plugin UI construction keeps local registers below Studio limits", () => {
+  assert.match(pluginSource, /-- Keep UI construction in a short-lived scope/);
+  assert.match(pluginSource, /do\s+local homeHero = makeCard/);
+  assert.match(pluginSource, /do\s+local settingsHeader = makeCard/);
+  assert.match(pluginSource, /do\s+local advancedHeader = makeCard/);
+  assert.match(pluginSource, /-- ===== Diff Confirmation Overlay =====\s+do\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
+});
+
 test("Amarillo component versions stay synchronized from amarillo-version.json", () => {
   const extensionManifest = JSON.parse(fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "package.json"),
