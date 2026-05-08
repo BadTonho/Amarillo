@@ -14,12 +14,16 @@ function readText(...segments) {
 test("generated JavaScript cleanup is available through npm", () => {
   const packageJson = JSON.parse(readText("package.json"));
   const cleanSource = readText("scripts", "clean-generated.ts");
+  const diagnoseMcpSource = readText("scripts", "diagnose-mcp.ts");
 
   assert.match(packageJson.scripts["clean:generated"], /npm run build:scripts && node scripts\/clean-generated\.js/);
+  assert.match(packageJson.scripts["diagnose:mcp"], /npm run build:scripts && node scripts\/diagnose-mcp\.js/);
   assert.match(cleanSource, /generatedRoots/);
   assert.match(cleanSource, /Refusing to remove outside generated roots/);
   assert.match(cleanSource, /src", "daemon"/);
   assert.match(cleanSource, /vscode-extension/);
+  assert.match(diagnoseMcpSource, /X-Amarillo-Bridge-Token/);
+  assert.match(diagnoseMcpSource, /Authorization/);
 });
 
 test("PowerShell entrypoints build generated runtime when missing", () => {

@@ -160,12 +160,27 @@ test("bridge token protects administrative and MCP HTTP routes", async () => {
   const publicHealth = await invoke(app, "GET", "/health");
   assert.equal(publicHealth.statusCode, 200);
 
+  const authHelp = await invoke(app, "GET", "/mcp/auth-help");
+  assert.equal(authHelp.statusCode, 200);
+  assert.equal(authHelp.payload.expectedHeader, "X-Amarillo-Bridge-Token");
+  assert.ok(authHelp.payload.acceptedHeaders.includes("Authorization: Bearer <bridge token>"));
+
+  const publicDiff = await invoke(app, "POST", "/connection/diff", {
+    projectId: "Game.project.json",
+    truthSource: "pc",
+    studioSnapshot: { mounts: [] }
+  });
+  assert.equal(publicDiff.statusCode, 200);
+  assert.equal(publicDiff.payload.ok, true);
+
   const missingToken = await invoke(app, "POST", "/mcp/call", {
     name: "health",
     arguments: {}
   });
   assert.equal(missingToken.statusCode, 401);
   assert.equal(missingToken.payload.code, "UNAUTHORIZED");
+  assert.equal(missingToken.payload.expectedHeader, "X-Amarillo-Bridge-Token");
+  assert.match(missingToken.payload.hint, /Authorization: Bearer <bridge token>/);
 
   const invalidToken = await invoke(app, "POST", "/mcp/call", {
     name: "health",
@@ -177,6 +192,11 @@ test("bridge token protects administrative and MCP HTTP routes", async () => {
   });
   assert.equal(invalidToken.statusCode, 401);
 
+  const authErrors = app.errorTracker.query({ resolved: false, code: "HTTP-UNAUTHORIZED", limit: 5 });
+  assert.ok(authErrors.length >= 1);
+  assert.equal(authErrors[0].context.expectedHeader, "X-Amarillo-Bridge-Token");
+  assert.equal(authErrors[0].context.help.publicHelpUrl, "/mcp/auth-help");
+
   const authorized = await invoke(app, "POST", "/mcp/call", {
     name: "health",
     arguments: {}
@@ -187,6 +207,16 @@ test("bridge token protects administrative and MCP HTTP routes", async () => {
   });
   assert.equal(authorized.statusCode, 200);
   assert.equal(authorized.payload.ok, true);
+
+  const bearerAuthorized = await invoke(app, "GET", "/mcp/status", undefined, {
+    headers: {
+      authorization: "Bearer secret-token"
+    }
+  });
+  assert.equal(bearerAuthorized.statusCode, 200);
+  assert.equal(bearerAuthorized.payload.ok, true);
+  assert.equal(bearerAuthorized.payload.mcp.fallback.example.headers["X-Amarillo-Bridge-Token"], "<bridge token>");
+  assert.match(bearerAuthorized.payload.mcp.fallback.example.alternativeAuthorizationHeader, /Authorization: Bearer/);
 });
 
 test("daemon returns standard JSON errors for invalid or oversized bodies", async () => {
@@ -216,6 +246,68 @@ test("daemon returns standard JSON errors for invalid or oversized bodies", asyn
   });
   assert.equal(oversized.statusCode, 413);
   assert.equal(oversized.payload.code, "BODY_TOO_LARGE");
+});
+
+test("Studio sync routes accept snapshots larger than the generic JSON limit", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const largeSource = `return [[${"x".repeat(1024 * 1024 + 4096)}]]`;
+  const largeSnapshot = {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        children: [
+          {
+            name: "Large",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: largeSource,
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  };
+
+  const diff = await invoke(app, "POST", "/connection/diff", {
+    projectId: "Game.project.json",
+    truthSource: "studio",
+    studioSnapshot: largeSnapshot
+  });
+  assert.equal(diff.statusCode, 200);
+  assert.equal(diff.payload.ok, true);
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-large-snapshot",
+    placeId: 0,
+    truthSource: "studio",
+    pluginVersion: "1.0.23",
+    pluginProtocolVersion: 1
+  });
+  assert.equal(accept.statusCode, 200);
+
+  const snapshot = await invoke(app, "POST", "/studio/snapshot", {
+    sessionId: accept.payload.session.id,
+    reason: "initial_accept",
+    pluginVersion: "1.0.23",
+    pluginProtocolVersion: 1,
+    snapshot: largeSnapshot
+  }, {
+    headers: {
+      "x-amarillo-session-token": accept.payload.session.sessionToken
+    }
+  });
+  assert.equal(snapshot.statusCode, 200);
+  assert.equal(snapshot.payload.ok, true);
 });
 
 test("Studio sessions receive and must use a session token after handshake", async () => {
@@ -251,6 +343,40 @@ test("Studio sessions receive and must use a session token after handshake", asy
   assert.equal(validToken.statusCode, 200);
   assert.equal(validToken.payload.ok, true);
   assert.equal(validToken.payload.commands.length, 1);
+
+  const invalidSessionRoute = await invoke(app, "GET", `/session/${sessionId}/status`, undefined, {
+    headers: {
+      "x-amarillo-session-token": "wrong-token"
+    }
+  });
+  assert.equal(invalidSessionRoute.statusCode, 401);
+
+  const validSessionRoute = await invoke(app, "GET", `/session/${sessionId}/status`, undefined, {
+    headers: {
+      "x-amarillo-session-token": sessionToken
+    }
+  });
+  assert.equal(validSessionRoute.statusCode, 200);
+  assert.equal(validSessionRoute.payload.ok, true);
+
+  const invalidClose = await invoke(app, "POST", "/session/close", {
+    sessionId
+  }, {
+    headers: {
+      "x-amarillo-session-token": "wrong-token"
+    }
+  });
+  assert.equal(invalidClose.statusCode, 401);
+
+  const validClose = await invoke(app, "POST", "/session/close", {
+    sessionId
+  }, {
+    headers: {
+      "x-amarillo-session-token": sessionToken
+    }
+  });
+  assert.equal(validClose.statusCode, 200);
+  assert.equal(validClose.payload.ok, true);
 });
 
 test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {

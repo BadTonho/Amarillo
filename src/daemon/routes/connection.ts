@@ -19,7 +19,7 @@ import {
   normalizeConnectionDiffBody,
   normalizeConnectionRequestBody
 } from "../contracts/connection";
-import { jsonResponse, readJsonBody } from "../http-utils";
+import { STUDIO_SYNC_MAX_JSON_BODY_BYTES, jsonResponse, readJsonBody } from "../http-utils";
 
 const { readLocalProjectStateAsync } = require("../project");
 
@@ -89,7 +89,7 @@ async function handleConnectionRoutes(
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/connection/diff") {
-    const body = normalizeConnectionDiffBody(await readJsonBody<ConnectionDiffBody>(request));
+    const body = normalizeConnectionDiffBody(await readJsonBody<ConnectionDiffBody>(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES }));
     const project = app.getProjectById(body.projectId);
     if (!project) {
       jsonResponse(response, 404, { ok: false, error: "Project not found" });

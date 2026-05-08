@@ -22,8 +22,16 @@ test("package:vsix synchronizes shared Amarillo versions before building", () =>
 test("package-vsix copies the daemon runtime recursively", () => {
   assert.match(
     packageCli,
-    /copyDirectory\(path\.join\(repoRoot, "src", "daemon"\), runtimeDaemon\)/
+    /copyRuntimeDirectory\(path\.join\(repoRoot, "src", "daemon"\), runtimeDaemon\)/
   );
+});
+
+test("package-vsix keeps packaged runtime portable", () => {
+  assert.match(packageCli, /assertPortablePackage\(stagingExtension\)/);
+  assert.match(packageCli, /VSIX runtime must not include TypeScript source/);
+  assert.match(packageCli, /Local machine reference found in VSIX payload/);
+  assert.match(packageCli, /\\b\[A-Za-z\]:\[\\\\\/\]Users\[\\\\\/\]/);
+  assert.match(packageCli, /rbx-studio-mcp\\\.exe/);
 });
 
 test("package-vsix includes the shared Amarillo version manifest", () => {

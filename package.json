@@ -1,6 +1,6 @@
 {
   "name": "amarillo-argon-bridge",
-  "version": "1.0.19",
+  "version": "1.0.25",
   "description": "Windows-first Roblox Studio Amarillo plugin + local daemon inspired by Argon.",
   "private": true,
   "type": "commonjs",
@@ -12,6 +12,7 @@
     "build": "npm run build:runtime && npm run build:extension",
     "version:sync": "npm run build:scripts && node scripts/sync-version.js",
     "version:set": "npm run build:scripts && node scripts/sync-version.js",
+    "diagnose:mcp": "npm run build:scripts && node scripts/diagnose-mcp.js",
     "clean:generated": "npm run build:scripts && node scripts/clean-generated.js",
     "typecheck:runtime": "tsc -p tsconfig.daemon.json --noEmit",
     "typecheck:extension": "tsc -p tsconfig.extension.json --noEmit",

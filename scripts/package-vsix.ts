@@ -35,6 +35,55 @@ function copyDirectory(sourcePath, targetPath) {
   fs.cpSync(sourcePath, targetPath, { recursive: true, force: true });
 }
 
+function copyRuntimeDirectory(sourcePath, targetPath, allowedExtensions = new Set([".js"])) {
+  mkdirp(targetPath);
+  for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+    const sourceEntry = path.join(sourcePath, entry.name);
+    const targetEntry = path.join(targetPath, entry.name);
+    if (entry.isDirectory()) {
+      copyRuntimeDirectory(sourceEntry, targetEntry, allowedExtensions);
+      continue;
+    }
+    if (entry.isFile() && allowedExtensions.has(path.extname(entry.name))) {
+      copyFile(sourceEntry, targetEntry);
+    }
+  }
+}
+
+function collectFiles(dirPath, results = []) {
+  for (const entry of fs.readdirSync(dirPath, { withFileTypes: true })) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      collectFiles(fullPath, results);
+    } else if (entry.isFile()) {
+      results.push(fullPath);
+    }
+  }
+  return results;
+}
+
+function assertPortablePackage(stagedExtensionPath) {
+  const forbiddenPatterns = [
+    /\b[A-Za-z]:[\\/]Users[\\/]/i,
+    /[\\/]Users[\\/][^\\/]+[\\/]\.vscode[\\/]extensions[\\/]/i,
+    /[\\/]Users[\\/][^\\/]+[\\/]\.antigravity[\\/]extensions[\\/]/i,
+    /rbx-studio-mcp\.exe/i
+  ];
+  const files = collectFiles(stagedExtensionPath);
+
+  for (const filePath of files) {
+    if (filePath.startsWith(runtimeDaemon) && path.extname(filePath) === ".ts") {
+      throw new Error(`VSIX runtime must not include TypeScript source: ${path.relative(stagedExtensionPath, filePath)}`);
+    }
+
+    const content = fs.readFileSync(filePath, "utf8");
+    const matchedPattern = forbiddenPatterns.find((pattern) => pattern.test(content));
+    if (matchedPattern) {
+      throw new Error(`Local machine reference found in VSIX payload: ${path.relative(stagedExtensionPath, filePath)} (${matchedPattern})`);
+    }
+  }
+}
+
 function xmlEscape(value) {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -90,7 +139,7 @@ function main() {
   copyFile(path.join(extensionSource, "schemas", "meta.json"), path.join(schemasDir, "meta.json"));
   copyFile(path.join(extensionSource, "schemas", "project.json"), path.join(schemasDir, "project.json"));
 
-  copyDirectory(path.join(repoRoot, "src", "daemon"), runtimeDaemon);
+  copyRuntimeDirectory(path.join(repoRoot, "src", "daemon"), runtimeDaemon);
   copyFile(path.join(repoRoot, "src", "mcp-proxy", "index.js"), path.join(runtimeMcpProxy, "index.js"));
   copyFile(path.join(repoRoot, "src", "plugin", "Amarillo.lua"), path.join(runtimePlugin, "Amarillo.lua"));
 
@@ -137,6 +186,7 @@ function main() {
 
   fs.writeFileSync(path.join(stagingRoot, "extension.vsixmanifest"), vsixManifest, "utf8");
   fs.writeFileSync(path.join(stagingRoot, "[Content_Types].xml"), contentTypes, "utf8");
+  assertPortablePackage(stagingExtension);
 
   const zipPath = path.join(outputDir, `amarillo-vscode-${extensionPackage.version}.zip`);
   const vsixPath = path.join(outputDir, `amarillo-vscode-${extensionPackage.version}.vsix`);
