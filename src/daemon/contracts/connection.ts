@@ -28,6 +28,7 @@ export interface ConnectionAcceptBody {
 }
 
 export interface ConnectionDiffBody {
+  placeId?: unknown;
   projectId?: unknown;
   studioSnapshot?: unknown;
   truthSource?: unknown;
@@ -53,6 +54,7 @@ export interface NormalizedConnectionAccept {
 }
 
 export interface NormalizedConnectionDiff {
+  placeId: number;
   projectId: string | null;
   studioSnapshot: StudioSnapshot;
   truthSource: TruthSource;
@@ -150,6 +152,7 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
 
 export function normalizeConnectionDiffBody(body: ConnectionDiffBody): NormalizedConnectionDiff {
   return {
+    placeId: normalizePlaceId(body.placeId),
     projectId: optionalString(body.projectId),
     studioSnapshot: normalizeStudioSnapshot(body.studioSnapshot),
     truthSource: normalizeTruthSource(body.truthSource)

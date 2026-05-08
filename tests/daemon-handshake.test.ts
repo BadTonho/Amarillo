@@ -614,6 +614,22 @@ test("connection diff returns 404 for an unknown project", async () => {
   assert.equal(response.payload.error, "Project not found");
 });
 
+test("connection diff auto-resolves the project when Studio has not selected one", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/connection/diff", {
+    placeId: 0,
+    truthSource: "studio",
+    studioSnapshot: { mounts: [] }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+  assert.ok(Array.isArray(response.payload.changes));
+});
+
 test("first studio acceptance wins and creates a pending PC-truth initial sync", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
