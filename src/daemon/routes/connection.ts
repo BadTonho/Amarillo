@@ -44,6 +44,7 @@ interface ConnectionApp {
   sessionSummary(session: unknown, options: { includeSessionToken: true }): SessionSummaryForConnection;
   projectPayload(project: ConnectionProject | undefined): ProjectPayloadForConnection | null;
   getProjectById(projectId: string | null): ConnectionProject | null;
+  resolveProject(placeId: number, preferredProjectId?: string | null): ConnectionProject | null;
   calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource): string[];
 }
 
@@ -90,7 +91,16 @@ async function handleConnectionRoutes(
 
   if (request.method === "POST" && requestUrl.pathname === "/connection/diff") {
     const body = normalizeConnectionDiffBody(await readJsonBody<ConnectionDiffBody>(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES }));
-    const project = app.getProjectById(body.projectId);
+    let project = body.projectId
+      ? app.getProjectById(body.projectId)
+      : null;
+    if (!project && !body.projectId) {
+      try {
+        project = app.resolveProject(body.placeId, null);
+      } catch (_error) {
+        project = null;
+      }
+    }
     if (!project) {
       jsonResponse(response, 404, { ok: false, error: "Project not found" });
       return true;

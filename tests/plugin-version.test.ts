@@ -41,6 +41,11 @@ test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => 
   assert.match(pluginSource, /attemptInitialStudioSync\("retry", false\)/);
 });
 
+test("Roblox plugin surfaces sync diagnostics and sends placeId with connection diff", () => {
+  assert.match(pluginSource, /warn\("\[Amarillo\] " \.\. tostring\(message\)\)/);
+  assert.match(pluginSource, /request\("POST", "\/connection\/diff", \{\s+placeId = game\.PlaceId,/);
+});
+
 test("Roblox plugin UI construction keeps local registers below Studio limits", () => {
   assert.match(pluginSource, /-- Keep UI construction in a short-lived scope/);
   assert.match(pluginSource, /do\s+local homeHero = makeCard/);

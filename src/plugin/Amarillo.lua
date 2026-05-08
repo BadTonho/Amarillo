@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.25"
+local PLUGIN_VERSION = "1.0.26"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -115,6 +115,31 @@ local function normalizePort(value)
 	return parsed
 end
 
+local function shouldMirrorLogToOutput(message)
+	local lower = string.lower(tostring(message or ""))
+	local markers = {
+		"failed",
+		"falhou",
+		"error",
+		"erro",
+		"blocked",
+		"bloqueado",
+		"rejected",
+		"rejeitado",
+		"unavailable",
+		"offline",
+		"timeout",
+		"connection lost",
+		"still pending"
+	}
+	for _, marker in ipairs(markers) do
+		if string.find(lower, marker, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
 local function appendLog(message)
 	local stamped = string.format("[%s] %s", os.date("%H:%M:%S"), message)
 	table.insert(state.logs, 1, stamped)
@@ -123,6 +148,9 @@ local function appendLog(message)
 	end
 	if state.ui.logBox then
 		state.ui.logBox.Text = table.concat(state.logs, "\n")
+	end
+	if shouldMirrorLogToOutput(message) then
+		warn("[Amarillo] " .. tostring(message))
 	end
 end
 
@@ -2658,6 +2686,7 @@ local function fetchAndShowDiff(truthSource)
 	end
 	
 	local ok, response = request("POST", "/connection/diff", {
+		placeId = game.PlaceId,
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		studioSnapshot = studioSnapshot
