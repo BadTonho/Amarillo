@@ -423,6 +423,133 @@ function studioContactLabel(session) {
   }
 }
 
+function describePluginHealth(health) {
+  const sessions = Array.isArray(health?.sessions) ? health.sessions : [];
+  const activeSession = resolveActiveSessionFromHealth({ sessions })
+    || sessions[0]
+    || null;
+  const offer = health?.connectionOffer || null;
+
+  if (!activeSession) {
+    if (offer?.status === "pending") {
+      return {
+        tone: "warning",
+        headline: "Plugin: waiting for Roblox Studio",
+        message: `Plugin: no active Studio session yet. Handshake is ${handshakeStatusLabel(offer)}.`,
+        details: [
+          `Offer ${offer.offerId || "-"} requested by ${offer.requestedBy || "unknown"}.`,
+          "Open the Amarillo plugin in Roblox Studio and accept the connection."
+        ]
+      };
+    }
+    if (offer?.status === "declined") {
+      return {
+        tone: "warning",
+        headline: "Plugin: connection declined",
+        message: "Plugin: Roblox Studio declined the last connection offer.",
+        details: [
+          "Run Start Bridge again and accept the new connection in Studio."
+        ]
+      };
+    }
+    if (offer?.status === "accepted" && offer.sessionId) {
+      return {
+        tone: "warning",
+        headline: "Plugin: accepted but no session",
+        message: `Plugin: Studio accepted the offer, but session ${offer.sessionId} is not active.`,
+        details: [
+          "Reload the Roblox Studio plugin and run Start Bridge again if the session does not appear."
+        ]
+      };
+    }
+    return {
+      tone: "warning",
+      headline: "Plugin: not connected",
+      message: "Plugin: no active Roblox Studio session is connected.",
+      details: [
+        "Start Bridge, open the Amarillo plugin in Roblox Studio, click Connect, then choose the source of truth."
+      ]
+    };
+  }
+
+  const projectName = activeSession.projectName || activeSession.projectId || "unknown";
+  const sessionState = activeSession.connectionState || "ready";
+  const syncState = activeSession.syncState || "unknown";
+  const contactLabel = studioContactLabel(activeSession);
+  const versionState = activeSession.versionState || "unknown";
+  const details = [
+    `Project=${projectName}; session=${activeSession.id || "-"}; state=${sessionState}; sync=${syncState}; Studio contact=${contactLabel}.`,
+    `Plugin version=${activeSession.pluginVersion || "unknown"}; protocol=${activeSession.pluginProtocolVersion ?? "unknown"}; compatibility=${versionState}.`
+  ];
+
+  if (activeSession.lastCommandError) {
+    details.push(`Last command error: ${activeSession.lastCommandError}`);
+  }
+  if (activeSession.lastSyncError) {
+    details.push(`Last sync error: ${activeSession.lastSyncError}`);
+  }
+
+  if (activeSession.requiresPluginUpdate) {
+    return {
+      tone: "danger",
+      headline: "Plugin: update required",
+      message: `Plugin: connected to ${projectName}, but the Studio plugin must be updated.`,
+      details: [
+        activeSession.versionMessage || "Plugin update required before sync can continue.",
+        ...details
+      ]
+    };
+  }
+  if (activeSession.requiresManualResync) {
+    return {
+      tone: "warning",
+      headline: "Plugin: sync paused",
+      message: `Plugin: connected to ${projectName}, but sync is paused.`,
+      details: [
+        activeSession.syncMessage || "Manual resync is required before automatic sync continues.",
+        ...details
+      ]
+    };
+  }
+  if (activeSession.studioContactState === "critical") {
+    return {
+      tone: "danger",
+      headline: "Plugin: Studio contact lost",
+      message: `Plugin: connected to ${projectName}, but Studio has not polled recently.`,
+      details: [
+        activeSession.studioContactMessage || "Studio contact is critical.",
+        ...details
+      ]
+    };
+  }
+  if (activeSession.studioContactState === "stale") {
+    return {
+      tone: "warning",
+      headline: "Plugin: Studio contact delayed",
+      message: `Plugin: connected to ${projectName}, but Studio contact is delayed.`,
+      details: [
+        activeSession.studioContactMessage || "Studio contact is stale.",
+        ...details
+      ]
+    };
+  }
+  if (sessionState !== "ready") {
+    return {
+      tone: "warning",
+      headline: `Plugin: session ${sessionState}`,
+      message: `Plugin: session for ${projectName} is ${sessionState}.`,
+      details
+    };
+  }
+
+  return {
+    tone: "success",
+    headline: "Plugin: connected",
+    message: `Plugin: connected to ${projectName}.`,
+    details
+  };
+}
+
 function samePath(left, right) {
   if (!left || !right) {
     return false;
@@ -1401,6 +1528,71 @@ async function fetchDaemonHealth() {
   return requestJson("GET", "/health");
 }
 
+function buildHealthcheckRouteProbes(health) {
+  const probes = [
+    { label: "Daemon health", method: "GET", route: "/health" },
+    { label: "Doctor report", method: "GET", route: "/doctor", timeout: 10000 },
+    { label: "Project catalog", method: "GET", route: "/projects" },
+    { label: "Studio offer poll", method: "GET", route: "/studio/poll" },
+    { label: "Sync state", method: "GET", route: "/debug/sync-state" },
+    { label: "Activity summary", method: "GET", route: "/activity/summary" },
+    { label: "Recent activity", method: "GET", route: "/activity?limit=1" },
+    { label: "Errors summary", method: "GET", route: "/errors/summary" },
+    { label: "Recent errors", method: "GET", route: "/errors?limit=1" },
+    { label: "MCP auth help", method: "GET", route: "/mcp/auth-help" },
+    { label: "MCP status", method: "GET", route: "/mcp/status" },
+    { label: "MCP tools", method: "GET", route: "/mcp/tools" },
+    { label: "MCP health probe", method: "POST", route: "/mcp/probe", body: {}, timeout: 10000 }
+  ];
+
+  for (const session of Array.isArray(health?.sessions) ? health.sessions : []) {
+    if (!session?.id) {
+      continue;
+    }
+    probes.push({
+      label: `Session status: ${session.projectName || session.projectId || session.id}`,
+      method: "GET",
+      route: `/session/${encodeURIComponent(session.id)}/status`
+    });
+  }
+
+  return probes;
+}
+
+async function runHealthcheckRouteProbe(probe) {
+  const startedAt = Date.now();
+  try {
+    await requestJson(probe.method, probe.route, probe.body, { timeout: probe.timeout ?? 5000 });
+    return {
+      ...probe,
+      ok: true,
+      durationMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    return {
+      ...probe,
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function runHealthcheckRouteProbes(health) {
+  const probes = buildHealthcheckRouteProbes(health);
+  return Promise.all(probes.map((probe) => runHealthcheckRouteProbe(probe)));
+}
+
+function logHealthcheckRouteResults(results) {
+  const passed = results.filter((result) => result.ok).length;
+  log(`Healthcheck routes: ${passed}/${results.length} OK.`);
+  for (const result of results) {
+    const status = result.ok ? "OK" : "FAIL";
+    const error = result.error ? ` error=${result.error}` : "";
+    log(`Healthcheck route ${status}: ${result.method} ${result.route} (${result.durationMs}ms) ${result.label}${error}`);
+  }
+}
+
 async function waitForDaemonOnline(timeoutMs = 10000) {
   const startedAt = Date.now();
   let lastError = null;
@@ -1927,7 +2119,11 @@ async function stopBridge() {
 
 async function runHealthcheck() {
   const payload = await fetchDaemonHealth();
+  const routeResults = await runHealthcheckRouteProbes(payload);
   const settings = getBridgeSettings();
+  const pluginHealth = describePluginHealth(payload);
+  const failedRoutes = routeResults.filter((result) => !result.ok);
+  const routeSummary = ` Routes: ${routeResults.length - failedRoutes.length}/${routeResults.length} OK.`;
   const workspaceWarning = daemonMatchesWorkspace(settings, payload)
     ? ""
     : " Warning: another workspace has an active daemon on this port.";
@@ -1945,12 +2141,27 @@ async function runHealthcheck() {
     ? ` MCP: ${mcpStateLabel(payload.mcpShield)}.`
     : "";
 
-  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0} mcp=${payload.mcpShield?.state || "unknown"}`);
+  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0} plugin=${pluginHealth.headline} mcp=${payload.mcpShield?.state || "unknown"}`);
+  log(`Healthcheck plugin: ${pluginHealth.message}`);
+  for (const detail of pluginHealth.details || []) {
+    log(`Healthcheck plugin detail: ${detail}`);
+  }
+  logHealthcheckRouteResults(routeResults);
   refreshSidebar();
   outputChannel.show(true);
-  vscode.window.showInformationMessage(
-    `Amarillo OK. Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${autoSyncInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}`
-  );
+  const failedRouteInfo = failedRoutes.length > 0
+    ? ` Failed route(s): ${failedRoutes.map((result) => `${result.method} ${result.route}`).join(", ")}.`
+    : "";
+  const message = `Amarillo healthcheck. ${pluginHealth.message} Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${routeSummary}${autoSyncInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}${failedRouteInfo}`;
+  if (pluginHealth.tone === "success" && failedRoutes.length === 0) {
+    vscode.window.showInformationMessage(message);
+  } else {
+    vscode.window.showWarningMessage(message, "Show Output").then((action) => {
+      if (action === "Show Output") {
+        outputChannel.show(true);
+      }
+    });
+  }
 }
 
 function doctorValue(value) {
