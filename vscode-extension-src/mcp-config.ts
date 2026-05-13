@@ -139,6 +139,8 @@ main();
 
 function buildMcpCodexVisibilityMarkdown() {
   const bootstrapCommand = `node ${MCP_WORKSPACE_VARIABLE}/${MCP_BOOTSTRAP_RELATIVE_PATH} --workspace ${MCP_WORKSPACE_VARIABLE}`;
+  const codexListCommand = "codex mcp list";
+  const codexAddCommand = `codex mcp add amarillo -- node "${MCP_WORKSPACE_VARIABLE}/${MCP_BOOTSTRAP_RELATIVE_PATH}" --workspace "${MCP_WORKSPACE_VARIABLE}"`;
   const config = buildWorkspaceMcpConfig({});
   return [
     "# MCP do Amarillo no Codex",
@@ -171,6 +173,22 @@ function buildMcpCodexVisibilityMarkdown() {
     "```",
     "",
     "After registration, restart or reopen the Codex/AI session so the host reloads the MCP server list.",
+    "",
+    "## Codex CLI native registration",
+    "",
+    "Some Codex sessions do not load `.vscode/mcp.json` automatically. Check Codex's own MCP registry with:",
+    "",
+    "```text",
+    codexListCommand,
+    "```",
+    "",
+    "If no `amarillo` server appears, register the workspace bootstrap manually:",
+    "",
+    "```text",
+    codexAddCommand,
+    "```",
+    "",
+    "This command registers only the portable bootstrap path. It does not copy the local bridge token or installed extension path into shared config.",
     "",
     "## Expected native tools",
     "",

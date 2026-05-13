@@ -1,6 +1,13 @@
 ﻿"use strict";
 
-const TOOL_DEFINITIONS = [
+import type {
+  McpToolArguments,
+  McpToolDefinition,
+  McpToolInputSchema,
+  McpToolPropertySchema
+} from "./contracts/mcp";
+
+const TOOL_DEFINITIONS: McpToolDefinition[] = [
   {
     name: "health",
     description: "Returns daemon status, workspace details, and active sessions. IMPORTANT: If sessions[] is empty, it means no Roblox Studio session is connected. In that case: (1) call list_projects to see available projects, (2) call connect_session with a projectId to create a session, (3) then use the returned sessionId for subsequent tool calls.",
@@ -373,12 +380,12 @@ function listTools() {
 
 const TOOL_DEFINITION_BY_NAME = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
 
-function validateToolArguments(name, args: any = {}) {
+function validateToolArguments(name: string, args: McpToolArguments = {}): McpToolArguments {
   const tool = TOOL_DEFINITION_BY_NAME.get(name);
   if (!tool) {
     throw new Error(`Unsupported MCP tool: ${name}`);
   }
-  const schema: any = tool.inputSchema || {};
+  const schema: McpToolInputSchema = tool.inputSchema || { type: "object" };
   const properties = schema.properties || {};
   const required = Array.isArray(schema.required) ? schema.required : [];
 
@@ -388,7 +395,7 @@ function validateToolArguments(name, args: any = {}) {
     }
   }
 
-  for (const [key, definition] of Object.entries(properties) as any) {
+  for (const [key, definition] of Object.entries(properties) as [string, McpToolPropertySchema][]) {
     if (args[key] === undefined || args[key] === null || definition.type === undefined) {
       continue;
     }

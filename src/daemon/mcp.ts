@@ -1,12 +1,19 @@
 ﻿"use strict";
 
+import type {
+  McpAppLike,
+  McpHandleOptions,
+  McpToolArguments,
+  McpToolResult
+} from "./contracts/mcp";
+
 const { findNodeByPath, listTools, validateToolArguments } = require("./mcp-tools");
 const { readLocalProjectStateAsync } = require("./project");
 const { startStdioMcpServer, textContent } = require("./mcp-stdio");
 
-function healthPayload(app) {
+function healthPayload(app: McpAppLike): Record<string, unknown> {
   const sessions = Array.from(app.sessions.values()).map((session) => app.sessionSummary(session));
-  const payload: any = {
+  const payload: Record<string, unknown> = {
     workspaceRoot: app.workspaceRoot,
     projects: app.listProjects(),
     connectionOffer: app.connectionOfferSummary(),
@@ -51,7 +58,7 @@ function summarizeValue(value) {
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
-function summarizeToolArguments(name, args: any = {}) {
+function summarizeToolArguments(name: string, args: McpToolArguments = {}): Record<string, unknown> {
   switch (name) {
     case "set_active_project":
       return { projectId: args.projectId || null };
@@ -283,7 +290,7 @@ async function executeTool(app, name, args) {
   return handler(app, args || {});
 }
 
-async function handleTool(app, name, args: any = {}, options: any = {}) {
+async function handleTool(app: McpAppLike, name: string, args: McpToolArguments = {}, options: McpHandleOptions = {}): Promise<McpToolResult> {
   const source = options.source || "native_stdio";
   const startedAt = Date.now();
   if (source && typeof app.recordMcpContact === "function") {

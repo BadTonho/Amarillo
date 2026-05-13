@@ -109,3 +109,16 @@ test("VS Code extension resolves multi-root workspaces from the active editor fi
   );
   assert.doesNotMatch(getWorkspaceFolderSource, /workspaceFolders\s*\[0\]/);
 });
+
+test("P3 typing guardrails keep central contracts away from broad any", () => {
+  const appSource = readText("src", "daemon", "app.ts");
+  const mcpToolsSource = readText("src", "daemon", "mcp-tools.ts");
+  const extensionSource = readText("vscode-extension-src", "extension.ts");
+
+  assert.match(appSource, /contracts\/runtime/);
+  assert.match(mcpToolsSource, /contracts\/mcp/);
+  assert.doesNotMatch(appSource, /class PluginRobloxApp\s*{\s*\[key: string\]: any;/);
+  assert.doesNotMatch(extensionSource, /function requestJson\([^)]*\): Promise<any>/);
+  assert.doesNotMatch(mcpToolsSource, /function validateToolArguments\(name,\s*args: any/);
+  assert.doesNotMatch(mcpToolsSource, /Object\.entries\(properties\) as any/);
+});

@@ -1,5 +1,33 @@
 "use strict";
 
+import type { Server as HttpServer } from "node:http";
+import type { FSWatcher } from "node:fs";
+import type { ConnectionOfferStatus } from "./contracts/connection";
+import type {
+  ActivityChangeInput,
+  ActivityDefaults,
+  ActivityFileInfo,
+  ActivityLogLike,
+  AppOptions,
+  CommandDeferred,
+  ConnectionOfferResolutionDetails,
+  ConnectionOfferRuntime,
+  DaemonConfig,
+  DestructiveCommandResult,
+  ErrorInput,
+  ErrorTrackerLike,
+  McpAuditLogLike,
+  McpShieldState,
+  ProjectCatalogIssue,
+  ProjectSelection,
+  RateLimiterLike,
+  RuntimeProject,
+  RuntimeSession,
+  SessionOpenOptions,
+  SyncCommand,
+  SyncDegradedDetails
+} from "./contracts/runtime";
+
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -55,6 +83,7 @@ const {
   normalizeProtocolVersion,
   normalizeVersion
 } = require("./version");
+const { shouldIgnoreProjectDiscoveryPath } = require("./project-discovery");
 
 // OPT-001/002: Simplified hash — direct JSON.stringify with sorted keys
 function hashSnapshot(snapshot) {
@@ -75,17 +104,17 @@ function hashSnapshot(snapshot) {
   return crypto.createHash("sha1").update(json).digest("hex");
 }
 
-function createDeferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
+function createDeferred(): CommandDeferred {
+  let resolve: (value?: unknown) => void = () => {};
+  let reject: (reason?: unknown) => void = () => {};
+  const promise = new Promise<unknown>((res, rej) => {
     resolve = res;
     reject = rej;
   });
   return { promise, resolve, reject };
 }
 
-function logSync(event, details: any = {}) {
+function logSync(event, details: Record<string, unknown> = {}) {
   if (process.env.AMARILLO_DEBUG !== "1") {
     return;
   }
@@ -271,7 +300,6 @@ function isInitialStudioSyncPending(session) {
 }
 
 class PluginRobloxApp {
-  [key: string]: any;
   workspaceRoot: string;
   host: string;
   port: number;
@@ -283,30 +311,30 @@ class PluginRobloxApp {
   extensionProtocolVersion: number | null;
   initialStudioContactGraceMs: number;
   studioSessionStaleMs: number;
-  httpServer: any;
-  allProjects: any[];
-  projects: any[];
-  projectCatalogIssues: any[];
-  config: any;
+  httpServer: HttpServer | null;
+  allProjects: RuntimeProject[];
+  projects: RuntimeProject[];
+  projectCatalogIssues: ProjectCatalogIssue[];
+  config: DaemonConfig;
   defaultProjectId: string | null;
-  sessions: Map<string, any>;
-  connectionOffer: any;
-  fileWatchers: any[];
-  pendingStudioWrites: Map<string, any>;
+  sessions: Map<string, RuntimeSession>;
+  connectionOffer: ConnectionOfferRuntime | null;
+  fileWatchers: FSWatcher[];
+  pendingStudioWrites: Map<string, NodeJS.Timeout>;
   lastWorkspaceRefresh: string | null;
   lastDiskWriteTime: number | null;
-  lastProjectIssueKeys: Set<any>;
-  errorTracker: any;
-  activityLog: any;
-  mcpAuditLog: any;
-  activityFileState: Map<string, any>;
+  lastProjectIssueKeys: Set<string>;
+  errorTracker: ErrorTrackerLike;
+  activityLog: ActivityLogLike;
+  mcpAuditLog: McpAuditLogLike;
+  activityFileState: Map<string, ActivityFileInfo>;
   activityKnownFiles: Set<string>;
-  mcpShield: any;
+  mcpShield: McpShieldState;
   recentUnauthorizedHttpRequests: Map<string, number>;
-  rateLimiter: any;
+  rateLimiter: RateLimiterLike;
   shuttingDown: boolean;
 
-  constructor(options) {
+  constructor(options: AppOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
     this.host = options.host || "127.0.0.1";
     this.port = Number(options.port || 8323);
@@ -331,10 +359,10 @@ class PluginRobloxApp {
       plugin: {}
     };
     this.defaultProjectId = null;
-    this.sessions = new Map<string, any>();
+    this.sessions = new Map<string, RuntimeSession>();
     this.connectionOffer = null;
     this.fileWatchers = [];
-    this.pendingStudioWrites = new Map<string, any>();
+    this.pendingStudioWrites = new Map<string, NodeJS.Timeout>();
     this.lastWorkspaceRefresh = null;
     this.lastDiskWriteTime = null;
     this.lastProjectIssueKeys = new Set();
@@ -348,7 +376,7 @@ class PluginRobloxApp {
     this.mcpAuditLog = new McpAuditLog({
       workspaceRoot: this.workspaceRoot
     });
-    this.activityFileState = new Map<string, any>();
+    this.activityFileState = new Map<string, ActivityFileInfo>();
     this.activityKnownFiles = new Set<string>();
     this.mcpShield = createMcpShieldState();
     this.recentUnauthorizedHttpRequests = new Map<string, number>();
@@ -473,7 +501,7 @@ class PluginRobloxApp {
       this.port = Number(this.config.plugin.daemonPort || this.config.argon.port || 8323);
     }
     if (!this.host) {
-      this.host = this.config.argon.host || "127.0.0.1";
+      this.host = String(this.config.argon.host || "127.0.0.1");
     }
     this.startWatchers();
     this.httpServer = http.createServer((request, response) => {
@@ -580,7 +608,7 @@ class PluginRobloxApp {
     }
   }
 
-  recordError(entry: any = {}) {
+  recordError(entry: ErrorInput = {}) {
     return this.errorTracker.add({
       component: entry.component || "daemon",
       severity: entry.severity || "error",
@@ -596,15 +624,16 @@ class PluginRobloxApp {
     });
   }
 
-  recordMcpContact(source = "unknown", details: any = {}) {
+  recordMcpContact(source = "unknown", details: Record<string, unknown> = {}) {
     if (!this.mcpShield) {
       this.mcpShield = createMcpShieldState();
     }
     const now = new Date().toISOString();
     this.mcpShield.state = "ready";
     this.mcpShield.lastFailure = null;
-    if (details.toolName) {
-      this.mcpShield.lastTool = details.toolName;
+    const toolName = typeof details.toolName === "string" ? details.toolName : null;
+    if (toolName) {
+      this.mcpShield.lastTool = toolName;
       this.mcpShield.callCount += 1;
     }
     if (source === "native_stdio") {
@@ -618,30 +647,33 @@ class PluginRobloxApp {
     }
   }
 
-  recordMcpFailure(source = "unknown", error: any, details: any = {}) {
+  recordMcpFailure(source = "unknown", error: unknown, details: Record<string, unknown> = {}) {
     if (!this.mcpShield) {
       this.mcpShield = createMcpShieldState();
     }
-    const message = error?.message || String(error || "Unknown MCP error.");
+    const message = error instanceof Error ? error.message : String(error || "Unknown MCP error.");
     const now = new Date().toISOString();
+    const toolName = typeof details.toolName === "string" ? details.toolName : null;
+    const route = typeof details.route === "string" ? details.route : null;
+    const code = typeof details.code === "string" ? details.code : "MCP-SHIELD";
     this.mcpShield.state = "degraded";
     this.mcpShield.failureCount += 1;
     this.mcpShield.lastFailure = {
       at: now,
       source,
-      toolName: details.toolName || null,
-      route: details.route || null,
+      toolName,
+      route,
       message
     };
     this.recordError({
       component: "mcp",
       severity: "warning",
-      code: details.code || "MCP-SHIELD",
+      code,
       message,
       context: {
         source,
-        toolName: details.toolName || null,
-        route: details.route || null
+        toolName,
+        route
       }
     });
   }
@@ -666,7 +698,7 @@ class PluginRobloxApp {
     };
   }
 
-  updateSessionPluginVersion(session: any, metadata: any = {}) {
+  updateSessionPluginVersion(session: RuntimeSession | null, metadata: SessionOpenOptions = {}) {
     if (!session || !metadata || typeof metadata !== "object") {
       return;
     }
@@ -848,14 +880,14 @@ class PluginRobloxApp {
   assertSessionSyncAllowed(session, action = "sync") {
     const reason = this.syncBlockedReason(session);
     if (reason) {
-      const error: any = new Error(`${action} blocked: ${reason}`);
+      const error = new Error(`${action} blocked: ${reason}`) as Error & { statusCode?: number; code?: string };
       error.statusCode = 409;
       error.code = "SYNC-BLOCKED";
       throw error;
     }
   }
 
-  recordMcpAudit(entry: any = {}) {
+  recordMcpAudit(entry: Record<string, unknown> = {}) {
     return this.mcpAuditLog.add(entry);
   }
 
@@ -894,7 +926,7 @@ class PluginRobloxApp {
   }
 
   reportProjectCatalogIssues() {
-    const nextIssueKeys = new Set();
+    const nextIssueKeys = new Set<string>();
     for (const issue of this.projectCatalogIssues) {
       nextIssueKeys.add(issue.key);
       if (this.lastProjectIssueKeys.has(issue.key)) {
@@ -981,7 +1013,7 @@ class PluginRobloxApp {
     return null;
   }
 
-  recordActivity(change: any = {}, defaults: any = {}) {
+  recordActivity(change: ActivityChangeInput = {}, defaults: ActivityDefaults = {}) {
     const filePath = change.filePath || change.path;
     if (!filePath) {
       return null;
@@ -1023,7 +1055,7 @@ class PluginRobloxApp {
     return record;
   }
 
-  recordWorkspaceFileActivity(filePath, defaults: any = {}) {
+  recordWorkspaceFileActivity(filePath, defaults: ActivityDefaults = {}) {
     const normalized = normalizeFsPath(filePath);
     const context = this.findMountedFileContext(normalized);
     if (!context) {
@@ -1116,7 +1148,7 @@ class PluginRobloxApp {
     session._pollWaiter = null;
   }
 
-  reclaimStudioSession(session: any, selection: any, placeId, options: any = {}) {
+  reclaimStudioSession(session: RuntimeSession, selection: ProjectSelection, placeId, options: SessionOpenOptions = {}) {
     this.clearSessionRuntimeState(session);
     session.placeId = Number(placeId || 0);
     session.createdAt = new Date().toISOString();
@@ -1151,14 +1183,7 @@ class PluginRobloxApp {
       const normalized = String(fileName).replace(/\\/g, "/");
 
       // Skip known non-relevant directories early
-      if (
-        normalized.startsWith(".git/")
-        || normalized.startsWith("node_modules/")
-        || normalized.startsWith(".amarillo/")
-        || normalized.startsWith(".vscode/")
-        || normalized.startsWith("dist/")
-        || normalized.startsWith("build/")
-      ) {
+      if (shouldIgnoreProjectDiscoveryPath(normalized)) {
         return;
       }
 
@@ -1589,7 +1614,7 @@ class PluginRobloxApp {
     return this.connectionOfferSummary();
   }
 
-  resolveConnectionOffer(status, details: any = {}) {
+  resolveConnectionOffer(status: ConnectionOfferStatus, details: ConnectionOfferResolutionDetails = {}) {
     if (!this.connectionOffer) {
       return null;
     }
@@ -1634,7 +1659,7 @@ class PluginRobloxApp {
     return resolveProjectSelectionForPlace(this.projects, placeId, this.defaultProjectId);
   }
 
-  openSession(placeId, preferredProjectId = null, options: any = {}) {
+  openSession(placeId, preferredProjectId = null, options: SessionOpenOptions = {}) {
     const selection = this.resolveProjectSelection(placeId, preferredProjectId);
     const project = selection.project;
     if (!project) {
@@ -1679,7 +1704,7 @@ class PluginRobloxApp {
         project
       };
     }
-    const session: any = {
+    const session: RuntimeSession = {
       id: crypto.randomUUID(),
       sessionToken: this.createSessionToken(),
       placeId: Number(placeId || 0),
@@ -1904,7 +1929,7 @@ class PluginRobloxApp {
     });
   }
 
-  markSyncDegraded(session, reason, details: any = {}) {
+  markSyncDegraded(session, reason, details: SyncDegradedDetails = {}) {
     const sync = this.ensureSessionSyncState(session);
     const message = String(reason || "Sync verification failed.");
     const timestamp = new Date().toISOString();
@@ -2015,7 +2040,7 @@ class PluginRobloxApp {
       throw new Error("Studio session not found.");
     }
     if (isSyncCommandType(type) && this.isSessionVersionBlocked(session)) {
-      const error: any = new Error(`${type} blocked: ${this.syncBlockedReason(session)}`);
+      const error = new Error(`${type} blocked: ${this.syncBlockedReason(session)}`) as Error & { statusCode?: number; code?: string };
       error.statusCode = 409;
       error.code = "VERSION-BLOCKED";
       throw error;
@@ -2042,7 +2067,7 @@ class PluginRobloxApp {
         return keep;
       });
     }
-    const command: any = {
+    const command: SyncCommand = {
       id: crypto.randomUUID(),
       type,
       payload
@@ -2292,7 +2317,7 @@ class PluginRobloxApp {
     }
     if (this.isSessionVersionBlocked(session)) {
       const reason = this.syncBlockedReason(session);
-      const error: any = new Error(`Studio snapshot write blocked: ${reason}`);
+      const error = new Error(`Studio snapshot write blocked: ${reason}`) as Error & { statusCode?: number; code?: string };
       error.statusCode = 409;
       error.code = "VERSION-BLOCKED";
       throw error;
@@ -2426,8 +2451,8 @@ class PluginRobloxApp {
     return result;
   }
 
-  normalizeDestructiveCommandResult(session, result: any = {}) {
-    const normalized: any = result && typeof result === "object"
+  normalizeDestructiveCommandResult(session, result: DestructiveCommandResult = {}) {
+    const normalized: DestructiveCommandResult = result && typeof result === "object"
       ? { ...result }
       : {
         ok: false,
@@ -2477,7 +2502,7 @@ class PluginRobloxApp {
     return project;
   }
 
-  sessionSummary(session, options: any = {}) {
+  sessionSummary(session, options: { includeSessionToken?: boolean } = {}) {
     const project = this.getProjectById(session.projectId);
     const sync = this.ensureSessionSyncState(session);
     const version = this.sessionVersionStatus(session);
