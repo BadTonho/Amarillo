@@ -5,6 +5,7 @@ const path = require("node:path");
 const { TOOL_DEFINITIONS, listTools } = require("./mcp-tools");
 
 const MCP_CONFIG_RELATIVE_PATH = path.join(".vscode", "mcp.json");
+const MCP_LOCAL_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
 
 function createMcpShieldState() {
   return {
@@ -24,8 +25,97 @@ function safeObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function readJsonIfPossible(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function inspectMcpLocalState(workspaceRoot) {
+  const localStatePath = path.join(workspaceRoot, MCP_LOCAL_RELATIVE_PATH);
+  const base = {
+    path: localStatePath,
+    relativePath: MCP_LOCAL_RELATIVE_PATH.replace(/\\/g, "/"),
+    exists: false,
+    validJson: false,
+    hasBridgeToken: false,
+    hasExtensionPath: false,
+    proxyExists: false,
+    status: "missing",
+    message: "Local MCP state was not found. Run Amarillo: Configure MCP for Workspace.",
+    host: null,
+    port: null,
+    extensionPath: null,
+    extensionVersion: null,
+    updatedAt: null
+  };
+
+  if (!fs.existsSync(localStatePath)) {
+    return base;
+  }
+
+  const parsed = readJsonIfPossible(localStatePath);
+  if (!parsed) {
+    return {
+      ...base,
+      exists: true,
+      status: "invalid_json",
+      message: "Local MCP state exists but is not valid JSON."
+    };
+  }
+
+  const extensionPath = typeof parsed.extensionPath === "string" ? parsed.extensionPath : "";
+  const bridgeToken = typeof parsed.bridgeToken === "string" ? parsed.bridgeToken : "";
+  const proxyEntry = extensionPath ? path.join(extensionPath, "runtime", "mcp-proxy", "index.js") : "";
+  const parsedPort = Number(parsed.port);
+  const state = {
+    ...base,
+    exists: true,
+    validJson: true,
+    hasBridgeToken: bridgeToken.length > 0,
+    hasExtensionPath: extensionPath.length > 0,
+    proxyExists: proxyEntry.length > 0 && fs.existsSync(proxyEntry),
+    host: typeof parsed.host === "string" ? parsed.host : null,
+    port: Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : null,
+    extensionPath: extensionPath || null,
+    extensionVersion: typeof parsed.extensionVersion === "string" ? parsed.extensionVersion : null,
+    updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null
+  };
+
+  if (!state.hasExtensionPath) {
+    return {
+      ...state,
+      status: "missing_extension_path",
+      message: "Local MCP state does not contain the installed Amarillo extension path."
+    };
+  }
+  if (!state.proxyExists) {
+    return {
+      ...state,
+      status: "missing_proxy",
+      message: "Local MCP state points to an Amarillo extension without runtime/mcp-proxy/index.js."
+    };
+  }
+  if (!state.hasBridgeToken) {
+    return {
+      ...state,
+      status: "missing_bridge_token",
+      message: "Local MCP state does not contain a bridge token."
+    };
+  }
+
+  return {
+    ...state,
+    status: "ready",
+    message: "Local MCP state is ready."
+  };
+}
+
 function inspectWorkspaceMcpConfig(workspaceRoot) {
   const mcpPath = path.join(workspaceRoot, MCP_CONFIG_RELATIVE_PATH);
+  const localState = inspectMcpLocalState(workspaceRoot);
   const base = {
     path: mcpPath,
     relativePath: MCP_CONFIG_RELATIVE_PATH.replace(/\\/g, "/"),
@@ -35,7 +125,8 @@ function inspectWorkspaceMcpConfig(workspaceRoot) {
     usesLegacyShape: false,
     status: "missing",
     message: "Workspace MCP config was not found. Run Amarillo: Configure MCP for Workspace.",
-    server: null
+    server: null,
+    localState
   };
 
   if (!fs.existsSync(mcpPath)) {
@@ -80,21 +171,28 @@ function inspectWorkspaceMcpConfig(workspaceRoot) {
 
   const args = Array.isArray(server.args) ? server.args.map(String) : [];
   const command = typeof server.command === "string" ? server.command : "";
+  const cwd = typeof server.cwd === "string" ? server.cwd : "";
   const type = typeof server.type === "string" ? server.type : "";
   const hasProxyEntry = args.some((arg) => /mcp-proxy[\\/]index\.js$/i.test(arg.replace(/\\/g, "/")));
+  const hasBootstrapEntry = args.some((arg) => /amarillo-mcp-bootstrap\.cjs$/i.test(arg.replace(/\\/g, "/")));
   const hasWorkspaceArg = args.includes("--workspace");
   const hasPortArg = args.includes("--port");
+  const isPortableBootstrap = hasBootstrapEntry && hasWorkspaceArg;
+  const isDirectProxy = hasProxyEntry && hasWorkspaceArg && hasPortArg;
 
   const serverSummary = {
     type,
     command,
+    cwd,
     args,
+    hasBootstrapEntry,
     hasProxyEntry,
     hasWorkspaceArg,
-    hasPortArg
+    hasPortArg,
+    localState
   };
 
-  if (type !== "stdio" || !command || !hasProxyEntry || !hasWorkspaceArg || !hasPortArg) {
+  if (type !== "stdio" || !command || (!isPortableBootstrap && !isDirectProxy)) {
     return {
       ...base,
       status: "incomplete",
@@ -103,10 +201,21 @@ function inspectWorkspaceMcpConfig(workspaceRoot) {
     };
   }
 
+  if (isPortableBootstrap && localState.status !== "ready") {
+    return {
+      ...base,
+      status: localState.status,
+      message: `${localState.message} Portable MCP config is present, but this machine still needs local Amarillo state.`,
+      server: serverSummary
+    };
+  }
+
   return {
     ...base,
     status: "ready",
-    message: "Workspace MCP config is present and points to the Amarillo stdio proxy.",
+    message: isPortableBootstrap
+      ? "Workspace MCP config is portable and local Amarillo state is ready."
+      : "Workspace MCP config is present and points directly to the Amarillo stdio proxy.",
     server: serverSummary
   };
 }
@@ -168,6 +277,7 @@ function mcpShieldSummary(app) {
     suggestedActions: [
       "Run Amarillo: Configure MCP for Workspace.",
       "If the AI client was already open, reopen its chat/session so it reloads .vscode/mcp.json.",
+      "For shared workspaces, commit .vscode/mcp.json and .vscode/amarillo-mcp-bootstrap.cjs, but never commit .amarillo/mcp-local.json.",
       "If native MCP is unavailable, call POST /mcp/call with a tool name and arguments as the HTTP fallback."
     ]
   };
@@ -193,6 +303,7 @@ function mcpToolResultToHttpPayload(result) {
 
 module.exports = {
   createMcpShieldState,
+  inspectMcpLocalState,
   inspectWorkspaceMcpConfig,
   listTools,
   mcpShieldSummary,

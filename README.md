@@ -16,7 +16,7 @@ This repository contains the **source code for the bridge and the VS Code extens
 
 - A single authoritative daemon serves both the Studio plugin and the VS Code extension.
 - The editor MCP does not start a second competing bridge.
-- `Amarillo: Start Bridge` ensures the local bridge is running and writes or updates `.vscode/mcp.json` so it can talk to the existing daemon through the `stdio -> HTTP` proxy.
+- `Amarillo: Start Bridge` ensures the local bridge is running and writes or updates the portable workspace MCP files so the AI client can talk to the existing daemon through the `stdio -> HTTP` proxy.
 - `Amarillo: Configure MCP for Workspace` remains available when you want to regenerate `mcp.json` manually.
 - The default port for the whole stack is `8323`.
 
@@ -67,7 +67,8 @@ With this layout, the shared folder is mounted into every derived place, while e
 
 ## Using the MCP Tooling
 
-- Running `Amarillo: Start Bridge` also writes or updates `.vscode/mcp.json` in the open workspace.
+- Running `Amarillo: Start Bridge` also writes or updates `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` in the open workspace.
+- The machine-specific secret state is written to `.amarillo/mcp-local.json`; do not commit this file.
 - If your AI or MCP client was already open, reopen the session so it reloads the workspace MCP servers.
 - `Amarillo: Configure MCP for Workspace` is still useful as a manual regenerate or repair command for `mcp.json`.
 
@@ -110,10 +111,12 @@ The tracked files in `.vscode/` point to that example workspace:
 - `.vscode/tasks.json`
 - `.vscode/extensions.json`
 
-Local and generated files stay out of Git so we do not publish absolute paths, real workspace settings, or built artifacts:
+Local and generated files stay out of Git so we do not publish secrets, real workspace settings, or built artifacts:
 
 - `.pluginroblox.json` is created per user; use `.pluginroblox.example.json` as a starting point when needed.
-- `.vscode/mcp.json` and `.vscode/settings.json` are generated or managed locally by the extension.
+- `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` are portable and can be committed with a shared workspace.
+- `.amarillo/mcp-local.json` is generated per machine and stores the installed extension path plus bridge token.
+- `.vscode/settings.json` is generated or managed locally by the extension.
 - `sourcemap.json`, `debug.log`, `REPORT_*.md`, `dist/`, and `*.vsix` are build or diagnostic artifacts.
 
 Available local tasks:

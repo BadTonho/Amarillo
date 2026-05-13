@@ -99,7 +99,7 @@ function uniquePaths(paths) {
   return Array.from(new Set(paths.map((entry) => path.resolve(entry))));
 }
 
-function syncWorkspaceMcpRuntime(extensionVersion) {
+function syncLegacyWorkspaceMcpRuntime(extensionVersion) {
   const updatedPaths = [];
   const warnings = [];
   const runtimeVersionPattern = /(amarillo\.amarillo-vscode-)(\d+\.\d+\.\d+)([\\/]runtime[\\/]mcp-proxy[\\/]index\.js)$/i;
@@ -190,15 +190,15 @@ replaceInFile("vscode-extension-src/extension.ts", [
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
 ]);
 
-const mcpRuntimeSync = syncWorkspaceMcpRuntime(version.extensionVersion);
+const legacyMcpRuntimeSync = syncLegacyWorkspaceMcpRuntime(version.extensionVersion);
 
 process.stdout.write(
   `[sync-version] Synced ${path.basename(versionPath)} ` +
   `(extension=${version.extensionVersion}, daemon=${version.daemonVersion}, plugin=${version.pluginVersion}, protocol=${version.protocolVersion}); ` +
-  (mcpRuntimeSync.updatedPaths.length > 0 ? `updated MCP runtime in ${mcpRuntimeSync.updatedPaths.map((entry) => path.relative(repoRoot, entry)).join(", ")}; ` : "") +
+  (legacyMcpRuntimeSync.updatedPaths.length > 0 ? `updated legacy MCP runtime in ${legacyMcpRuntimeSync.updatedPaths.map((entry) => path.relative(repoRoot, entry)).join(", ")}; ` : "") +
   "generated JavaScript updates on build\n"
 );
 
-for (const warning of mcpRuntimeSync.warnings) {
+for (const warning of legacyMcpRuntimeSync.warnings) {
   process.stderr.write(`[sync-version] Could not update workspace MCP runtime: ${warning}\n`);
 }

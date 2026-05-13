@@ -1,6 +1,6 @@
 "use strict";
 
-const DAEMON_VERSION = "1.0.31";
+const DAEMON_VERSION = "1.0.32";
 const AMARILLO_PROTOCOL_VERSION = 1;
 const MIN_PLUGIN_VERSION = "1.0.29";
 

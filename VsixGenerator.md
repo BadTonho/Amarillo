@@ -1,6 +1,6 @@
 # Generate and install VSIX
 
-This file is an operational checklist. Use it when creating a new Amarillo VSIX and installing it locally without leaving MCP pointed at an old extension runtime.
+This file is an operational checklist. Use it when creating a new Amarillo VSIX and installing it locally while keeping MCP portable across machines.
 
 Run this from the folder that contains the workspace, then enter the Amarillo repo:
 
@@ -8,10 +8,10 @@ Run this from the folder that contains the workspace, then enter the Amarillo re
 cd .\amarillo
 ```
 
-Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, the Roblox Studio plugin version, and any existing workspace `.vscode/mcp.json` runtime path that points to an installed `amarillo-vscode-*` folder:
+Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version. Legacy direct-runtime `.vscode/mcp.json` files are updated best-effort, but the current MCP flow uses a portable bootstrap instead:
 
 ```powershell
-npm.cmd run version:set -- 1.0.31
+npm.cmd run version:set -- 1.0.32
 ```
 
 Generate the VSIX:
@@ -44,13 +44,15 @@ Amarillo: Install Roblox Studio Plugin
 Amarillo: Start Bridge
 ```
 
-Important: `.vscode/mcp.json` points to the installed extension runtime folder, not to the `.vsix` file. After moving from one VSIX version to another, it must point to the new versioned path:
+Important: `.vscode/mcp.json` should not point to your installed extension folder or the `.vsix` file. It should point to the workspace bootstrap:
 
 ```text
-C:\Users\Admin\.vscode\extensions\amarillo.amarillo-vscode-$version\runtime\mcp-proxy\index.js
+${workspaceFolder}/.vscode/amarillo-mcp-bootstrap.cjs
 ```
 
-From the workspace root (`C:\Users\Admin\Desktop\amarillo`), verify the generated MCP path and tool discovery:
+The bootstrap reads `.amarillo/mcp-local.json`, which is generated per machine and stores the installed extension path plus bridge token. Commit `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` if this is a shared Roblox workspace; never commit `.amarillo/mcp-local.json`.
+
+From the workspace root (`C:\Users\Admin\Desktop\amarillo`), verify the generated MCP config and tool discovery:
 
 ```powershell
 cd ..
@@ -62,12 +64,12 @@ cd ..
 Expected:
 
 ```text
-proxyExists: True
-usesExpectedRuntime: True
+hasMcpConfig: True
+hasBridgeToken: True
 toolCount: 22
 ```
 
-If `status` still points to an old `amarillo-vscode-*` folder, run `npm.cmd run version:set -- <version>` again from `.\amarillo`, or run `Amarillo: Configure MCP for Workspace`, then restart the AI/MCP session so it reloads `.vscode/mcp.json`.
+If `status` cannot find the bridge token or local state, run `Amarillo: Configure MCP for Workspace` or `Amarillo: Start Bridge`, then restart the AI/MCP session so it reloads `.vscode/mcp.json`.
 
 If Roblox Studio reports an older plugin version after the extension update, run `Amarillo: Install Roblox Studio Plugin`, then reload or reopen Roblox Studio.
 

@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "amarillo": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "c:\\Users\\Admin\\.vscode\\extensions\\amarillo.amarillo-vscode-1.0.32\\runtime\\mcp-proxy\\index.js",
+        "--workspace",
+        "c:\\Users\\Admin\\Desktop\\ProjetosCode\\Amarilio-main",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8323"
+      ]
+    }
+  }
+}

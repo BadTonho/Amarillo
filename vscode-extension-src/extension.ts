@@ -351,13 +351,16 @@ function workspaceRelativePath(workspaceRoot, targetPath) {
 
 function describeMcpConfigResult(mcpConfigResult, workspaceRoot) {
   const displayPath = workspaceRelativePath(workspaceRoot, mcpConfigResult.mcpPath);
+  const visibilityDetail = mcpConfigResult.visibilityChanged && mcpConfigResult.visibilityPath
+    ? `; Codex visibility note updated at ${workspaceRelativePath(workspaceRoot, mcpConfigResult.visibilityPath)}`
+    : "";
   switch (mcpConfigResult.status) {
     case "created":
-      return `MCP configured at ${displayPath}`;
+      return `MCP configured at ${displayPath}${visibilityDetail}`;
     case "updated":
-      return `MCP updated at ${displayPath}`;
+      return `MCP updated at ${displayPath}${visibilityDetail}`;
     default:
-      return `MCP ready at ${displayPath}`;
+      return `MCP ready at ${displayPath}${visibilityDetail}`;
   }
 }
 
@@ -2047,7 +2050,9 @@ async function ensureWorkspaceMcp(context) {
     proxyEntry,
     host,
     port,
-    bridgeToken: token
+    bridgeToken: token,
+    extensionPath: context.extensionPath,
+    extensionVersion: extensionVersion(context)
   });
   const message = describeMcpConfigResult(mcpConfigResult, workspaceRoot);
   log(message);
