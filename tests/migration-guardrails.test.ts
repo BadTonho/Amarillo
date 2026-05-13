@@ -49,6 +49,9 @@ test("root package version is synchronized with Amarillo product version", () =>
   assert.equal(packageLock.packages[""].version, version.extensionVersion);
   assert.match(syncVersionSource, /updateJson\("package\.json"/);
   assert.match(syncVersionSource, /updateJson\("package-lock\.json"/);
+  assert.match(syncVersionSource, /syncWorkspaceMcpRuntime/);
+  assert.match(syncVersionSource, /amarillo\\.amarillo-vscode-/);
+  assert.match(syncVersionSource, /\.vscode", "mcp\.json"/);
 });
 
 test("runtime and extension participate in npm typecheck", () => {
