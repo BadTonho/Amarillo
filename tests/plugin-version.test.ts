@@ -65,6 +65,11 @@ test("Roblox plugin caches property metadata while reading live values", () => {
   assert.match(pluginSource, /for propertyName in pairs\(propertyNames\) do\s+local value = safeGetProperty\(instance, propertyName\)/);
 });
 
+test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {
+  assert.match(pluginSource, /local function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
+  assert.match(pluginSource, /local function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);
+});
+
 test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => {
   assert.match(pluginSource, /awaitingInitialStudioSync = false/);
   assert.match(pluginSource, /local function attemptInitialStudioSync/);

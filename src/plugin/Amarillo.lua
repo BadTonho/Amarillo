@@ -2733,11 +2733,11 @@ local function fetchAndShowDiff(truthSource)
 end
 
 local function choosePcTruth()
-	fetchAndShowDiff("pc")
+	acceptPendingConnection("pc")
 end
 
 local function chooseStudioTruth()
-	fetchAndShowDiff("studio")
+	acceptPendingConnection("studio")
 end
 
 local function pollConnectionOffer()

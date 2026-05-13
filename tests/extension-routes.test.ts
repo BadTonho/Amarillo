@@ -26,6 +26,36 @@ test("VS Code MCP healthcheck uses shield status and probe endpoints", () => {
   assert.match(extensionSource, /amarillo\.mcpHealthcheck/);
 });
 
+test("VS Code healthcheck reports Roblox Studio plugin status", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /describePluginHealth/);
+  assert.match(extensionSource, /Healthcheck plugin:/);
+  assert.match(extensionSource, /Plugin: no active Roblox Studio session is connected/);
+  assert.match(extensionSource, /Plugin: connected to/);
+});
+
+test("VS Code healthcheck probes safe daemon routes", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /runHealthcheckRouteProbes/);
+  assert.match(extensionSource, /\/doctor/);
+  assert.match(extensionSource, /\/projects/);
+  assert.match(extensionSource, /\/studio\/poll/);
+  assert.match(extensionSource, /\/debug\/sync-state/);
+  assert.match(extensionSource, /\/activity\/summary/);
+  assert.match(extensionSource, /\/errors\/summary/);
+  assert.match(extensionSource, /\/mcp\/tools/);
+  assert.match(extensionSource, /\/mcp\/probe/);
+  assert.match(extensionSource, /Healthcheck routes:/);
+});
+
 test("VS Code Doctor command calls /doctor and daemon receives extension protocol args", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),
