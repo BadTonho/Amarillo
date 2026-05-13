@@ -5,6 +5,10 @@ const path = require("node:path");
 
 const repoRoot = path.join(__dirname, "..");
 const versionPath = path.join(repoRoot, "amarillo-version.json");
+const workspaceMcpCandidates = [
+  path.join(repoRoot, ".vscode", "mcp.json"),
+  path.join(repoRoot, "..", ".vscode", "mcp.json")
+];
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(path.join(repoRoot, filePath), "utf8"));
@@ -91,6 +95,53 @@ function replaceInFile(filePath, replacements) {
   fs.writeFileSync(absolutePath, source, "utf8");
 }
 
+function uniquePaths(paths) {
+  return Array.from(new Set(paths.map((entry) => path.resolve(entry))));
+}
+
+function syncWorkspaceMcpRuntime(extensionVersion) {
+  const updatedPaths = [];
+  const warnings = [];
+  const runtimeVersionPattern = /(amarillo\.amarillo-vscode-)(\d+\.\d+\.\d+)([\\/]runtime[\\/]mcp-proxy[\\/]index\.js)$/i;
+
+  for (const mcpPath of uniquePaths(workspaceMcpCandidates)) {
+    if (!fs.existsSync(mcpPath)) {
+      continue;
+    }
+
+    let config;
+    try {
+      config = JSON.parse(fs.readFileSync(mcpPath, "utf8"));
+    } catch (_error) {
+      continue;
+    }
+
+    const server = config?.servers?.amarillo || config?.mcpServers?.amarillo;
+    const args = Array.isArray(server?.args) ? server.args : null;
+    if (!args || typeof args[0] !== "string") {
+      continue;
+    }
+
+    const nextProxyPath = args[0].replace(
+      runtimeVersionPattern,
+      (_match, prefix, _oldVersion, suffix) => `${prefix}${extensionVersion}${suffix}`
+    );
+    if (nextProxyPath === args[0]) {
+      continue;
+    }
+
+    args[0] = nextProxyPath;
+    try {
+      fs.writeFileSync(mcpPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      updatedPaths.push(mcpPath);
+    } catch (error) {
+      warnings.push(`${mcpPath}: ${error.message}`);
+    }
+  }
+
+  return { updatedPaths, warnings };
+}
+
 const { nextProtocolVersion, nextVersion } = parseArgs(process.argv.slice(2));
 const version = readJson("amarillo-version.json");
 
@@ -139,7 +190,15 @@ replaceInFile("vscode-extension-src/extension.ts", [
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
 ]);
 
+const mcpRuntimeSync = syncWorkspaceMcpRuntime(version.extensionVersion);
+
 process.stdout.write(
   `[sync-version] Synced ${path.basename(versionPath)} ` +
-  `(extension=${version.extensionVersion}, daemon=${version.daemonVersion}, plugin=${version.pluginVersion}, protocol=${version.protocolVersion}); generated JavaScript updates on build\n`
+  `(extension=${version.extensionVersion}, daemon=${version.daemonVersion}, plugin=${version.pluginVersion}, protocol=${version.protocolVersion}); ` +
+  (mcpRuntimeSync.updatedPaths.length > 0 ? `updated MCP runtime in ${mcpRuntimeSync.updatedPaths.map((entry) => path.relative(repoRoot, entry)).join(", ")}; ` : "") +
+  "generated JavaScript updates on build\n"
 );
+
+for (const warning of mcpRuntimeSync.warnings) {
+  process.stderr.write(`[sync-version] Could not update workspace MCP runtime: ${warning}\n`);
+}
