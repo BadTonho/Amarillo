@@ -83,6 +83,7 @@ type InvokeOptions = {
 
 type InvokeResult = {
   statusCode: number;
+  headers: Record<string, string>;
   payload: any;
 };
 
@@ -129,15 +130,18 @@ async function invoke(app, method, url, body?: any, options: InvokeOptions = {})
 
   return new Promise<InvokeResult>((resolve, reject) => {
     let statusCode = 200;
+    let responseHeaders: Record<string, string> = {};
     let responseBody = "";
     const response: any = {
-      writeHead(code) {
+      writeHead(code, headers = {}) {
         statusCode = code;
+        responseHeaders = headers;
       },
       end(chunk = "") {
         responseBody += chunk;
         resolve({
           statusCode,
+          headers: responseHeaders,
           payload: responseBody ? JSON.parse(responseBody) : {}
         });
       }
@@ -146,6 +150,58 @@ async function invoke(app, method, url, body?: any, options: InvokeOptions = {})
     app.handleHttp(request, response).catch(reject);
   });
 }
+
+test("daemon JSON responses disable network caching", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323
+  });
+  app.refreshWorkspace();
+
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.headers["Cache-Control"], "no-store, no-cache, must-revalidate, proxy-revalidate");
+  assert.equal(health.headers.Pragma, "no-cache");
+  assert.equal(health.headers.Expires, "0");
+});
+
+test("daemon rejects new HTTP requests while shutting down", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323
+  });
+  app.refreshWorkspace();
+  app.shuttingDown = true;
+
+  const response = await invoke(app, "GET", "/health");
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.payload.error, "Daemon is shutting down.");
+  assert.equal(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate, proxy-revalidate");
+});
+
+test("daemon rate limits runaway HTTP clients before route dispatch", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323
+  });
+  app.refreshWorkspace();
+  app.rateLimiter = {
+    isLimited() {
+      return true;
+    }
+  };
+
+  const response = await invoke(app, "GET", "/health");
+  assert.equal(response.statusCode, 429);
+  assert.equal(response.payload.error, "Too many requests. Try again shortly.");
+  assert.equal(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate, proxy-revalidate");
+});
 
 test("bridge token protects administrative and MCP HTTP routes", async () => {
   const workspace = createWorkspaceWithProject();

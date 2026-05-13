@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const vscode = require("vscode");
 const syncFs = require("node:fs");
@@ -23,6 +23,7 @@ let sidebarOfferRequestInFlight = false;
 let bridgeToken = null;
 let sidebarRefreshTimer = null;
 let sidebarRefreshInFlight = null;
+let lastDegradedNotifiedSessionId = null;
 const projectFileCache = new Map();
 const AMARILLO_PROTOCOL_VERSION = 1;
 
@@ -746,6 +747,23 @@ async function getSidebarState() {
         autoSyncToStudio ? "success" : "warning"
       )
     );
+  }
+
+  // Proactive degradation notification
+  if (activeSession && activeSession.requiresManualResync && lastDegradedNotifiedSessionId !== activeSession.id) {
+    lastDegradedNotifiedSessionId = activeSession.id;
+    const degradedMessage = activeSession.syncMessage || "Sync paused. A manual resync is required.";
+    vscode.window.showWarningMessage(
+      `Amarillo: ${degradedMessage}`,
+      "Resync",
+      "Dismiss"
+    ).then((action) => {
+      if (action === "Resync") {
+        vscode.commands.executeCommand("amarillo.sendFilesToStudio");
+      }
+    });
+  } else if (activeSession && !activeSession.requiresManualResync && lastDegradedNotifiedSessionId === activeSession.id) {
+    lastDegradedNotifiedSessionId = null;
   }
 
   return {
