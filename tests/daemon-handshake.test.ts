@@ -1545,6 +1545,51 @@ test("MCP shield reports ready when VS Code servers config is valid", async () =
   assert.equal(health.payload.mcpShield.state, "ready");
 });
 
+test("MCP shield reports ready for portable bootstrap config with local state", async () => {
+  const workspace = createWorkspaceWithProject();
+  const mcpPath = path.join(workspace, ".vscode", "mcp.json");
+  const localStatePath = path.join(workspace, ".amarillo", "mcp-local.json");
+  const extensionPath = path.join(workspace, "extensions", "amarillo.amarillo-vscode-1.2.3");
+  const proxyEntry = path.join(extensionPath, "runtime", "mcp-proxy", "index.js");
+  fs.mkdirSync(path.dirname(mcpPath), { recursive: true });
+  fs.mkdirSync(path.dirname(localStatePath), { recursive: true });
+  fs.mkdirSync(path.dirname(proxyEntry), { recursive: true });
+  fs.writeFileSync(proxyEntry, "module.exports = {};\n", "utf8");
+  fs.writeFileSync(mcpPath, `${JSON.stringify({
+    servers: {
+      amarillo: {
+        type: "stdio",
+        command: "node",
+        cwd: "${workspaceFolder}",
+        args: [
+          "${workspaceFolder}/.vscode/amarillo-mcp-bootstrap.cjs",
+          "--workspace",
+          "${workspaceFolder}"
+        ]
+      }
+    }
+  }, null, 2)}\n`, "utf8");
+  fs.writeFileSync(localStatePath, `${JSON.stringify({
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token",
+    extensionPath,
+    extensionVersion: "1.2.3",
+    updatedAt: "2026-05-13T00:00:00.000Z"
+  }, null, 2)}\n`, "utf8");
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const status = await invoke(app, "GET", "/mcp/status");
+  assert.equal(status.statusCode, 200);
+  assert.equal(status.payload.mcp.state, "ready");
+  assert.equal(status.payload.mcp.config.status, "ready");
+  assert.equal(status.payload.mcp.config.server.hasBootstrapEntry, true);
+  assert.equal(status.payload.mcp.config.localState.status, "ready");
+  assert.doesNotMatch(JSON.stringify(status.payload.mcp.config), /secret-token/);
+});
+
 test("Doctor reports healthy workspace with compatible plugin and MCP config", async () => {
   const workspace = createWorkspaceWithProject();
   const mcpPath = path.join(workspace, ".vscode", "mcp.json");

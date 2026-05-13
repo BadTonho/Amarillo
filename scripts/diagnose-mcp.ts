@@ -31,7 +31,7 @@ function usage() {
 function parseArgs(argv): DiagnoseOptions {
   const options: DiagnoseOptions = {
     bridgeToken: null,
-    host: "127.0.0.1",
+    host: "",
     json: false,
     port: 0,
     workspaceRoot: process.cwd()
@@ -71,8 +71,10 @@ function parseArgs(argv): DiagnoseOptions {
   }
 
   options.workspaceRoot = path.resolve(options.workspaceRoot);
-  options.port = options.port || resolvePort(options.workspaceRoot);
-  options.bridgeToken = options.bridgeToken || resolveBridgeToken(options.workspaceRoot);
+  const localState = resolveMcpLocalState(options.workspaceRoot);
+  options.host = options.host || localState?.host || "127.0.0.1";
+  options.port = options.port || resolvePort(options.workspaceRoot, localState);
+  options.bridgeToken = options.bridgeToken || resolveBridgeToken(options.workspaceRoot, localState);
   return options;
 }
 
@@ -87,14 +89,25 @@ function readJsonIfExists(filePath) {
   }
 }
 
-function resolvePort(workspaceRoot) {
+function resolveMcpLocalState(workspaceRoot) {
+  return readJsonIfExists(path.join(workspaceRoot, ".amarillo", "mcp-local.json"));
+}
+
+function resolvePort(workspaceRoot, localState: any = null) {
+  const localPort = Number(localState?.port);
+  if (Number.isInteger(localPort) && localPort > 0) {
+    return localPort;
+  }
   const config = readJsonIfExists(path.join(workspaceRoot, ".pluginroblox.json")) || {};
   return Number(config.daemonPort || config.plugin?.daemonPort || config.argon?.port || 8323);
 }
 
-function resolveBridgeToken(workspaceRoot) {
+function resolveBridgeToken(workspaceRoot, localState: any = null) {
   if (process.env.AMARILLO_BRIDGE_TOKEN) {
     return process.env.AMARILLO_BRIDGE_TOKEN;
+  }
+  if (typeof localState?.bridgeToken === "string" && localState.bridgeToken) {
+    return localState.bridgeToken;
   }
   const mcpConfig = readJsonIfExists(path.join(workspaceRoot, ".vscode", "mcp.json"));
   const server = mcpConfig?.servers?.amarillo || mcpConfig?.mcpServers?.amarillo || {};
@@ -189,7 +202,7 @@ async function main() {
   results.push(await checkStep(options, "Protected MCP status without token", "GET", "/mcp/status", {}, undefined, [200, 401]));
 
   if (!options.bridgeToken) {
-    printLine(options, "[WARN] No bridge token found. Pass --bridge-token TOKEN or run Amarillo: Configure MCP for Workspace to generate .vscode/mcp.json.");
+    printLine(options, "[WARN] No bridge token found. Pass --bridge-token TOKEN or run Amarillo: Configure MCP for Workspace to generate .amarillo/mcp-local.json.");
   } else {
     const bridgeHeaders = { "X-Amarillo-Bridge-Token": options.bridgeToken };
     const bearerHeaders = { Authorization: `Bearer ${options.bridgeToken}` };

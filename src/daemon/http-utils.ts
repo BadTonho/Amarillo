@@ -29,7 +29,7 @@ function authHelpPayload() {
       "GET /doctor"
     ],
     tokenSources: [
-      "Generated .vscode/mcp.json args after running Amarillo: Start Bridge or Amarillo: Configure MCP for Workspace.",
+      "Generated .amarillo/mcp-local.json after running Amarillo: Start Bridge or Amarillo: Configure MCP for Workspace.",
       "The --bridge-token argument used by the daemon or MCP proxy.",
       "The AMARILLO_BRIDGE_TOKEN environment variable when the daemon is started manually."
     ]

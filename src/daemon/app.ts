@@ -2757,7 +2757,7 @@ class PluginRobloxApp {
           code: "UNAUTHORIZED",
           error: "Missing or invalid Amarillo authorization token.",
           ...authHelpPayload(),
-          hint: `Send ${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token> or Authorization: Bearer <bridge token>. The bridge token is stored in the generated .vscode/mcp.json proxy args or provided by VS Code when Amarillo starts the bridge.`
+          hint: `Send ${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token> or Authorization: Bearer <bridge token>. The bridge token is stored in .amarillo/mcp-local.json for the portable MCP bootstrap or provided by VS Code when Amarillo starts the bridge.`
         }, request);
         return;
       }
