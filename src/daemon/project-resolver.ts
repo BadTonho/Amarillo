@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { isIgnoredProjectDiscoveryDirectoryName } = require("./project-discovery");
 
 const PROJECT_SUFFIX = ".project.json";
 
@@ -136,11 +137,11 @@ function createConfigIssue(code, filePath, workspaceRoot, message, details: any 
 function collectProjectFiles(rootDir, results = []) {
   const entries = fs.readdirSync(rootDir, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".agent") {
-      continue;
-    }
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
+      if (isIgnoredProjectDiscoveryDirectoryName(entry.name)) {
+        continue;
+      }
       collectProjectFiles(fullPath, results);
       continue;
     }

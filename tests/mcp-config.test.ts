@@ -51,6 +51,8 @@ test("buildMcpCodexVisibilityMarkdown describes native tool visibility without l
     markdown,
     /node \$\{workspaceFolder\}\/\.vscode\/amarillo-mcp-bootstrap\.cjs --workspace \$\{workspaceFolder\}/
   );
+  assert.match(markdown, /codex mcp list/);
+  assert.match(markdown, /codex mcp add amarillo -- node "\$\{workspaceFolder\}\/\.vscode\/amarillo-mcp-bootstrap\.cjs" --workspace "\$\{workspaceFolder\}"/);
   assert.match(markdown, /restart or reopen the Codex\/AI session/);
   assert.match(markdown, /`health`/);
   assert.match(markdown, /`list_projects`/);

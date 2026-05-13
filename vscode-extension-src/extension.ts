@@ -7,7 +7,12 @@ const path = require("node:path");
 const http = require("node:http");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
+const { inspectCodexMcpRegistration } = require("./codex-mcp");
 const { ensureWorkspaceMcpConfig } = require("./mcp-config");
+const {
+  isIgnoredProjectDiscoveryDirectoryName,
+  shouldIgnoreProjectDiscoveryPath
+} = require("./project-discovery");
 const { ensureWorkspaceProjectFile } = require("./project-bootstrap");
 const { ensureWorkspaceSourcemap } = require("./sourcemap");
 
@@ -26,6 +31,123 @@ let sidebarRefreshInFlight = null;
 let lastDegradedNotifiedSessionId = null;
 const projectFileCache = new Map();
 const AMARILLO_PROTOCOL_VERSION = 1;
+
+type ExtensionJsonObject = Record<string, unknown>;
+
+interface RequestJsonOptions {
+  timeout?: number;
+  bridgeToken?: string | null;
+}
+
+interface BridgeSessionPayload extends ExtensionJsonObject {
+  id: string;
+  projectId?: string;
+  projectName?: string;
+  placeId?: number;
+  connectionState?: string;
+  pendingCommands?: number;
+  lastStudioSeenAt?: string | null;
+  lastCommandError?: string | null;
+  requiresPluginUpdate?: boolean;
+  requiresManualResync?: boolean;
+  studioContactState?: string;
+  studioContactMessage?: string;
+  versionMessage?: string;
+  syncMessage?: string;
+  projectSelectionMessage?: string;
+}
+
+interface ConnectionOfferPayload extends ExtensionJsonObject {
+  offerId?: string;
+  status?: string;
+}
+
+interface BridgeHealthPayload extends ExtensionJsonObject {
+  ok?: boolean;
+  workspaceRoot?: string;
+  autoSyncToStudio?: boolean;
+  connectionOffer?: ConnectionOfferPayload | null;
+  sessions?: BridgeSessionPayload[];
+  mcpShield?: McpShieldPayload | null;
+}
+
+interface DoctorReportPayload extends ExtensionJsonObject {
+  status?: string;
+  summary?: {
+    message?: string;
+    sessionCount?: number;
+    blockedReasons?: string[];
+    warnings?: string[];
+    [key: string]: unknown;
+  };
+  versions?: {
+    daemon?: { version?: string; protocolVersion?: string | number; [key: string]: unknown };
+    extension?: { version?: string; [key: string]: unknown };
+    [key: string]: unknown;
+  };
+  workspace?: { root?: string; projectCount?: number; [key: string]: unknown };
+  sessions?: BridgeSessionPayload[];
+  errors?: {
+    recent?: ExtensionJsonObject[];
+    recentUnresolved?: ExtensionJsonObject[];
+    [key: string]: unknown;
+  };
+  recommendations?: string[];
+}
+
+interface McpShieldPayload extends ExtensionJsonObject {
+  state?: string;
+  message?: string;
+  toolCount?: number;
+  fallback?: { callUrl?: string; [key: string]: unknown };
+  config?: { status?: string; [key: string]: unknown };
+}
+
+interface McpStatusPayload extends ExtensionJsonObject {
+  mcp?: McpShieldPayload;
+}
+
+interface McpProbePayload extends McpStatusPayload {
+  parsed?: {
+    workspaceRoot?: string;
+    sessions?: unknown[];
+    [key: string]: unknown;
+  };
+}
+
+interface ConnectionRequestResponse extends ExtensionJsonObject {
+  offer?: ConnectionOfferPayload | null;
+}
+
+interface WorkspaceFilesChangedResponse extends ExtensionJsonObject {
+  accepted?: number;
+}
+
+interface SessionCommandResponse extends ExtensionJsonObject {
+  ok?: boolean;
+  error?: string;
+  result?: unknown;
+}
+
+interface ProjectStateHint {
+  projectFilePath?: string | null;
+  projectFiles?: string[];
+}
+
+interface SourcemapEnsureOptions {
+  silent?: boolean;
+}
+
+interface ExtensionErrorOptions {
+  severity?: string;
+  code?: string;
+  context?: ExtensionJsonObject | null;
+}
+
+interface BridgeStartOptions {
+  requestedBy?: string;
+  [key: string]: unknown;
+}
 
 // ===== Logger with notification levels (Argon pattern) =====
 function getNotificationLevel() {
@@ -222,12 +344,11 @@ function collectProjectFilesUncached(rootDir, results = [], depth = 0) {
   }
 
   for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules" || entry.name === ".agent" || entry.name === "dist") {
-      continue;
-    }
-
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
+      if (isIgnoredProjectDiscoveryDirectoryName(entry.name)) {
+        continue;
+      }
       collectProjectFilesUncached(fullPath, results, depth + 1);
       continue;
     }
@@ -307,7 +428,7 @@ async function ensurePluginConfig(workspaceRoot) {
   }
 }
 
-async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState, options: any = {}) {
+async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState: ProjectStateHint, options: SourcemapEnsureOptions = {}) {
   const result = await ensureWorkspaceSourcemap(workspaceRoot, {
     projectFilePath: projectState?.projectFilePath || null,
     projectFiles: projectState?.projectFiles || collectProjectFiles(workspaceRoot),
@@ -394,6 +515,37 @@ function mcpStateTone(mcpShield) {
       return "danger";
     default:
       return "neutral";
+  }
+}
+
+function codexMcpStateLabel(codexMcp) {
+  switch (codexMcp?.status) {
+    case "configured":
+      return "registered";
+    case "not_configured":
+      return "not registered";
+    case "unavailable":
+      return "CLI unavailable";
+    case "timeout":
+      return "check timed out";
+    case "error":
+      return "check failed";
+    default:
+      return "unknown";
+  }
+}
+
+function shouldWarnAboutCodexMcp(codexMcp) {
+  return codexMcp?.status === "not_configured"
+    || codexMcp?.status === "timeout"
+    || codexMcp?.status === "error";
+}
+
+function logCodexMcpDiagnostics(codexMcp) {
+  log(`Codex MCP: ${codexMcpStateLabel(codexMcp)}. ${codexMcp?.message || "No Codex MCP diagnostic message."}`);
+  if (codexMcp?.status === "not_configured") {
+    log(`Codex MCP registration command: ${codexMcp.suggestedCommand}`);
+    log("Codex MCP note: this command only registers the portable bootstrap; it does not copy bridge tokens into shared config.");
   }
 }
 
@@ -643,7 +795,7 @@ function effectiveSourcemapProjectFileFromHealth(workspaceRoot, health) {
   return path.resolve(workspaceRoot, projectPath);
 }
 
-async function syncLuauSourcemapToDaemonState(workspaceRoot, health, options: any = {}) {
+async function syncLuauSourcemapToDaemonState(workspaceRoot, health: BridgeHealthPayload, options: SourcemapEnsureOptions = {}) {
   const projectFiles = collectProjectFiles(workspaceRoot);
   if (projectFiles.length === 0) {
     return null;
@@ -1376,10 +1528,15 @@ function bridgeBaseUrl() {
   return `http://${host}:${port}`;
 }
 
-function requestJson(method, route, body: any = undefined, options: any = {}): Promise<any> {
+function requestJson<TResponse = ExtensionJsonObject>(
+  method,
+  route,
+  body: unknown = undefined,
+  options: RequestJsonOptions = {}
+): Promise<TResponse> {
   const url = new URL(route, `${bridgeBaseUrl()}/`);
   const timeout = options.timeout ?? 5000;
-  const headers = {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
   const token = options.bridgeToken || getOrCreateBridgeToken();
@@ -1428,7 +1585,7 @@ function requestJson(method, route, body: any = undefined, options: any = {}): P
   });
 }
 
-function reportExtensionError(message, options: any = {}) {
+function reportExtensionError(message, options: ExtensionErrorOptions = {}) {
   if (!message) {
     return;
   }
@@ -1462,8 +1619,7 @@ function workspaceFileOperationPath(uri) {
     return null;
   }
 
-  const firstSegment = relativePath.split("/")[0];
-  if ([".git", "node_modules", ".amarillo", ".vscode", "dist", "build"].includes(firstSegment)) {
+  if (shouldIgnoreProjectDiscoveryPath(relativePath)) {
     return null;
   }
 
@@ -1484,7 +1640,7 @@ async function notifyWorkspaceFileOperation(source, events) {
       return;
     }
 
-    const response = await requestJson("POST", "/workspace/files-changed", {
+    const response = await requestJson<WorkspaceFilesChangedResponse>("POST", "/workspace/files-changed", {
       source,
       events: filteredEvents
     }, { timeout: 3000 });
@@ -1540,8 +1696,8 @@ function registerWorkspaceFileOperationWatchers(context) {
   );
 }
 
-async function fetchDaemonHealth() {
-  return requestJson("GET", "/health");
+async function fetchDaemonHealth(): Promise<BridgeHealthPayload> {
+  return requestJson<BridgeHealthPayload>("GET", "/health");
 }
 
 function buildHealthcheckRouteProbes(health) {
@@ -1624,7 +1780,7 @@ async function waitForDaemonOnline(timeoutMs = 10000) {
 }
 
 async function requestConnectionOffer(requestedBy = "vscode") {
-  const response = await requestJson("POST", "/connection/request", { requestedBy });
+  const response = await requestJson<ConnectionRequestResponse>("POST", "/connection/request", { requestedBy });
   log(`Connection offer created: ${response.offer?.offerId || "no-id"} (${handshakeStatusLabel(response.offer)})`);
   refreshSidebar();
   return response.offer || null;
@@ -1905,7 +2061,7 @@ async function installRobloxPlugin(context) {
   vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${targetPath}`);
 }
 
-async function ensureBridgeStarted(context, options: any = {}) {
+async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
   const { workspaceRoot, host, port, nodePath, autoSyncToStudio } = getBridgeSettings();
   const daemonEntry = runtimePath(context, "daemon", "index.js");
   const token = getOrCreateBridgeToken(context);
@@ -2069,7 +2225,7 @@ async function ensureWorkspaceMcp(context) {
   };
 }
 
-async function startBridge(context, options: any = {}) {
+async function startBridge(context, options: BridgeStartOptions = {}) {
   // Auto-install the plugin before starting the bridge
   await silentPluginInstall(context);
 
@@ -2241,12 +2397,15 @@ function logDoctorErrors(report) {
 }
 
 async function runDoctor() {
-  const report = await requestJson("GET", "/doctor", undefined, { timeout: 10000 });
+  const report = await requestJson<DoctorReportPayload>("GET", "/doctor", undefined, { timeout: 10000 });
+  const { workspaceRoot } = getBridgeSettings();
+  const codexMcp = await inspectCodexMcpRegistration(workspaceRoot);
   const status = report.status || "unknown";
   log(`Doctor status: ${status}`);
   log(`Doctor summary: ${report.summary?.message || "No summary message."}`);
   log(`Versions: daemon=${report.versions?.daemon?.version || "unknown"} protocol=${report.versions?.daemon?.protocolVersion ?? "unknown"} extension=${report.versions?.extension?.version || "unknown"}`);
   log(`Workspace: ${report.workspace?.root || "unknown"} projects=${report.workspace?.projectCount ?? 0} sessions=${report.summary?.sessionCount ?? 0}`);
+  logCodexMcpDiagnostics(codexMcp);
   logDoctorSessions(report);
   logDoctorErrors(report);
   for (const reason of report.summary?.blockedReasons || []) {
@@ -2257,6 +2416,9 @@ async function runDoctor() {
   }
   for (const recommendation of report.recommendations || []) {
     log(`Recommendation: ${recommendation}`);
+  }
+  if (codexMcp.status === "not_configured") {
+    log(`Recommendation: Register native Codex MCP manually with: ${codexMcp.suggestedCommand}`);
   }
   refreshSidebar();
   outputChannel.show(true);
@@ -2276,10 +2438,12 @@ async function runDoctor() {
 }
 
 async function runMcpHealthcheck() {
-  const statusPayload = await requestJson("GET", "/mcp/status", undefined, { timeout: 5000 });
-  let probePayload = null;
+  const { workspaceRoot } = getBridgeSettings();
+  const statusPayload = await requestJson<McpStatusPayload>("GET", "/mcp/status", undefined, { timeout: 5000 });
+  const codexMcp = await inspectCodexMcpRegistration(workspaceRoot);
+  let probePayload: McpProbePayload | null = null;
   try {
-    probePayload = await requestJson("POST", "/mcp/probe", {}, { timeout: 10000 });
+    probePayload = await requestJson<McpProbePayload>("POST", "/mcp/probe", {}, { timeout: 10000 });
   } catch (error) {
     log(`MCP probe failed: ${error.message}`);
   }
@@ -2291,14 +2455,16 @@ async function runMcpHealthcheck() {
   log(`MCP Shield: state=${mcp?.state || "unknown"} config=${configStatus} tools=${mcp?.toolCount ?? 0}`);
   log(`MCP message: ${mcp?.message || "No MCP diagnostic message."}`);
   log(`MCP HTTP fallback endpoint: ${fallbackUrl}`);
+  logCodexMcpDiagnostics(codexMcp);
   if (probePayload?.parsed?.workspaceRoot) {
     log(`MCP probe health: workspace=${workspaceDisplayName(probePayload.parsed.workspaceRoot)} sessions=${probePayload.parsed.sessions?.length ?? 0}`);
   }
   refreshSidebar();
   outputChannel.show(true);
 
-  const message = `Amarillo MCP ${stateLabel}. Native config: ${configStatus}. HTTP fallback: ${fallbackUrl}`;
-  if (mcp?.state === "ready") {
+  const codexMcpInfo = ` Codex MCP: ${codexMcpStateLabel(codexMcp)}.`;
+  const message = `Amarillo MCP ${stateLabel}. Native config: ${configStatus}. HTTP fallback: ${fallbackUrl}.${codexMcpInfo}`;
+  if (mcp?.state === "ready" && !shouldWarnAboutCodexMcp(codexMcp)) {
     vscode.window.showInformationMessage(message);
   } else {
     vscode.window.showWarningMessage(message);
@@ -2329,7 +2495,7 @@ async function configureMcp(context) {
 async function sendFilesToStudio() {
   const session = await chooseSession();
   log(`Sending files from disk to Studio for session ${session.id}`);
-  const response = await requestJson("POST", `/session/${session.id}/pull`, {}, { timeout: 130000 });
+  const response = await requestJson<SessionCommandResponse>("POST", `/session/${session.id}/pull`, {}, { timeout: 130000 });
   if (!response.ok) {
     throw new Error(response.error || "Failed to send files to Studio.");
   }
@@ -2340,7 +2506,7 @@ async function sendFilesToStudio() {
 async function receiveFilesFromStudio() {
   const session = await chooseSession();
   log(`Receiving files from Studio to disk for session ${session.id}`);
-  const response = await requestJson("POST", `/session/${session.id}/push`, {}, { timeout: 130000 });
+  const response = await requestJson<SessionCommandResponse>("POST", `/session/${session.id}/push`, {}, { timeout: 130000 });
   if (!response.ok) {
     throw new Error(response.error || "Failed to receive files from Studio.");
   }
@@ -2374,7 +2540,7 @@ async function executeCodeInStudio() {
   const session = await chooseSession();
   log(`Executing code in Studio (session ${session.id}, ${code.length} chars)`);
 
-  const response = await requestJson("POST", `/session/${session.id}/exec`, {
+  const response = await requestJson<SessionCommandResponse>("POST", `/session/${session.id}/exec`, {
     code,
     source: selection ? "selection" : editor.document.uri.fsPath
   }, { timeout: 30000 });

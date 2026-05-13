@@ -71,6 +71,20 @@ toolCount: 22
 
 If `status` cannot find the bridge token or local state, run `Amarillo: Configure MCP for Workspace` or `Amarillo: Start Bridge`, then restart the AI/MCP session so it reloads `.vscode/mcp.json`.
 
+To verify Codex CLI native registration specifically, run:
+
+```powershell
+codex mcp list
+```
+
+If the `amarillo` server is not listed, register the portable workspace bootstrap manually:
+
+```powershell
+codex mcp add amarillo -- node ".\.vscode\amarillo-mcp-bootstrap.cjs" --workspace "."
+```
+
+This command should only point to the workspace bootstrap. Do not paste bridge tokens, `.amarillo/mcp-local.json` contents, or installed extension paths into shared config.
+
 If Roblox Studio reports an older plugin version after the extension update, run `Amarillo: Install Roblox Studio Plugin`, then reload or reopen Roblox Studio.
 
 Optional: remove generated JavaScript after packaging if you want the working tree back to TypeScript-only source files:

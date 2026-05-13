@@ -120,6 +120,46 @@ test("workspace discovery loads project files recursively", () => {
   assert.equal(projects[0].id, "nested/Test.project.json");
 });
 
+test("workspace discovery ignores generated and local project directories", () => {
+  const workspace = createTempWorkspace();
+  const ignoredDirs = [".git", "node_modules", ".agent", ".amarillo", ".vscode", "dist", "build"];
+  const ignoredProject = {
+    name: "Ignored",
+    tree: {
+      $className: "DataModel",
+      Workspace: {
+        $path: "sync/Ignored"
+      }
+    }
+  };
+  const validProject = {
+    name: "Live",
+    tree: {
+      $className: "DataModel",
+      Workspace: {
+        $path: "sync/Workspace"
+      }
+    }
+  };
+
+  for (const ignoredDir of ignoredDirs) {
+    fs.mkdirSync(path.join(workspace, ignoredDir), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ignoredDir, "Ignored.project.json"), JSON.stringify(ignoredProject, null, 2));
+  }
+  fs.mkdirSync(path.join(workspace, "valid"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "valid", "Live.project.json"), JSON.stringify(validProject, null, 2));
+
+  const catalog = loadWorkspaceProjectCatalog(workspace);
+  const relativeProjectFiles = catalog.projectFiles.map((projectPath) => path.relative(workspace, projectPath).replace(/\\/g, "/"));
+  const issueText = JSON.stringify(catalog.issues);
+
+  assert.deepEqual(relativeProjectFiles, ["valid/Live.project.json"]);
+  assert.equal(catalog.allProjects.length, 1);
+  assert.equal(catalog.selectableProjects.length, 1);
+  assert.equal(catalog.allProjects[0].id, "valid/Live.project.json");
+  assert.doesNotMatch(issueText, /Ignored\.project\.json/);
+});
+
 test("derived projects inherit mounts and filters from abstract bases", () => {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "bases", "shared", "ServerScriptService"), { recursive: true });

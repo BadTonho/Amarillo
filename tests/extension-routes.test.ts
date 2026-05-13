@@ -24,6 +24,8 @@ test("VS Code MCP healthcheck uses shield status and probe endpoints", () => {
   assert.match(extensionSource, /\/mcp\/status/);
   assert.match(extensionSource, /\/mcp\/probe/);
   assert.match(extensionSource, /amarillo\.mcpHealthcheck/);
+  assert.match(extensionSource, /inspectCodexMcpRegistration/);
+  assert.match(extensionSource, /Codex MCP registration command/);
 });
 
 test("VS Code healthcheck reports Roblox Studio plugin status", () => {
@@ -72,6 +74,8 @@ test("VS Code Doctor command calls /doctor and daemon receives extension protoco
   assert.match(extensionSource, /Recent unresolved diagnostic errors/);
   assert.match(extensionSource, /lastCommandError/);
   assert.match(extensionSource, /initial Studio sync is still accepted/);
+  assert.match(extensionSource, /Codex MCP:/);
+  assert.match(extensionSource, /Register native Codex MCP manually/);
 });
 
 test("sidebar source models fallback-only, plugin stale, version mismatch, and sync paused alerts", () => {
