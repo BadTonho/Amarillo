@@ -514,7 +514,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
 
   // ===== FASE 2: Expanded file type support (Argon pattern) =====
 
-  // .json â†’ ModuleScript (excluding .project.json, .model.json, .meta.json)
+  // .json -> ModuleScript (excluding .project.json, .model.json, .meta.json)
   if (name.endsWith(".json") && !name.endsWith(PROJECT_SUFFIX) && !name.endsWith(".model.json") && !name.endsWith(META_SUFFIX)) {
     const baseName = explicitName || name.replace(/\.json$/i, "");
     try {
@@ -534,7 +534,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
     }
   }
 
-  // .txt â†’ StringValue
+  // .txt -> StringValue
   if (name.endsWith(".txt")) {
     const baseName = explicitName || name.replace(/\.txt$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -548,7 +548,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
     };
   }
 
-  // .md â†’ StringValue (with basic Rich Text conversion)
+  // .md -> StringValue (with basic Rich Text conversion)
   if (name.endsWith(".md")) {
     const baseName = explicitName || name.replace(/\.md$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -563,7 +563,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
     };
   }
 
-  // .csv â†’ LocalizationTable
+  // .csv -> LocalizationTable
   if (name.endsWith(".csv")) {
     const baseName = explicitName || name.replace(/\.csv$/i, "");
     const content = fs.readFileSync(filePath, "utf8");
@@ -580,7 +580,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
   return null;
 }
 
-// ===== JSON â†’ Luau table serializer =====
+// ===== JSON -> Luau table serializer =====
 function jsonToLuauTable(value, indent) {
   const depth = indent || 0;
   const pad = "\t".repeat(depth);
@@ -621,7 +621,7 @@ function jsonToLuauTable(value, indent) {
   return "nil";
 }
 
-// ===== Markdown â†’ Roblox Rich Text (basic conversion) =====
+// ===== Markdown -> Roblox Rich Text (basic conversion) =====
 function markdownToRichText(markdown) {
   return markdown
     // Bold: **text** or __text__
@@ -637,7 +637,7 @@ function markdownToRichText(markdown) {
     // Blockquotes: > text
     .replace(/^>\s+(.+)$/gm, "<i>$1</i>")
     // Unordered list: - item
-    .replace(/^[-*]\s+(.+)$/gm, "<b>â€¢</b> $1")
+    .replace(/^[-*]\s+(.+)$/gm, "<b>-</b> $1")
     // Strikethrough: ~~text~~
     .replace(/~~(.+?)~~/g, "<s>$1</s>");
 }

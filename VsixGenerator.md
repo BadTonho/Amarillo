@@ -9,7 +9,7 @@ cd .\amarillo
 Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version together:
 
 ```powershell
-npm.cmd run version:set -- 1.0.28
+npm.cmd run version:set -- 1.0.29
 ```
 
 Then generate the VSIX:

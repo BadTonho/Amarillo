@@ -73,3 +73,35 @@ test("daemon HTTP dispatch no longer keeps duplicate legacy route implementation
   assert.doesNotMatch(handleHttpSource, /requestUrl\.pathname === "\/connection\/accept"/);
   assert.doesNotMatch(handleHttpSource, /requestUrl\.pathname === "\/studio\/snapshot"/);
 });
+
+test("P1 source files do not contain common mojibake markers", () => {
+  const files = [
+    ["vscode-extension-src", "extension.ts"],
+    ["src", "daemon", "project.ts"],
+    ["src", "daemon", "lib", "error-tracker.ts"],
+    ["scripts", "diagnose.ps1"]
+  ];
+  const mojibakePattern = /[\u00c3\u00c2\u00c6\u0192\u00e2\ufffd]/;
+
+  for (const segments of files) {
+    assert.doesNotMatch(readText(...segments), mojibakePattern, segments.join("/"));
+  }
+});
+
+test("VS Code extension resolves multi-root workspaces from the active editor first", () => {
+  const extensionSource = readText("vscode-extension-src", "extension.ts");
+  const start = extensionSource.indexOf("function getWorkspaceFolder()");
+  const end = extensionSource.indexOf("function resolveWorkspaceRoot()", start);
+  const getWorkspaceFolderSource = extensionSource.slice(start, end);
+
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  assert.match(getWorkspaceFolderSource, /activeTextEditor/);
+  assert.match(getWorkspaceFolderSource, /vscode\.workspace\.getWorkspaceFolder\(activeEditor\.document\.uri\)/);
+  assert.match(getWorkspaceFolderSource, /folders\.length === 1/);
+  assert.match(getWorkspaceFolderSource, /Multiple workspace folders are open/);
+  assert.ok(
+    getWorkspaceFolderSource.indexOf("activeTextEditor") < getWorkspaceFolderSource.indexOf("folders.length === 1")
+  );
+  assert.doesNotMatch(getWorkspaceFolderSource, /workspaceFolders\s*\[0\]/);
+});

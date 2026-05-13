@@ -1,7 +1,8 @@
 "use strict";
 
-const DAEMON_VERSION = "1.0.28";
+const DAEMON_VERSION = "1.0.29";
 const AMARILLO_PROTOCOL_VERSION = 1;
+const MIN_PLUGIN_VERSION = "1.0.29";
 
 function normalizeVersion(value) {
   if (typeof value === "string" && value.trim()) {
@@ -18,9 +19,50 @@ function normalizeProtocolVersion(value) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+function versionParts(value) {
+  const normalized = normalizeVersion(value);
+  if (!normalized) {
+    return null;
+  }
+  const match = normalized.match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) {
+    return null;
+  }
+  return [
+    Number(match[1]),
+    Number(match[2] || 0),
+    Number(match[3] || 0)
+  ];
+}
+
+function compareVersions(left, right) {
+  const leftParts = versionParts(left);
+  const rightParts = versionParts(right);
+  if (!leftParts || !rightParts) {
+    return null;
+  }
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] > rightParts[index]) {
+      return 1;
+    }
+    if (leftParts[index] < rightParts[index]) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+function isVersionAtLeast(version, minimumVersion) {
+  const comparison = compareVersions(version, minimumVersion);
+  return comparison !== null && comparison >= 0;
+}
+
 module.exports = {
   AMARILLO_PROTOCOL_VERSION,
   DAEMON_VERSION,
+  MIN_PLUGIN_VERSION,
+  compareVersions,
+  isVersionAtLeast,
   normalizeProtocolVersion,
   normalizeVersion
 };

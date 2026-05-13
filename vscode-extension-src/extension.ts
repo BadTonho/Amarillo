@@ -131,11 +131,24 @@ function getWorkspaceFolder() {
   if (!folders || folders.length === 0) {
     throw new Error("Open your Roblox project folder in VS Code before using Amarillo.");
   }
-  return folders[0].uri.fsPath;
+
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor?.document?.uri) {
+    const activeWorkspace = vscode.workspace.getWorkspaceFolder(activeEditor.document.uri);
+    if (activeWorkspace?.uri?.fsPath) {
+      return activeWorkspace.uri.fsPath;
+    }
+  }
+
+  if (folders.length === 1) {
+    return folders[0].uri.fsPath;
+  }
+
+  throw new Error("Multiple workspace folders are open. Open a file from the Roblox project you want Amarillo to use, then run the command again.");
 }
 
 function resolveWorkspaceRoot() {
-  // Sempre usa a pasta aberta no VS Code
+  // Use the workspace selected by the active editor when VS Code has multiple roots.
   return getWorkspaceFolder();
 }
 
@@ -275,10 +288,10 @@ async function ensureWorkspaceHasProjects(workspaceRoot) {
 async function ensurePluginConfig(workspaceRoot) {
   const configPath = path.join(workspaceRoot, ".pluginroblox.json");
   if (syncFs.existsSync(configPath)) {
-    return false; // Arquivo jÃ¡ existe
+    return false; // File already exists.
   }
   
-  // Arquivo nÃ£o existe, criar com valores padrÃ£o
+  // File is missing, create defaults.
   const defaultConfig = {
     daemonPort: 8323,
     autoConnect: false,
@@ -287,7 +300,7 @@ async function ensurePluginConfig(workspaceRoot) {
   
   try {
     await fs.writeFile(configPath, `${JSON.stringify(defaultConfig, null, 2)}\n`, "utf8");
-    return true; // Arquivo foi criado
+    return true; // File was created.
   } catch (error) {
     log(`Error creating .pluginroblox.json: ${error.message}`);
     throw error;
@@ -1326,11 +1339,11 @@ function updateStatusBar(sessionCount = null) {
       ? `$(sync) Amarillo (${count})`
       : "$(radio-tower) Amarillo";
     statusBar.tooltip = count > 0
-      ? `${count} sessÃ£o(Ãµes) ativa(s) â€” Clique para abrir menu`
-      : "Bridge online â€” Clique para abrir menu";
+      ? `${count} active session(s) - Click to open menu`
+      : "Bridge online - Click to open menu";
   } else {
     statusBar.text = "$(debug-disconnect) Amarillo";
-    statusBar.tooltip = "Bridge offline â€” Clique para abrir menu";
+    statusBar.tooltip = "Bridge offline - Click to open menu";
   }
   statusBar.command = "amarillo.openMenu";
   statusBar.show();
@@ -1617,8 +1630,8 @@ async function requestConnectionOffer(requestedBy = "vscode") {
 function sessionQuickPickItem(session, activeSessionId) {
   return {
     label: session.projectName,
-    description: `Place ${session.placeId || 0}${session.id === activeSessionId ? " â€¢ active" : ""}`,
-    detail: `Session ${session.id} â€¢ pending ${session.pendingCommands} â€¢ last Studio ${session.lastStudioSeenAt || "never"}`,
+    description: `Place ${session.placeId || 0}${session.id === activeSessionId ? " - active" : ""}`,
+    detail: `Session ${session.id} - pending ${session.pendingCommands} - last Studio ${session.lastStudioSeenAt || "never"}`,
     session
   };
 }
@@ -2456,7 +2469,7 @@ async function restoreLastSession(context) {
         refreshSidebar();
         return;
       }
-      // Daemon is running but no sessions â€” request connection
+      // Daemon is running but no sessions - request connection.
       await requestConnectionOffer("session_restore");
       sidebarOfferRequested = true;
       log("Session restore: connection offer created automatically.");
@@ -2464,7 +2477,7 @@ async function restoreLastSession(context) {
       return;
     }
   } catch (_error) {
-    // Daemon not running â€” try to start it
+    // Daemon not running - try to start it.
   }
 
   try {

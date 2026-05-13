@@ -62,11 +62,11 @@ function Get-HttpJson {
     }
 }
 
-Write-Status "Diagnóstico de Sincronização Bidirecional" "info"
+Write-Status "Bidirectional Sync Diagnostic" "info"
 Write-Status "WorkspaceRoot: $WorkspaceRoot" "debug"
 Write-Status "Port: $Port" "debug"
 
-# Verificar se daemon está rodando
+# Check whether the daemon is running.
 $healthUrl = "http://localhost:$Port/health"
 $health = Get-HttpJson -Url $healthUrl
 if ($health -and $health.ok) {
@@ -77,7 +77,7 @@ if ($health -and $health.ok) {
     exit 1
 }
 
-# Se há sessões, usar a primeira para diagnóstico
+# If there are sessions, use the first one for diagnostics.
 $sessionId = $health.sessions[0].id
 if ($sessionId) {
     Write-Status "Using session: $($health.sessions[0].projectName) [$sessionId]" "info"
@@ -86,7 +86,7 @@ if ($sessionId) {
 }
 
 # ============================================
-# Função para obter estado de sincronização
+# Function to get sync state.
 # ============================================
 function Get-SyncState {
     param([string]$SessionId)
@@ -98,7 +98,7 @@ function Get-SyncState {
 }
 
 # ============================================
-# Modo live - monitorar sincronização
+# Live mode - monitor sync.
 # ============================================
 if ($Live -and $sessionId) {
     Write-Status "=== LIVE MONITORING MODE ===" "info"
@@ -114,7 +114,7 @@ if ($Live -and $sessionId) {
 
     $changeDetected = $false
     $iterations = 0
-    $maxIterations = 120  # 2 minutes com polling de 1s
+    $maxIterations = 120  # 2 minutes with 1s polling.
 
     while ($iterations -lt $maxIterations) {
         Start-Sleep -Seconds 1
@@ -125,9 +125,9 @@ if ($Live -and $sessionId) {
             continue
         }
 
-        # Detectar mudanças
+        # Detect changes.
         if ($lastState.session.pendingCommandCount -ne $currentState.session.pendingCommandCount) {
-            Write-Status "Pending commands changed: $($lastState.session.pendingCommandCount) → $($currentState.session.pendingCommandCount)" "sync"
+            Write-Status "Pending commands changed: $($lastState.session.pendingCommandCount) -> $($currentState.session.pendingCommandCount)" "sync"
             if ($currentState.session.pendingCommands.Count -gt 0) {
                 foreach ($cmd in $currentState.session.pendingCommands) {
                     Write-Status "  - Queued: $($cmd.type)" "debug"
@@ -164,7 +164,7 @@ if ($Live -and $sessionId) {
 }
 
 # ============================================
-# Modo relatório - mostrar estado atual
+# Report mode - show current state.
 # ============================================
 Write-Status "=== CURRENT SYNC STATE ===" "info"
 Write-Status "" "info"
