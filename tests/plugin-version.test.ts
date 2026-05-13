@@ -27,6 +27,11 @@ test("Roblox plugin sends version metadata in handshake, polling, snapshots, and
   assert.match(pluginSource, /pluginVersionQuery\(\)/);
 });
 
+test("Roblox plugin confirms apply commands with verification snapshots", () => {
+  assert.match(pluginSource, /postCommandResult\(command\.id, ok, \{\s+result = message,\s+snapshot = appliedSnapshot,/);
+  assert.match(pluginSource, /postCommandResult\(command\.id, ok, \{\s+result = ok and "Patch aplicado" or tostring\(err\),\s+snapshot = appliedSnapshot,/);
+});
+
 test("Roblox plugin stores and sends the daemon session token", () => {
   assert.match(pluginSource, /sessionToken = nil/);
   assert.match(pluginSource, /state\.sessionToken = response\.session and response\.session\.sessionToken or nil/);

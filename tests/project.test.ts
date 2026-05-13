@@ -53,6 +53,55 @@ test("parse argon config and project mounts", () => {
   assert.equal(project.mounts[1].id, "StarterPlayer.StarterPlayerScripts");
 });
 
+test("invalid plugin config returns empty plugin config with issue", () => {
+  const workspace = createTempWorkspace();
+  fs.writeFileSync(path.join(workspace, ".pluginroblox.json"), "{ invalid", "utf8");
+
+  const config = readWorkspaceConfig(workspace);
+
+  assert.deepEqual(config.plugin, {});
+  assert.equal(config.issues.length, 1);
+  assert.equal(config.issues[0].code, "PLUGIN_CONFIG_INVALID");
+  assert.equal(config.issues[0].projectId, null);
+  assert.equal(config.issues[0].filePath, path.join(workspace, ".pluginroblox.json"));
+});
+
+test("project catalog ignores invalid project json while keeping valid projects", () => {
+  const workspace = createTempWorkspace();
+  fs.writeFileSync(path.join(workspace, "Good.project.json"), JSON.stringify({
+    name: "Good",
+    tree: {
+      $className: "DataModel",
+      Workspace: {
+        $path: "sync/Workspace"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(workspace, "Broken.project.json"), "{ invalid", "utf8");
+
+  const catalog = loadWorkspaceProjectCatalog(workspace);
+
+  assert.deepEqual(catalog.selectableProjects.map((project) => project.name), ["Good"]);
+  const invalidIssue = catalog.issues.find((issue) => issue.code === "PROJECT_JSON_INVALID");
+  assert.ok(invalidIssue);
+  assert.equal(invalidIssue.projectId, "Broken.project.json");
+  assert.equal(invalidIssue.projectPath, "Broken.project.json");
+  assert.equal(invalidIssue.filePath, path.join(workspace, "Broken.project.json"));
+});
+
+test("project catalog with only invalid project json stays empty and does not create default project", () => {
+  const workspace = createTempWorkspace();
+  fs.writeFileSync(path.join(workspace, "Broken.project.json"), "{ invalid", "utf8");
+
+  const catalog = loadWorkspaceProjectCatalog(workspace);
+
+  assert.equal(catalog.projectFiles.length, 1);
+  assert.equal(catalog.allProjects.length, 0);
+  assert.equal(catalog.selectableProjects.length, 0);
+  assert.ok(catalog.issues.some((issue) => issue.code === "PROJECT_JSON_INVALID"));
+  assert.equal(fs.existsSync(path.join(workspace, "default.project.json")), false);
+});
+
 test("workspace discovery loads project files recursively", () => {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "nested"), { recursive: true });

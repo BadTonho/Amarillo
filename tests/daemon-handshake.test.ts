@@ -8,6 +8,7 @@ const path = require("node:path");
 const { Readable } = require("node:stream");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { readLocalProjectState } = require("../src/daemon/project");
+const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 
 function createTempWorkspace() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-daemon-"));
@@ -346,16 +347,16 @@ test("Studio sync routes accept snapshots larger than the generic JSON limit", a
     studioInstanceId: "studio-large-snapshot",
     placeId: 0,
     truthSource: "studio",
-    pluginVersion: "1.0.23",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   assert.equal(accept.statusCode, 200);
 
   const snapshot = await invoke(app, "POST", "/studio/snapshot", {
     sessionId: accept.payload.session.id,
     reason: "initial_accept",
-    pluginVersion: "1.0.23",
-    pluginProtocolVersion: 1,
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
     snapshot: largeSnapshot
   }, {
     headers: {
@@ -380,8 +381,8 @@ test("Studio sessions receive and must use a session token after handshake", asy
     studioInstanceId: "studio-secure",
     placeId: 0,
     truthSource: "pc",
-    pluginVersion: "1.0.17",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   assert.equal(accept.statusCode, 200);
   const sessionId = accept.payload.session.id;
@@ -449,8 +450,8 @@ test("unauthorized initial Studio snapshot is recorded as a diagnostic error", a
     studioInstanceId: "studio-snapshot-auth",
     placeId: 0,
     truthSource: "studio",
-    pluginVersion: "1.0.19",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   assert.equal(accept.statusCode, 200);
   const sessionId = accept.payload.session.id;
@@ -458,8 +459,8 @@ test("unauthorized initial Studio snapshot is recorded as a diagnostic error", a
   const rejected = await invoke(app, "POST", "/studio/snapshot", {
     sessionId,
     reason: "initial_accept",
-    pluginVersion: "1.0.19",
-    pluginProtocolVersion: 1,
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
     snapshot: { mounts: [] }
   });
 
@@ -480,6 +481,25 @@ test("unauthorized initial Studio snapshot is recorded as a diagnostic error", a
   assert.equal(errors[0].context.hasSessionToken, false);
 });
 
+test("refreshWorkspace records invalid config and project diagnostics without throwing", () => {
+  const workspace = createTempWorkspace();
+  fs.writeFileSync(path.join(workspace, ".pluginroblox.json"), "{ invalid", "utf8");
+  fs.writeFileSync(path.join(workspace, "Broken.project.json"), "{ invalid", "utf8");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+
+  assert.doesNotThrow(() => app.refreshWorkspace());
+  assert.equal(app.projects.length, 0);
+
+  const unresolved = app.errorTracker.query({ resolved: false });
+  assert.ok(unresolved.some((entry) => entry.code === "PLUGIN_CONFIG_INVALID"));
+  assert.ok(unresolved.some((entry) => entry.code === "PROJECT_JSON_INVALID"));
+
+  const report = app.doctorReport();
+  assert.equal(report.workspace.projectCount, 0);
+  assert.ok(report.errors.recentUnresolved.some((entry) => entry.code === "PLUGIN_CONFIG_INVALID"));
+  assert.ok(report.errors.recentUnresolved.some((entry) => entry.code === "PROJECT_JSON_INVALID"));
+});
+
 test("Doctor includes unresolved diagnostics and accepted Studio initial sync warnings", () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -489,8 +509,8 @@ test("Doctor includes unresolved diagnostics and accepted Studio initial sync wa
     connectionState: "accepted",
     truthSource: "studio",
     studioInstanceId: "studio-stuck",
-    pluginVersion: "1.0.19",
-    pluginProtocolVersion: 1,
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
     requirePluginVersion: true
   });
   app.recordError({
@@ -645,8 +665,8 @@ test("connection accept normalizes an invalid truthSource to pc", async () => {
 
   const response = await invoke(app, "POST", "/connection/accept", {
     truthSource: "invalid",
-    pluginVersion: "1.0.17",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
 
   assert.equal(response.statusCode, 200);
@@ -697,8 +717,8 @@ test("first studio acceptance wins and creates a pending PC-truth initial sync",
     studioInstanceId: "studio-a",
     placeId: 0,
     truthSource: "pc",
-    pluginVersion: "1.0.16",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   assert.equal(acceptResponse.statusCode, 200);
   assert.equal(acceptResponse.payload.session.connectionState, "accepted");
@@ -739,6 +759,28 @@ test("HTTP connection accept blocks old plugins that do not report a version", a
 
   const session = Array.from(app.sessions.values())[0] as any;
   assert.equal(session.pendingCommands.length, 0);
+});
+
+test("HTTP connection accept blocks plugins below the minimum verified-sync version", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const offer = app.beginConnectionOffer("test");
+  const response = await invoke(app, "POST", "/connection/accept", {
+    offerId: offer.offerId,
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc",
+    pluginVersion: "1.0.28",
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.session.versionState, "blocked");
+  assert.equal(response.payload.session.requiresPluginUpdate, true);
+  assert.match(response.payload.session.versionMessage, /older than/);
+  assert.equal((Array.from(app.sessions.values())[0] as any).pendingCommands.length, 0);
 });
 
 test("HTTP connection accept blocks incompatible plugin protocol versions", async () => {
@@ -1529,7 +1571,7 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
     host: "127.0.0.1",
     port: 8323,
     extensionVersion: "1.0.16",
-    extensionProtocolVersion: 1
+    extensionProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   app.refreshWorkspace();
 
@@ -1537,15 +1579,15 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
     studioInstanceId: "studio-a",
     placeId: 0,
     truthSource: "studio",
-    pluginVersion: "1.0.16",
-    pluginProtocolVersion: 1
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   const sessionId = accept.payload.session.id;
   await invoke(app, "POST", "/studio/snapshot", {
     sessionId,
     reason: "initial_accept",
-    pluginVersion: "1.0.16",
-    pluginProtocolVersion: 1,
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
     snapshot: readLocalProjectState(app.getProjectById(accept.payload.session.projectId))
   }, {
     headers: {
@@ -1557,7 +1599,7 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
   const doctor = await invoke(app, "GET", "/doctor");
   assert.equal(doctor.statusCode, 200);
   assert.equal(doctor.payload.status, "ok");
-  assert.equal(doctor.payload.versions.daemon.protocolVersion, 1);
+  assert.equal(doctor.payload.versions.daemon.protocolVersion, AMARILLO_PROTOCOL_VERSION);
   assert.equal(doctor.payload.sessions[0].versionState, "compatible");
 });
 

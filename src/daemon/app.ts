@@ -50,6 +50,8 @@ const {
 const {
   AMARILLO_PROTOCOL_VERSION,
   DAEMON_VERSION,
+  MIN_PLUGIN_VERSION,
+  isVersionAtLeast,
   normalizeProtocolVersion,
   normalizeVersion
 } = require("./version");
@@ -650,7 +652,8 @@ class PluginRobloxApp {
     return {
       daemon: {
         version: DAEMON_VERSION,
-        protocolVersion: AMARILLO_PROTOCOL_VERSION
+        protocolVersion: AMARILLO_PROTOCOL_VERSION,
+        minimumPluginVersion: MIN_PLUGIN_VERSION
       },
       extension: {
         version: this.extensionVersion,
@@ -704,6 +707,13 @@ class PluginRobloxApp {
       return {
         state: "blocked",
         message: `Plugin update required: plugin protocol ${pluginProtocolVersion} is incompatible with daemon protocol ${AMARILLO_PROTOCOL_VERSION}.`,
+        requiresPluginUpdate: true
+      };
+    }
+    if (!isVersionAtLeast(pluginVersion, MIN_PLUGIN_VERSION)) {
+      return {
+        state: "blocked",
+        message: `Plugin update required: plugin version ${pluginVersion} is older than ${MIN_PLUGIN_VERSION}. Reinstall the Amarillo plugin and reload Roblox Studio.`,
         requiresPluginUpdate: true
       };
     }
@@ -851,14 +861,18 @@ class PluginRobloxApp {
 
   refreshWorkspace() {
     const previousDefaultProjectId = this.defaultProjectId;
-    this.config = readWorkspaceConfig(this.workspaceRoot);
+    const config = readWorkspaceConfig(this.workspaceRoot);
+    this.config = config;
     if (!this.autoSyncToStudioExplicit) {
       this.autoSyncToStudio = coerceBoolean(this.config.plugin.autoSyncToStudio, DEFAULT_AUTO_SYNC_TO_STUDIO);
     }
     const projectCatalog = loadWorkspaceProjectCatalog(this.workspaceRoot);
     this.allProjects = projectCatalog.allProjects;
     this.projects = projectCatalog.selectableProjects;
-    this.projectCatalogIssues = projectCatalog.issues;
+    this.projectCatalogIssues = [
+      ...(config.issues || []),
+      ...(projectCatalog.issues || [])
+    ];
     this.defaultProjectId = this.resolveDefaultProjectId(previousDefaultProjectId);
     this.reportProjectCatalogIssues();
     this.refreshActivityKnownFiles();
@@ -894,7 +908,9 @@ class PluginRobloxApp {
         message: issue.message,
         context: {
           projectId: issue.projectId || null,
-          projectPath: issue.projectPath || null
+          projectPath: issue.projectPath || null,
+          filePath: issue.filePath || null,
+          error: issue.error || null
         }
       });
     }

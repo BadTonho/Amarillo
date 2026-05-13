@@ -17,6 +17,10 @@ function parseJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
+function errorMessage(error) {
+  return error && typeof error.message === "string" ? error.message : String(error);
+}
+
 function parseTomlValue(raw) {
   const value = raw.trim();
   if (value.startsWith("\"") && value.endsWith("\"")) {
@@ -65,9 +69,67 @@ function parseSimpleToml(filePath) {
 function readWorkspaceConfig(workspaceRoot) {
   const argonPath = path.join(workspaceRoot, "argon.toml");
   const pluginPath = path.join(workspaceRoot, ".pluginroblox.json");
+  const issues = [];
+  let argon = {};
+  let plugin = {};
+
+  if (fs.existsSync(argonPath)) {
+    try {
+      argon = parseSimpleToml(argonPath);
+    } catch (error) {
+      issues.push(createConfigIssue(
+        "ARGON_CONFIG_INVALID",
+        argonPath,
+        workspaceRoot,
+        `argon.toml could not be read: ${errorMessage(error)}.`,
+        { error: errorMessage(error) }
+      ));
+    }
+  }
+
+  if (fs.existsSync(pluginPath)) {
+    try {
+      const parsed = parseJsonFile(pluginPath);
+      if (isPlainObject(parsed)) {
+        plugin = parsed;
+      } else {
+        issues.push(createConfigIssue(
+          "PLUGIN_CONFIG_INVALID",
+          pluginPath,
+          workspaceRoot,
+          ".pluginroblox.json must contain a JSON object.",
+          { error: "Expected a JSON object." }
+        ));
+      }
+    } catch (error) {
+      issues.push(createConfigIssue(
+        "PLUGIN_CONFIG_INVALID",
+        pluginPath,
+        workspaceRoot,
+        `.pluginroblox.json is invalid and was ignored: ${errorMessage(error)}.`,
+        { error: errorMessage(error) }
+      ));
+    }
+  }
+
   return {
-    argon: fs.existsSync(argonPath) ? parseSimpleToml(argonPath) : {},
-    plugin: fs.existsSync(pluginPath) ? parseJsonFile(pluginPath) : {}
+    argon,
+    plugin,
+    issues
+  };
+}
+
+function createConfigIssue(code, filePath, workspaceRoot, message, details: any = {}) {
+  const absoluteFilePath = path.resolve(filePath);
+  const relativeFilePath = normalizeRelativeWorkspacePath(workspaceRoot, absoluteFilePath);
+  return {
+    key: `${code}:workspace:${relativeFilePath}`,
+    code,
+    projectId: null,
+    projectPath: null,
+    filePath: absoluteFilePath,
+    message,
+    ...details
   };
 }
 
@@ -262,6 +324,9 @@ function concatSyncback(parentSyncback, childSyncback) {
 
 function createProjectDescriptor(projectPath, workspaceRoot) {
   const raw = parseJsonFile(projectPath);
+  if (!isPlainObject(raw)) {
+    throw new Error("Project file must contain a JSON object.");
+  }
   const projectDir = path.dirname(projectPath);
   const extendsValue = typeof raw.extends === "string" && raw.extends.trim()
     ? raw.extends.trim()
@@ -307,6 +372,20 @@ function createIssue(code, descriptor, message, details: any = {}) {
   };
 }
 
+function createProjectFileIssue(code, projectPath, workspaceRoot, message, details: any = {}) {
+  const absoluteProjectPath = path.resolve(projectPath);
+  const projectId = projectIdFromPath(absoluteProjectPath, workspaceRoot);
+  return {
+    key: `${code}:${projectId}`,
+    code,
+    projectId,
+    projectPath: projectId,
+    filePath: absoluteProjectPath,
+    message,
+    ...details
+  };
+}
+
 function buildResolvedProject(descriptor, parentProject, workspaceRoot) {
   const mergedTree = mergeTreeNodes(parentProject?.tree || {}, descriptor.tree || {});
   const mounts = collectMounts(mergedTree);
@@ -342,16 +421,6 @@ function buildResolvedProject(descriptor, parentProject, workspaceRoot) {
 }
 
 function loadWorkspaceProjectCatalog(workspaceRoot) {
-  let projectFiles = collectProjectFiles(workspaceRoot);
-  if (projectFiles.length === 0) {
-    createDefaultProject(workspaceRoot);
-    projectFiles = collectProjectFiles(workspaceRoot);
-  }
-
-  const descriptors = projectFiles
-    .map((projectPath) => createProjectDescriptor(projectPath, workspaceRoot))
-    .sort((left, right) => left.id.localeCompare(right.id));
-  const descriptorByPath = new Map(descriptors.map((descriptor) => [descriptor.projectPath, descriptor]));
   const issues = [];
   const issueKeys = new Set();
 
@@ -362,6 +431,30 @@ function loadWorkspaceProjectCatalog(workspaceRoot) {
     issueKeys.add(issue.key);
     issues.push(issue);
   }
+
+  let projectFiles = collectProjectFiles(workspaceRoot);
+  if (projectFiles.length === 0) {
+    createDefaultProject(workspaceRoot);
+    projectFiles = collectProjectFiles(workspaceRoot);
+  }
+
+  const descriptors = [];
+  for (const projectPath of projectFiles) {
+    try {
+      descriptors.push(createProjectDescriptor(projectPath, workspaceRoot));
+    } catch (error) {
+      const projectId = projectIdFromPath(path.resolve(projectPath), workspaceRoot);
+      addIssue(createProjectFileIssue(
+        "PROJECT_JSON_INVALID",
+        projectPath,
+        workspaceRoot,
+        `Project '${projectId}' is invalid and was ignored: ${errorMessage(error)}.`,
+        { error: errorMessage(error) }
+      ));
+    }
+  }
+  descriptors.sort((left, right) => left.id.localeCompare(right.id));
+  const descriptorByPath = new Map(descriptors.map((descriptor) => [descriptor.projectPath, descriptor]));
 
   function markCycle(cycleDescriptors) {
     const cycleIds = cycleDescriptors.map((descriptor) => descriptor.id);
