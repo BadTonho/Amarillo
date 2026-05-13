@@ -65,6 +65,9 @@ function errorLike(error: unknown): HttpErrorLike {
 function corsHeaders(request: IncomingMessage | null = null): OutgoingHttpHeaders {
   const headers: OutgoingHttpHeaders = {
     "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Amarillo-Bridge-Token, X-Amarillo-Session-Token, X-Amarillo-MCP-Proxy"
   };

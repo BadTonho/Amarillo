@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const fs = require("node:fs");
 const http = require("node:http");
@@ -17,6 +17,7 @@ const {
 const { ErrorTracker } = require("./lib/error-tracker");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { McpAuditLog } = require("./lib/mcp-audit-log");
+const { RateLimiter } = require("./lib/rate-limiter");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
 const { handleConnectionRoutes } = require("./routes/connection");
 const { handleDiagnosticsRoutes } = require("./routes/diagnostics");
@@ -297,8 +298,11 @@ class PluginRobloxApp {
   activityLog: any;
   mcpAuditLog: any;
   activityFileState: Map<string, any>;
+  activityKnownFiles: Set<string>;
   mcpShield: any;
   recentUnauthorizedHttpRequests: Map<string, number>;
+  rateLimiter: any;
+  shuttingDown: boolean;
 
   constructor(options) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -343,8 +347,11 @@ class PluginRobloxApp {
       workspaceRoot: this.workspaceRoot
     });
     this.activityFileState = new Map<string, any>();
+    this.activityKnownFiles = new Set<string>();
     this.mcpShield = createMcpShieldState();
     this.recentUnauthorizedHttpRequests = new Map<string, number>();
+    this.rateLimiter = new RateLimiter({ maxRequests: 120, windowMs: 1000 });
+    this.shuttingDown = false;
   }
 
   createSessionToken() {
@@ -524,10 +531,46 @@ class PluginRobloxApp {
   }
 
   async stop() {
+    this.shuttingDown = true;
+
+    // Stop accepting file-system events
     for (const watcher of this.fileWatchers) {
       watcher.close();
     }
     this.fileWatchers = [];
+
+    // Wait for pending disk writes to finish (max 5s)
+    if (this.pendingStudioWrites.size > 0) {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          const check = () => {
+            if (this.pendingStudioWrites.size === 0) {
+              resolve();
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 5000))
+      ]);
+    }
+
+    // Drain in-flight commands and resolve pending responses
+    for (const session of this.sessions.values()) {
+      for (const deferred of session.pendingResponses.values()) {
+        clearTimeout(deferred.timeout);
+        deferred.reject(new Error("Daemon is shutting down."));
+      }
+      session.pendingResponses.clear();
+      this.clearSessionRuntimeState(session);
+    }
+
+    // Dispose rate limiter
+    if (this.rateLimiter) {
+      this.rateLimiter.dispose();
+    }
+
     if (this.httpServer) {
       this.httpServer.close();
       await once(this.httpServer, "close");
@@ -818,7 +861,7 @@ class PluginRobloxApp {
     this.projectCatalogIssues = projectCatalog.issues;
     this.defaultProjectId = this.resolveDefaultProjectId(previousDefaultProjectId);
     this.reportProjectCatalogIssues();
-    this.rebuildActivityFileState();
+    this.refreshActivityKnownFiles();
     this.ensureInstructionsFile();
     this.lastWorkspaceRefresh = new Date().toISOString();
   }
@@ -875,25 +918,17 @@ class PluginRobloxApp {
     }
   }
 
-  rebuildActivityFileState() {
-    this.activityFileState.clear();
-    const seen = new Set();
+  refreshActivityKnownFiles() {
+    this.activityKnownFiles.clear();
     for (const project of this.allProjects) {
       for (const mount of project.mounts || []) {
         for (const filePath of collectFilesRecursive(mount.absolutePath)) {
-          const normalized = normalizeFsPath(filePath);
-          if (seen.has(normalized)) {
-            continue;
-          }
-          seen.add(normalized);
-          const info = getFileInfo(normalized);
-          if (info) {
-            this.activityFileState.set(normalized, info);
-          }
+          this.activityKnownFiles.add(normalizeFsPath(filePath));
         }
       }
     }
   }
+
 
   findMountedFileContext(filePath) {
     const normalized = normalizeFsPath(filePath);
@@ -958,7 +993,9 @@ class PluginRobloxApp {
 
     if (record.action === "delete") {
       this.activityFileState.delete(normalized);
+      this.activityKnownFiles.delete(normalized);
     } else {
+      this.activityKnownFiles.add(normalized);
       const nextInfo = getFileInfo(normalized) || {
         size: record.size,
         hash: record.hash
@@ -978,12 +1015,13 @@ class PluginRobloxApp {
     }
 
     const previousInfo = this.activityFileState.get(normalized) || null;
+    const wasKnown = this.activityKnownFiles.has(normalized);
     const nextInfo = getFileInfo(normalized);
     let action = null;
     let info = nextInfo || previousInfo || {};
 
     if (!previousInfo && nextInfo) {
-      action = "create";
+      action = wasKnown ? "modify" : "create";
     } else if (previousInfo && !nextInfo) {
       action = "delete";
     } else if (previousInfo && nextInfo && (previousInfo.hash !== nextInfo.hash || previousInfo.size !== nextInfo.size)) {
@@ -1362,7 +1400,8 @@ class PluginRobloxApp {
     this.recordWorkspaceFileActivity(normalizedChangedPath, {
       direction: "pc_to_studio",
       source: "workspace_watcher",
-      reason: "workspace_changed"
+      reason: "workspace_changed",
+      eventType
     });
     if (!this.autoSyncToStudio) {
       logSync("disk_file_change_auto_sync_disabled", { path: normalizedChangedPath });
@@ -2676,41 +2715,52 @@ class PluginRobloxApp {
 
   async handleHttp(request, response) {
     try {
-    const requestUrl = new URL(request.url, `http://${request.headers.host || `${this.host}:${this.port}`}`);
-    if (request.headers["x-amarillo-mcp-proxy"]) {
-      this.recordMcpContact("proxy_http", { route: requestUrl.pathname });
-    }
-    if (request.method === "OPTIONS") {
-      jsonResponse(response, 204, { ok: true }, request);
-      return;
-    }
-        if (!this.authorizeHttpRequest(request, requestUrl)) {
-          this.recordUnauthorizedHttpRequest(request, requestUrl);
-          jsonResponse(response, 401, {
-            ok: false,
-            code: "UNAUTHORIZED",
-            error: "Missing or invalid Amarillo authorization token.",
-            ...authHelpPayload(),
-            hint: `Send ${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token> or Authorization: Bearer <bridge token>. The bridge token is stored in the generated .vscode/mcp.json proxy args or provided by VS Code when Amarillo starts the bridge.`
-          }, request);
-      return;
-    }
-    for (const routeHandler of [
-      handleDiagnosticsRoutes,
-      handleMcpRoutes,
-      handleConnectionRoutes,
-      handleStudioRoutes,
-      handleSessionRoutes
-    ]) {
-      if (await routeHandler(this, request, response, requestUrl)) {
+      if (this.shuttingDown) {
+        jsonResponse(response, 503, { ok: false, error: "Daemon is shutting down." }, request);
         return;
       }
-    }
 
-    jsonResponse(response, 404, {
-      ok: false,
-      error: `Endpoint not found: ${request.method} ${requestUrl.pathname}`
-    });
+      const remoteAddress = request.socket?.remoteAddress || "unknown";
+      if (this.rateLimiter && this.rateLimiter.isLimited(remoteAddress)) {
+        jsonResponse(response, 429, { ok: false, error: "Too many requests. Try again shortly." }, request);
+        return;
+      }
+
+      const requestUrl = new URL(request.url, `http://${request.headers.host || `${this.host}:${this.port}`}`);
+      if (request.headers["x-amarillo-mcp-proxy"]) {
+        this.recordMcpContact("proxy_http", { route: requestUrl.pathname });
+      }
+      if (request.method === "OPTIONS") {
+        jsonResponse(response, 204, { ok: true }, request);
+        return;
+      }
+      if (!this.authorizeHttpRequest(request, requestUrl)) {
+        this.recordUnauthorizedHttpRequest(request, requestUrl);
+        jsonResponse(response, 401, {
+          ok: false,
+          code: "UNAUTHORIZED",
+          error: "Missing or invalid Amarillo authorization token.",
+          ...authHelpPayload(),
+          hint: `Send ${BRIDGE_TOKEN_HEADER_DISPLAY}: <bridge token> or Authorization: Bearer <bridge token>. The bridge token is stored in the generated .vscode/mcp.json proxy args or provided by VS Code when Amarillo starts the bridge.`
+        }, request);
+        return;
+      }
+      for (const routeHandler of [
+        handleDiagnosticsRoutes,
+        handleMcpRoutes,
+        handleConnectionRoutes,
+        handleStudioRoutes,
+        handleSessionRoutes
+      ]) {
+        if (await routeHandler(this, request, response, requestUrl)) {
+          return;
+        }
+      }
+
+      jsonResponse(response, 404, {
+        ok: false,
+        error: `Endpoint not found: ${request.method} ${requestUrl.pathname}`
+      }, request);
     } catch (error) {
       if (error instanceof HttpError) {
         errorResponse(response, error, request);

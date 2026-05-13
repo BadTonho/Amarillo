@@ -10,12 +10,18 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.26"
+local PLUGIN_VERSION = "1.0.28"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
 local DEFAULT_PORT = 8323
-local POLL_INTERVAL = 0.25
+local POLL_MIN_INTERVAL = 0.25
+local POLL_MAX_INTERVAL = 1.0
+local POLL_IDLE_THRESHOLD_1 = 5.0
+local POLL_IDLE_THRESHOLD_2 = 30.0
+local OFFER_ACTIVE_POLL_INTERVAL = 0.5
+local OFFER_IDLE_POLL_INTERVAL = 1.5
+local OFFER_RETRY_POLL_INTERVAL = 1.0
 local SNAPSHOT_INTERVAL = 0.5
 local REMOTE_PUSH_SUPPRESSION_SECONDS = 1.0
 local SCRIPT_PATCH_DEBOUNCE_SECONDS = 0.35
@@ -52,6 +58,7 @@ local state = {
 	suppressPushUntil = 0,
 	lastPollAt = 0,
 	lastSnapshotAt = 0,
+	lastActivityAt = 0,
 	isApplyingRemote = false,
 	logs = {},
 	treeCache = nil,
@@ -650,7 +657,15 @@ local function safeGetProperty(instance, propertyName)
 	return nil
 end
 
-local function collectProperties(instance)
+local propertyNameCache = {}
+
+local function propertyNamesForInstance(instance)
+	local className = instance.ClassName
+	local cached = propertyNameCache[className]
+	if cached then
+		return cached
+	end
+
 	local propertyNames = {}
 
 	if instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
@@ -701,6 +716,12 @@ local function collectProperties(instance)
 		propertyNames.RenderFidelity = true
 	end
 
+	propertyNameCache[className] = propertyNames
+	return propertyNames
+end
+
+local function collectProperties(instance)
+	local propertyNames = propertyNamesForInstance(instance)
 	local properties = {}
 	for propertyName in pairs(propertyNames) do
 		local value = safeGetProperty(instance, propertyName)
@@ -1026,9 +1047,12 @@ local function setProperty(instance, propertyName, rawValue)
 	if currentValue == converted then
 		return
 	end
-	pcall(function()
+	local ok, err = pcall(function()
 		instance[propertyName] = converted
 	end)
+	if not ok then
+		appendLog("setProperty failed (" .. tostring(propertyName) .. "): " .. tostring(err))
+	end
 end
 
 local function applyProperties(instance, properties)
@@ -1507,7 +1531,11 @@ local function handleCommand(command)
 		local ok, message, appliedSnapshot = applyProjectSnapshot(command.payload.project)
 		if ok and isInitialPcSync then
 			state.awaitingInitialSync = false
-			pcall(startWatcher)
+			local watcherOk, watcherErr = pcall(startWatcher)
+			if not watcherOk then
+				appendLog("Failed to start watcher after initial PC sync: " .. tostring(watcherErr))
+				reportPluginError(tostring(watcherErr), "WATCHER-START")
+			end
 			updateStatus("connected")
 			appendLog("Initial PC sync completed.")
 		end
@@ -2012,7 +2040,11 @@ local function attemptInitialStudioSync(context, force)
 		state.lastInitialStudioSyncErrorMessage = nil
 		state.lastInitialStudioSyncErrorAt = 0
 		appendLog("Roblox Studio set as the initial source of truth.")
-		pcall(startWatcher)
+		local watcherOk, watcherErr = pcall(startWatcher)
+		if not watcherOk then
+			appendLog("Failed to start watcher after Studio sync: " .. tostring(watcherErr))
+			reportPluginError(tostring(watcherErr), "WATCHER-START")
+		end
 		updateStatus("connected")
 		return true, syncResponse
 	end
@@ -3416,6 +3448,7 @@ local function markDirty()
 	end
 	watcherDirty = true
 	watcherDirtyAt = now()
+	state.lastActivityAt = now()
 end
 
 local function sendScriptPatch(path, source)
@@ -3593,6 +3626,7 @@ end
 
 -- ===== Offer poll loop while disconnected =====
 local consecutiveOfferFailures = 0
+local currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
 
 task.spawn(function()
 	while true do
@@ -3604,10 +3638,14 @@ task.spawn(function()
 				if reqOk then
 					if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
 						updateStatus("waiting for confirmation")
+						currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL
+					else
+						currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
 					end
-					task.wait(0.5)
+					task.wait(currentOfferPollInterval)
 				else
-					task.wait(1)
+					currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL
+					task.wait(currentOfferPollInterval)
 				end
 			else
 				consecutiveOfferFailures = consecutiveOfferFailures + 1
@@ -3623,6 +3661,7 @@ end)
 
 -- ===== Long-poll loop for receiving commands from daemon =====
 local consecutivePollFailures = 0
+local currentPollInterval = POLL_MIN_INTERVAL
 
 task.spawn(function()
 	while true do
@@ -3642,9 +3681,25 @@ task.spawn(function()
 				end
 				local commands = reqResponse.commands or {}
 				updateQueue(tostring(#commands))
+
+				if #commands > 0 then
+					state.lastActivityAt = now()
+					currentPollInterval = POLL_MIN_INTERVAL
+				else
+					local idleTime = now() - state.lastActivityAt
+					if idleTime > POLL_IDLE_THRESHOLD_2 then
+						currentPollInterval = POLL_MAX_INTERVAL
+					elseif idleTime > POLL_IDLE_THRESHOLD_1 then
+						currentPollInterval = 0.5
+					else
+						currentPollInterval = POLL_MIN_INTERVAL
+					end
+				end
+
 				for _, command in ipairs(commands) do
 					task.spawn(handleCommandSafely, command)
 				end
+				task.wait(currentPollInterval)
 			else
 				consecutivePollFailures = consecutivePollFailures + 1
 				updateStatus("reconnecting (" .. consecutivePollFailures .. ")")
@@ -3661,7 +3716,7 @@ task.spawn(function()
 				end
 			end
 		else
-			task.wait(0.5)
+			task.wait(currentPollInterval)
 		end
 	end
 end)
@@ -3685,9 +3740,12 @@ task.spawn(function()
 		if state.connected and state.sessionId and watcherDirty then
 			if now() - watcherDirtyAt >= 0.5 then
 				watcherDirty = false
-				pcall(function()
+				local snapOk, snapErr = pcall(function()
 					syncSnapshot("auto")
 				end)
+				if not snapOk then
+					appendLog("Auto snapshot sync failed: " .. tostring(snapErr))
+				end
 			end
 		end
 	end

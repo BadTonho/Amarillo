@@ -33,6 +33,38 @@ test("Roblox plugin stores and sends the daemon session token", () => {
   assert.match(pluginSource, /X-Amarillo-Session-Token/);
 });
 
+test("Roblox plugin uses adaptive connected polling intervals", () => {
+  assert.match(pluginSource, /local POLL_MIN_INTERVAL = 0\.25/);
+  assert.match(pluginSource, /local POLL_MAX_INTERVAL = 1\.0/);
+  assert.match(pluginSource, /local POLL_IDLE_THRESHOLD_1 = 5\.0/);
+  assert.match(pluginSource, /local POLL_IDLE_THRESHOLD_2 = 30\.0/);
+  assert.match(pluginSource, /local currentPollInterval = POLL_MIN_INTERVAL/);
+  assert.match(pluginSource, /if #commands > 0 then\s+state\.lastActivityAt = now\(\)\s+currentPollInterval = POLL_MIN_INTERVAL/);
+  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_2[\s\S]+currentPollInterval = POLL_MAX_INTERVAL/);
+  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_1[\s\S]+currentPollInterval = 0\.5/);
+  assert.match(pluginSource, /task\.wait\(currentPollInterval\)/);
+});
+
+test("Roblox plugin backs off disconnected offer polling while idle", () => {
+  assert.match(pluginSource, /local OFFER_ACTIVE_POLL_INTERVAL = 0\.5/);
+  assert.match(pluginSource, /local OFFER_IDLE_POLL_INTERVAL = 1\.5/);
+  assert.match(pluginSource, /local OFFER_RETRY_POLL_INTERVAL = 1\.0/);
+  assert.match(pluginSource, /local currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
+  assert.match(pluginSource, /currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL/);
+  assert.match(pluginSource, /currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
+  assert.match(pluginSource, /currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL/);
+  assert.match(pluginSource, /task\.wait\(currentOfferPollInterval\)/);
+});
+
+test("Roblox plugin caches property metadata while reading live values", () => {
+  assert.match(pluginSource, /local propertyNameCache = \{\}/);
+  assert.match(pluginSource, /local function propertyNamesForInstance\(instance\)/);
+  assert.match(pluginSource, /local className = instance\.ClassName/);
+  assert.match(pluginSource, /propertyNameCache\[className\] = propertyNames/);
+  assert.match(pluginSource, /local function collectProperties\(instance\)\s+local propertyNames = propertyNamesForInstance\(instance\)/);
+  assert.match(pluginSource, /for propertyName in pairs\(propertyNames\) do\s+local value = safeGetProperty\(instance, propertyName\)/);
+});
+
 test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => {
   assert.match(pluginSource, /awaitingInitialStudioSync = false/);
   assert.match(pluginSource, /local function attemptInitialStudioSync/);
