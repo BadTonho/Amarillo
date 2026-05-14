@@ -31,6 +31,9 @@ let sidebarRefreshInFlight = null;
 let lastDegradedNotifiedSessionId = null;
 const projectFileCache = new Map();
 const AMARILLO_PROTOCOL_VERSION = 1;
+const SIDEBAR_HEALTH_TIMEOUT_MS = 1200;
+const SIDEBAR_STATE_TIMEOUT_MS = 4500;
+const SOURCEMAP_ACTIVATION_DELAY_MS = 3000;
 
 type ExtensionJsonObject = Record<string, unknown>;
 
@@ -147,6 +150,14 @@ interface ExtensionErrorOptions {
 interface BridgeStartOptions {
   requestedBy?: string;
   [key: string]: unknown;
+}
+
+interface SidebarRuntimeState {
+  settings?: any;
+  settingsError?: string | null;
+  health?: BridgeHealthPayload | null;
+  healthError?: string | null;
+  healthDurationMs?: number;
 }
 
 // ===== Logger with notification levels (Argon pattern) =====
@@ -874,22 +885,132 @@ function createSidebarAction(label, command, variant = "secondary", detail = "")
   };
 }
 
-async function getSidebarState() {
+function sidebarErrorMessage(error) {
+  return error instanceof Error ? error.message : String(error || "Unknown sidebar error.");
+}
+
+function buildSidebarLoadingState() {
+  return {
+    status: {
+      title: "Loading Amarillo",
+      tone: "info",
+      endpoint: "checking",
+      workspace: "checking workspace",
+      notes: ["Preparing Bridge, Studio Session, Sync, MCP, and Workspace status."]
+    },
+    session: {
+      title: "Studio Session",
+      tone: "info",
+      badge: "Loading",
+      message: "The sidebar is loading the current bridge state.",
+      facts: [
+        createSidebarFact("Bridge", "Checking", "info"),
+        createSidebarFact("Studio Session", "Checking", "info"),
+        createSidebarFact("Sync", "Checking", "info"),
+        createSidebarFact("MCP", "Checking", "info"),
+        createSidebarFact("Workspace", "Checking", "info")
+      ],
+      actions: [
+        createSidebarAction("Refresh Sidebar", "amarillo.refreshSidebar", "primary"),
+        createSidebarAction("Open Output", "amarillo.openOutput")
+      ]
+    },
+    sections: []
+  };
+}
+
+function buildSidebarErrorState(error) {
+  const message = sidebarErrorMessage(error);
+  return {
+    status: {
+      title: "Sidebar needs attention",
+      tone: "danger",
+      endpoint: "load failed",
+      workspace: "not available",
+      notes: [
+        "The Amarillo panel could not finish loading.",
+        message
+      ]
+    },
+    session: {
+      title: "Studio Session",
+      tone: "danger",
+      badge: "Error",
+      message: "Use the actions below to reload the panel or open diagnostics.",
+      facts: [
+        createSidebarFact("Bridge", "Unknown", "warning"),
+        createSidebarFact("Studio Session", "Not loaded", "danger"),
+        createSidebarFact("Sync", "Not loaded", "danger"),
+        createSidebarFact("MCP", "Unknown", "warning"),
+        createSidebarFact("Workspace", "Unknown", "neutral")
+      ],
+      actions: [
+        createSidebarAction("Refresh Sidebar", "amarillo.refreshSidebar", "primary"),
+        createSidebarAction("Open Output", "amarillo.openOutput"),
+        createSidebarAction("Start Bridge", "amarillo.startBridge"),
+        createSidebarAction("Doctor", "amarillo.doctor")
+      ]
+    },
+    sections: []
+  };
+}
+
+function withSidebarTimeout(promise, timeoutMs, label) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout])
+    .finally(() => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+    });
+}
+
+async function readSidebarRuntimeState(): Promise<SidebarRuntimeState> {
+  const runtimeState: SidebarRuntimeState = {
+    settings: null,
+    settingsError: null,
+    health: null,
+    healthError: null,
+    healthDurationMs: 0
+  };
+
   let settings;
   try {
     settings = getBridgeSettings();
-  } catch (_error) {
-    settings = null;
+    runtimeState.settings = settings;
+  } catch (error) {
+    runtimeState.settingsError = sidebarErrorMessage(error);
+    return runtimeState;
   }
 
-  let health = null;
+  const healthStartedAt = Date.now();
   try {
-    health = await fetchDaemonHealth();
-  } catch (_error) {
-    health = null;
+    runtimeState.health = await fetchDaemonHealth({ timeout: SIDEBAR_HEALTH_TIMEOUT_MS });
+    runtimeState.healthDurationMs = Date.now() - healthStartedAt;
+    log(`Sidebar health check OK in ${runtimeState.healthDurationMs}ms.`);
+  } catch (error) {
+    runtimeState.healthDurationMs = Date.now() - healthStartedAt;
+    runtimeState.healthError = sidebarErrorMessage(error);
+    log(`Sidebar health check failed after ${runtimeState.healthDurationMs}ms: ${runtimeState.healthError}`);
   }
 
-  const running = Boolean(health?.ok) || Boolean(daemonProcess && !daemonProcess.killed);
+  return runtimeState;
+}
+
+async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) {
+  const sidebarRuntime = runtimeState || await readSidebarRuntimeState();
+  const settings = sidebarRuntime.settings || null;
+  const health = sidebarRuntime.health || null;
+  const healthError = sidebarRuntime.healthError || null;
+  const settingsError = sidebarRuntime.settingsError || null;
+
+  const running = Boolean(health?.ok);
   const workspaceMatches = daemonMatchesWorkspace(settings, health);
   const sessions = workspaceMatches && Array.isArray(health?.sessions) ? health.sessions : [];
   const readySessions = readySessionsFromHealth({ sessions });
@@ -909,6 +1030,12 @@ async function getSidebarState() {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
+  if (settingsError) {
+    workspaceNotes.push(`Workspace settings failed: ${settingsError}`);
+  }
+  if (healthError) {
+    workspaceNotes.push(`Bridge health check failed: ${healthError}`);
+  }
 
   let statusTone = "neutral";
   if (running && activeSession && workspaceMatches) {
@@ -1022,8 +1149,15 @@ async function getSidebarState() {
       sessionFacts.push(createSidebarFact("Workspace", workspaceDisplayName(visibleWorkspaceRoot)));
     }
   } else {
-    sessionTone = running ? "warning" : "neutral";
+    sessionTone = running ? "warning" : "danger";
     sessionBadge = running ? "No session" : "Offline";
+    if (!running) {
+      sessionMessage = healthError
+        ? `Bridge health check failed: ${healthError}.`
+        : "Bridge offline. Start the bridge to connect Roblox Studio.";
+      sessionFacts.push(createSidebarFact("Bridge", "Offline", "danger"));
+      sessionActions.unshift(createSidebarAction("Start Bridge", "amarillo.startBridge", "primary"));
+    }
     if (visibleWorkspaceRoot) {
       sessionFacts.push(createSidebarFact("Workspace", workspaceDisplayName(visibleWorkspaceRoot)));
     }
@@ -1156,24 +1290,32 @@ function renderSidebarSection(section) {
 }
 
 function renderSidebarHtml(state) {
-  const notesMarkup = state.status.notes.length > 0
+  const status = state?.status || {};
+  const session = state?.session || {};
+  const statusNotes = Array.isArray(status.notes) ? status.notes : [];
+  const sessionFacts = Array.isArray(session.facts) ? session.facts : [];
+  const sessionActions = Array.isArray(session.actions) ? session.actions : [];
+  const sections = Array.isArray(state?.sections) ? state.sections : [];
+  const statusTone = sidebarTone(status.tone);
+  const sessionTone = sidebarTone(session.tone);
+  const notesMarkup = statusNotes.length > 0
     ? `
       <div class="notes">
-        ${state.status.notes.map((note) => `<p>${escapeHtml(note)}</p>`).join("")}
+        ${statusNotes.map((note) => `<p>${escapeHtml(note)}</p>`).join("")}
       </div>
     `
     : "";
-  const factsMarkup = state.session.facts.length > 0
+  const factsMarkup = sessionFacts.length > 0
     ? `
       <div class="facts-grid">
-        ${state.session.facts.map(renderSidebarFact).join("")}
+        ${sessionFacts.map(renderSidebarFact).join("")}
       </div>
     `
     : "";
-  const sessionActionsMarkup = state.session.actions.length > 0
+  const sessionActionsMarkup = sessionActions.length > 0
     ? `
       <div class="actions-grid compact">
-        ${state.session.actions.map(renderSidebarAction).join("")}
+        ${sessionActions.map(renderSidebarAction).join("")}
       </div>
     `
     : "";
@@ -1189,14 +1331,25 @@ function renderSidebarHtml(state) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <style>
       :root {
-        --bg-soft: color-mix(in srgb, var(--vscode-sideBar-background) 88%, var(--vscode-editor-background));
-        --card-border: color-mix(in srgb, var(--vscode-panel-border, transparent) 75%, transparent);
-        --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.12);
-        --tone-success: var(--vscode-charts-green, #4caf50);
-        --tone-warning: var(--vscode-charts-yellow, #d7ba7d);
-        --tone-danger: var(--vscode-charts-red, #f14c4c);
-        --tone-info: var(--vscode-textLink-foreground, #4fc1ff);
-        --tone-neutral: var(--vscode-descriptionForeground, #9da5b4);
+        --panel-bg: var(--vscode-sideBar-background, #1f1f1f);
+        --panel-bg-alt: var(--vscode-editor-background, #252526);
+        --surface: var(--vscode-input-background, #2d2d30);
+        --surface-strong: var(--vscode-editorWidget-background, #252526);
+        --border: var(--vscode-panel-border, #3c3c3c);
+        --foreground: var(--vscode-foreground, #cccccc);
+        --muted: var(--vscode-descriptionForeground, #9da5b4);
+        --button-border: var(--vscode-button-border, transparent);
+        --tone-success: var(--vscode-charts-green, #3fb950);
+        --tone-warning: var(--vscode-charts-yellow, #d29922);
+        --tone-danger: var(--vscode-charts-red, #f85149);
+        --tone-info: var(--vscode-textLink-foreground, #58a6ff);
+        --tone-neutral: var(--vscode-descriptionForeground, #8b949e);
+        --tone-success-bg: rgba(63, 185, 80, 0.14);
+        --tone-warning-bg: rgba(210, 153, 34, 0.16);
+        --tone-danger-bg: rgba(248, 81, 73, 0.15);
+        --tone-info-bg: rgba(88, 166, 255, 0.14);
+        --tone-neutral-bg: rgba(139, 148, 158, 0.13);
+        --shadow: 0 8px 18px rgba(0, 0, 0, 0.14);
       }
 
       * {
@@ -1206,37 +1359,35 @@ function renderSidebarHtml(state) {
       body {
         margin: 0;
         padding: 14px;
-        color: var(--vscode-foreground);
-        background:
-          radial-gradient(circle at top left, color-mix(in srgb, var(--tone-info) 16%, transparent), transparent 42%),
-          linear-gradient(180deg, var(--bg-soft) 0%, var(--vscode-sideBar-background) 100%);
+        color: var(--foreground);
+        background: linear-gradient(180deg, var(--panel-bg-alt) 0%, var(--panel-bg) 100%);
         font-family: var(--vscode-font-family);
       }
 
       .shell {
         display: grid;
         gap: 12px;
+        max-width: 520px;
+        margin: 0 auto;
       }
 
       .card {
-        border: 1px solid var(--card-border);
-        border-radius: 16px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
         padding: 14px;
-        background: color-mix(in srgb, var(--vscode-editor-background) 55%, transparent);
-        box-shadow: var(--card-shadow);
-        backdrop-filter: blur(8px);
+        background: var(--surface-strong);
+        box-shadow: var(--shadow);
+        text-align: center;
       }
 
       .hero {
         padding: 16px;
       }
 
-      .hero-top,
       .section-heading {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 10px;
+        display: grid;
+        justify-items: center;
+        gap: 8px;
       }
 
       h1,
@@ -1249,7 +1400,7 @@ function renderSidebarHtml(state) {
       h1 {
         font-size: 15px;
         font-weight: 700;
-        letter-spacing: 0.02em;
+        letter-spacing: 0;
       }
 
       h2,
@@ -1257,32 +1408,77 @@ function renderSidebarHtml(state) {
         font-size: 12px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
       }
 
+      .eyebrow,
       .hero-meta,
       .section-heading p,
       .message,
       .fact-label,
       .footer {
-        color: var(--vscode-descriptionForeground);
+        color: var(--muted);
       }
 
-      .hero-meta {
-        margin-top: 10px;
-        display: grid;
-        gap: 6px;
-        font-size: 12px;
-      }
-
-      .badge {
-        border-radius: 999px;
-        padding: 5px 10px;
+      .eyebrow {
+        margin-bottom: 8px;
         font-size: 11px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
-        white-space: nowrap;
+        letter-spacing: 0;
+      }
+
+      .hero-meta {
+        margin-top: 12px;
+        display: grid;
+        gap: 8px;
+        font-size: 12px;
+      }
+
+      .meta-row {
+        display: grid;
+        justify-items: center;
+        gap: 3px;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+
+      .meta-row span {
+        color: var(--muted);
+      }
+
+      .meta-row strong {
+        color: var(--foreground);
+        font-size: 12px;
+        font-weight: 700;
+        overflow-wrap: anywhere;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        max-width: 100%;
+        border: 1px solid currentColor;
+        border-radius: 8px;
+        padding: 6px 9px;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .badge::before {
+        content: "";
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        flex: 0 0 auto;
       }
 
       .tone-success {
@@ -1305,27 +1501,60 @@ function renderSidebarHtml(state) {
         color: var(--tone-neutral);
       }
 
-      .badge.tone-success {
-        background: color-mix(in srgb, var(--tone-success) 16%, transparent);
+      .tone-border-success {
+        border-color: var(--tone-success);
+        box-shadow: inset 0 4px 0 var(--tone-success), var(--shadow);
       }
 
-      .badge.tone-warning {
-        background: color-mix(in srgb, var(--tone-warning) 16%, transparent);
+      .tone-border-warning {
+        border-color: var(--tone-warning);
+        box-shadow: inset 0 4px 0 var(--tone-warning), var(--shadow);
       }
 
-      .badge.tone-danger {
-        background: color-mix(in srgb, var(--tone-danger) 18%, transparent);
+      .tone-border-danger {
+        border-color: var(--tone-danger);
+        box-shadow: inset 0 4px 0 var(--tone-danger), var(--shadow);
+      }
+
+      .tone-border-info {
+        border-color: var(--tone-info);
+        box-shadow: inset 0 4px 0 var(--tone-info), var(--shadow);
+      }
+
+      .tone-border-neutral {
+        border-color: var(--tone-neutral);
+        box-shadow: inset 0 4px 0 var(--tone-neutral), var(--shadow);
+      }
+
+      .badge.tone-success,
+      .fact.tone-success {
+        background: var(--tone-success-bg);
+      }
+
+      .badge.tone-warning,
+      .fact.tone-warning {
+        background: var(--tone-warning-bg);
+      }
+
+      .badge.tone-danger,
+      .fact.tone-danger {
+        background: var(--tone-danger-bg);
       }
 
       .badge.tone-info,
-      .badge.tone-neutral {
-        background: color-mix(in srgb, var(--tone-info) 14%, transparent);
+      .fact.tone-info {
+        background: var(--tone-info-bg);
+      }
+
+      .badge.tone-neutral,
+      .fact.tone-neutral {
+        background: var(--tone-neutral-bg);
       }
 
       .notes {
-        margin-top: 10px;
+        margin-top: 12px;
         display: grid;
-        gap: 6px;
+        gap: 7px;
         font-size: 12px;
       }
 
@@ -1347,22 +1576,23 @@ function renderSidebarHtml(state) {
 
       .facts-grid {
         margin-top: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
       }
 
       .fact {
         padding: 10px;
-        border-radius: 12px;
-        border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-        background: color-mix(in srgb, var(--vscode-editor-background) 65%, transparent);
+        border-radius: 8px;
+        border: 1px solid currentColor;
         display: grid;
         gap: 4px;
+        justify-items: center;
+        min-width: 0;
       }
 
       .fact-label {
         font-size: 10px;
         text-transform: uppercase;
-        letter-spacing: 0.08em;
+        letter-spacing: 0;
       }
 
       .fact-value {
@@ -1373,7 +1603,7 @@ function renderSidebarHtml(state) {
 
       .actions-grid {
         margin-top: 12px;
-        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
       }
 
       .actions-grid.compact {
@@ -1382,14 +1612,19 @@ function renderSidebarHtml(state) {
 
       .action {
         appearance: none;
-        border: 1px solid color-mix(in srgb, var(--vscode-button-background) 36%, transparent);
-        border-radius: 12px;
+        min-height: 38px;
+        border: 1px solid var(--button-border);
+        border-radius: 8px;
         padding: 10px 12px;
         font: inherit;
         font-size: 12px;
         font-weight: 600;
-        text-align: left;
+        text-align: center;
         cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow-wrap: anywhere;
         transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
       }
 
@@ -1399,11 +1634,7 @@ function renderSidebarHtml(state) {
 
       .action-primary {
         color: var(--vscode-button-foreground);
-        background: linear-gradient(
-          135deg,
-          var(--vscode-button-background) 0%,
-          color-mix(in srgb, var(--vscode-button-background) 72%, var(--tone-info)) 100%
-        );
+        background: var(--vscode-button-background);
       }
 
       .action-primary:hover {
@@ -1411,12 +1642,12 @@ function renderSidebarHtml(state) {
       }
 
       .action-secondary {
-        color: var(--vscode-foreground);
-        background: color-mix(in srgb, var(--vscode-editor-background) 80%, transparent);
+        color: var(--foreground);
+        background: var(--surface);
       }
 
       .action-secondary:hover {
-        border-color: color-mix(in srgb, var(--tone-info) 40%, transparent);
+        border-color: var(--tone-info);
       }
 
       .footer {
@@ -1427,32 +1658,32 @@ function renderSidebarHtml(state) {
   </head>
   <body>
     <main class="shell">
-      <section class="card hero">
-        <div class="hero-top">
-          <div>
-            <h1>${escapeHtml(state.status.title)}</h1>
-          </div>
-          <span class="badge tone-${escapeHtml(state.status.tone)}">${escapeHtml(state.status.endpoint)}</span>
-        </div>
+      <section class="card hero tone-border-${escapeHtml(statusTone)}">
+        <div class="eyebrow">Amarillo Bridge</div>
+        <h1>${escapeHtml(status.title || "Bridge status")}</h1>
+        <span class="badge tone-${escapeHtml(statusTone)}">${escapeHtml(status.endpoint || "unknown")}</span>
         <div class="hero-meta">
-          <p>Workspace: ${escapeHtml(state.status.workspace)}</p>
+          <div class="meta-row">
+            <span>Workspace</span>
+            <strong>${escapeHtml(status.workspace || "no workspace")}</strong>
+          </div>
         </div>
         ${notesMarkup}
       </section>
 
-      <section class="card">
+      <section class="card tone-border-${escapeHtml(sessionTone)}">
         <div class="session-copy">
           <div class="section-heading">
-            <h2>${escapeHtml(state.session.title)}</h2>
-            <span class="badge tone-${escapeHtml(state.session.tone)}">${escapeHtml(state.session.badge)}</span>
+            <h2>${escapeHtml(session.title || "Studio Session")}</h2>
+            <span class="badge tone-${escapeHtml(sessionTone)}">${escapeHtml(session.badge || "Unknown")}</span>
           </div>
-          <p class="message">${escapeHtml(state.session.message)}</p>
+          <p class="message">${escapeHtml(session.message || "No sidebar details are available yet.")}</p>
           ${factsMarkup}
           ${sessionActionsMarkup}
         </div>
       </section>
 
-      ${state.sections.map(renderSidebarSection).join("")}
+      ${sections.map(renderSidebarSection).join("")}
 
       <p class="footer">Atalho rapido: Ctrl+Shift+A abre o menu completo do Amarillo.</p>
     </main>
@@ -1470,6 +1701,58 @@ function renderSidebarHtml(state) {
         });
       });
     </script>
+  </body>
+</html>`;
+}
+
+function renderSidebarFatalHtml(error) {
+  const message = escapeHtml(sidebarErrorMessage(error));
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline';"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body {
+        margin: 0;
+        padding: 14px;
+        color: var(--vscode-foreground, #cccccc);
+        background: var(--vscode-sideBar-background, #1f1f1f);
+        font-family: var(--vscode-font-family);
+        text-align: center;
+      }
+
+      .panel {
+        border: 1px solid var(--vscode-charts-red, #f85149);
+        border-radius: 8px;
+        padding: 14px;
+        background: var(--vscode-editorWidget-background, #252526);
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 14px;
+        letter-spacing: 0;
+      }
+
+      p {
+        margin: 0;
+        color: var(--vscode-descriptionForeground, #9da5b4);
+        font-size: 12px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <section class="panel">
+      <h1>Amarillo sidebar failed to render</h1>
+      <p>${message}</p>
+    </section>
   </body>
 </html>`;
 }
@@ -1515,7 +1798,7 @@ function refreshSidebar() {
     sidebarRefreshTimer = null;
     if (!sidebarRefreshInFlight) {
       sidebarRefreshInFlight = sidebarProvider.refresh()
-        .catch((error) => log(`Sidebar refresh failed: ${error.message}`))
+        .catch((error) => log(`Sidebar refresh failed unexpectedly: ${sidebarErrorMessage(error)}`))
         .finally(() => {
           sidebarRefreshInFlight = null;
         });
@@ -1696,8 +1979,8 @@ function registerWorkspaceFileOperationWatchers(context) {
   );
 }
 
-async function fetchDaemonHealth(): Promise<BridgeHealthPayload> {
-  return requestJson<BridgeHealthPayload>("GET", "/health");
+async function fetchDaemonHealth(options: RequestJsonOptions = {}): Promise<BridgeHealthPayload> {
+  return requestJson<BridgeHealthPayload>("GET", "/health", undefined, options);
 }
 
 function buildHealthcheckRouteProbes(health) {
@@ -1869,6 +2152,8 @@ class AmarilloSidebarProvider {
   constructor(context) {
     this.context = context;
     this.view = null;
+    this.hasRendered = false;
+    this.visibleRefreshInFlight = null;
   }
 
   async resolveWebviewView(webviewView) {
@@ -1876,6 +2161,8 @@ class AmarilloSidebarProvider {
     webviewView.webview.options = {
       enableScripts: true
     };
+    webviewView.webview.html = renderSidebarHtml(buildSidebarLoadingState());
+    this.hasRendered = true;
 
     webviewView.webview.onDidReceiveMessage((message) => {
       void this.handleMessage(message);
@@ -1896,21 +2183,70 @@ class AmarilloSidebarProvider {
         refreshSidebar();
         return;
       }
-      void handleSidebarVisible(this.context);
+      this.refreshThenHandleVisible(webviewView);
     });
 
-    await this.refresh();
     if (webviewView.visible) {
-      void handleSidebarVisible(this.context);
+      this.refreshThenHandleVisible(webviewView);
+    } else {
+      void this.refresh();
     }
   }
 
-  async refresh() {
-    if (!this.view) {
+  refreshThenHandleVisible(webviewView) {
+    if (this.visibleRefreshInFlight) {
       return;
     }
-    const state = await getSidebarState();
-    this.view.webview.html = renderSidebarHtml(state);
+    this.visibleRefreshInFlight = this.doRefreshThenHandleVisible(webviewView)
+      .catch((error) => log(`Sidebar visible refresh failed: ${sidebarErrorMessage(error)}`))
+      .finally(() => {
+        this.visibleRefreshInFlight = null;
+      });
+  }
+
+  async doRefreshThenHandleVisible(webviewView) {
+    if (!webviewView.visible || this.view !== webviewView) {
+      return;
+    }
+    const runtimeState = await this.refresh();
+    if (!runtimeState) {
+      return;
+    }
+    if (!webviewView.visible || this.view !== webviewView) {
+      return;
+    }
+    await handleSidebarVisible(this.context, runtimeState);
+  }
+
+  async refresh(runtimeState: SidebarRuntimeState | null = null) {
+    if (!this.view) {
+      return null;
+    }
+    const startedAt = Date.now();
+    if (!this.hasRendered) {
+      this.view.webview.html = renderSidebarHtml(buildSidebarLoadingState());
+      this.hasRendered = true;
+    }
+
+    try {
+      const effectiveRuntimeState = runtimeState
+        || await withSidebarTimeout(readSidebarRuntimeState(), SIDEBAR_STATE_TIMEOUT_MS, "Sidebar state");
+      const state = await getSidebarState(effectiveRuntimeState);
+      this.view.webview.html = renderSidebarHtml(state);
+      this.hasRendered = true;
+      log(`Sidebar refresh completed in ${Date.now() - startedAt}ms.`);
+      return effectiveRuntimeState;
+    } catch (error) {
+      const reason = sidebarErrorMessage(error);
+      log(`Sidebar refresh failed after ${Date.now() - startedAt}ms: ${reason}`);
+      try {
+        this.view.webview.html = renderSidebarHtml(buildSidebarErrorState(error));
+      } catch (renderError) {
+        this.view.webview.html = renderSidebarFatalHtml(renderError);
+      }
+      this.hasRendered = true;
+      return null;
+    }
   }
 
   async handleMessage(message) {
@@ -1930,22 +2266,16 @@ class AmarilloSidebarProvider {
   }
 }
 
-async function handleSidebarVisible(context) {
-  let settings;
-  try {
-    settings = getBridgeSettings();
-  } catch (_error) {
+async function handleSidebarVisible(context, runtimeState: SidebarRuntimeState | null = null) {
+  const sidebarRuntime = runtimeState || await readSidebarRuntimeState();
+  const settings = sidebarRuntime.settings || null;
+  if (!settings) {
     return;
   }
 
   beginSidebarHandshakeCycle(settings);
 
-  let health = null;
-  try {
-    health = await fetchDaemonHealth();
-  } catch (_error) {
-    health = null;
-  }
+  const health = sidebarRuntime.health || null;
 
   const workspaceMatches = daemonMatchesWorkspace(settings, health);
   if (health?.ok && !workspaceMatches) {
@@ -1994,6 +2324,13 @@ async function handleSidebarVisible(context) {
 }
 
 async function ensureExistingWorkspaceSourcemapOnActivate() {
+  const autoGenerateSourcemap = vscode.workspace.getConfiguration("amarillo").get("autoGenerateSourcemap", true);
+  if (!autoGenerateSourcemap) {
+    log("Skipping activation sourcemap check because amarillo.autoGenerateSourcemap is disabled.");
+    return;
+  }
+
+  const startedAt = Date.now();
   let workspaceRoot;
   try {
     workspaceRoot = resolveWorkspaceRoot();
@@ -2003,17 +2340,20 @@ async function ensureExistingWorkspaceSourcemapOnActivate() {
 
   const projectFiles = collectProjectFiles(workspaceRoot);
   if (projectFiles.length === 0) {
+    log(`Activation sourcemap check skipped in ${Date.now() - startedAt}ms: no .project.json files found.`);
     return;
   }
 
   try {
-    const health = await fetchDaemonHealth();
+    const health = await fetchDaemonHealth({ timeout: SIDEBAR_HEALTH_TIMEOUT_MS });
     const settings = getBridgeSettings();
     if (health?.ok && daemonMatchesWorkspace(settings, health)) {
       await syncLuauSourcemapToDaemonState(workspaceRoot, health, { silent: true });
+      log(`Activation sourcemap check completed from daemon state in ${Date.now() - startedAt}ms.`);
       return;
     }
-  } catch (_error) {
+  } catch (error) {
+    log(`Activation sourcemap daemon check failed after ${Date.now() - startedAt}ms: ${sidebarErrorMessage(error)}`);
     // Fall back to local resolution below when the daemon is unavailable.
   }
 
@@ -2022,9 +2362,26 @@ async function ensureExistingWorkspaceSourcemapOnActivate() {
       projectFilePath: null,
       projectFiles
     });
+    log(`Activation sourcemap check completed locally in ${Date.now() - startedAt}ms.`);
   } catch (error) {
-    log(`Failed to verify sourcemap on activation: ${error.message}`);
+    log(`Failed to verify sourcemap on activation after ${Date.now() - startedAt}ms: ${sidebarErrorMessage(error)}`);
   }
+}
+
+function scheduleExistingWorkspaceSourcemapOnActivate(context) {
+  const autoGenerateSourcemap = vscode.workspace.getConfiguration("amarillo").get("autoGenerateSourcemap", true);
+  if (!autoGenerateSourcemap) {
+    log("Skipping activation sourcemap check because amarillo.autoGenerateSourcemap is disabled.");
+    return;
+  }
+
+  log(`Scheduling activation sourcemap check in ${SOURCEMAP_ACTIVATION_DELAY_MS}ms.`);
+  const timer = setTimeout(() => {
+    void ensureExistingWorkspaceSourcemapOnActivate();
+  }, SOURCEMAP_ACTIVATION_DELAY_MS);
+  context.subscriptions.push({
+    dispose: () => clearTimeout(timer)
+  });
 }
 
 async function installRobloxPlugin(context) {
@@ -2679,6 +3036,7 @@ async function saveSessionConfig() {
 }
 
 function activate(context) {
+  const activationStartedAt = Date.now();
   extensionContext = context;
   outputChannel = vscode.window.createOutputChannel("Amarillo");
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
@@ -2863,8 +3221,8 @@ function activate(context) {
   registerWorkspaceFileOperationWatchers(context);
   updateStatusBar();
   refreshSidebar();
-  log("Amarillo extension activated.");
-  void ensureExistingWorkspaceSourcemapOnActivate();
+  log(`Amarillo extension activated in ${Date.now() - activationStartedAt}ms on VS Code ${vscode.version}; extension ${extensionVersion(context)}.`);
+  scheduleExistingWorkspaceSourcemapOnActivate(context);
 }
 
 function deactivate() {

@@ -11,7 +11,7 @@ const workspaceMcpCandidates = [
 ];
 
 function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(path.join(repoRoot, filePath), "utf8"));
+  return parseJsonFile(path.join(repoRoot, filePath));
 }
 
 function writeJson(filePath, data) {
@@ -76,9 +76,22 @@ function validateManifest(version) {
 
 function updateJson(filePath, updater) {
   const absolutePath = path.join(repoRoot, filePath);
-  const data = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
+  const data = parseJsonFile(absolutePath);
   updater(data);
   fs.writeFileSync(absolutePath, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+}
+
+function parseJsonFile(absolutePath) {
+  const source = fs.readFileSync(absolutePath, "utf8");
+  try {
+    return JSON.parse(source);
+  } catch (error) {
+    const relativePath = path.relative(repoRoot, absolutePath);
+    const reason = source.includes("\0")
+      ? "file contains NUL bytes"
+      : error.message;
+    throw new Error(`Could not parse ${relativePath}: ${reason}`);
+  }
 }
 
 function replaceInFile(filePath, replacements) {

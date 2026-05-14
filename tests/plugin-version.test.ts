@@ -70,6 +70,15 @@ test("Roblox plugin caches property metadata while reading live values", () => {
   assert.match(pluginSource, /for propertyName in pairs\(propertyNames\) do\s+local value = safeGetProperty\(instance, propertyName\)/);
 });
 
+test("Roblox plugin filters reserved RBX attributes during sync", () => {
+  assert.match(pluginSource, /local function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and string\.sub\(attributeName, 1, 3\) == "RBX"\s+end/);
+  assert.match(pluginSource, /local function syncableAttributes\(attributes\)/);
+  assert.equal((pluginSource.match(/syncableAttributes\(instance:GetAttributes\(\)\)/g) || []).length, 2);
+  assert.match(pluginSource, /local desiredAttributes = syncableAttributes\(rawValue\)/);
+  assert.match(pluginSource, /not isReservedAttributeName\(attributeName\) and desiredAttributes\[attributeName\] == nil/);
+  assert.match(pluginSource, /for attributeName, attributeValue in pairs\(desiredAttributes\) do/);
+});
+
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {
   assert.match(pluginSource, /local function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
   assert.match(pluginSource, /local function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);

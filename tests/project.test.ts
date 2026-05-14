@@ -445,6 +445,108 @@ test("local state roundtrip writes scripts and metadata", () => {
   );
 });
 
+test("reserved RBX attributes are stripped when reading local metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(path.join(syncRoot, "Shared"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "Shared", "init.meta.json"), JSON.stringify({
+    properties: {
+      Attributes: {
+        NormalFolder: true,
+        RBXRefinementScale: 1
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "Shared", "Hello.luau"), "return 123", "utf8");
+  fs.writeFileSync(path.join(syncRoot, "Shared", "Hello.meta.json"), JSON.stringify({
+    properties: {
+      Attributes: {
+        NormalScript: "ok",
+        RBXRefinementScale: 2
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const snapshot = readLocalProjectState(project);
+  const shared = snapshot.mounts[0].children[0];
+  const hello = shared.children[0];
+
+  assert.equal(shared.properties.Attributes.NormalFolder, true);
+  assert.equal(shared.properties.Attributes.RBXRefinementScale, undefined);
+  assert.equal(hello.properties.Attributes.NormalScript, "ok");
+  assert.equal(hello.properties.Attributes.RBXRefinementScale, undefined);
+});
+
+test("reserved RBX attributes are stripped when writing Studio metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "Shared",
+            className: "Folder",
+            properties: {
+              Attributes: {
+                NormalFolder: true,
+                RBXRefinementScale: 1
+              }
+            },
+            children: [
+              {
+                name: "Hello",
+                className: "ModuleScript",
+                fileKind: "module",
+                ext: ".luau",
+                source: "return 123",
+                properties: {
+                  Attributes: {
+                    NormalScript: "ok",
+                    RBXRefinementScale: 2
+                  }
+                },
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const folderMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "Shared", "init.meta.json"), "utf8"));
+  const scriptMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "Shared", "Hello.meta.json"), "utf8"));
+
+  assert.equal(folderMeta.properties.Attributes.NormalFolder, true);
+  assert.equal(folderMeta.properties.Attributes.RBXRefinementScale, undefined);
+  assert.equal(scriptMeta.properties.Attributes.NormalScript, "ok");
+  assert.equal(scriptMeta.properties.Attributes.RBXRefinementScale, undefined);
+});
+
 test("studio snapshot moves scripts between implicit folders on disk", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ServerScriptService");

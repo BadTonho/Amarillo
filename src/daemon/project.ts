@@ -68,6 +68,38 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isReservedAttributeName(attributeName) {
+  return typeof attributeName === "string" && attributeName.startsWith("RBX");
+}
+
+function sanitizeSyncAttributes(attributes) {
+  if (!isPlainObject(attributes)) {
+    return {};
+  }
+  return Object.entries(attributes).reduce((next, [key, value]) => {
+    if (!isReservedAttributeName(key)) {
+      next[key] = value;
+    }
+    return next;
+  }, {});
+}
+
+function sanitizeSyncProperties(properties) {
+  if (!isPlainObject(properties)) {
+    return {};
+  }
+  const sanitized = { ...properties };
+  if (isPlainObject(sanitized.Attributes)) {
+    const attributes = sanitizeSyncAttributes(sanitized.Attributes);
+    if (Object.keys(attributes).length > 0) {
+      sanitized.Attributes = attributes;
+    } else {
+      delete sanitized.Attributes;
+    }
+  }
+  return sanitized;
+}
+
 function parseJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
@@ -442,7 +474,7 @@ function buildNodeFromJsonModel(modelName, modelData) {
     name: modelName,
     className: modelData.ClassName || "Folder",
     classNameSource: "file",
-    properties: modelData.Properties || {},
+    properties: sanitizeSyncProperties(modelData.Properties),
     keepUnknowns: true,
     children
   };
@@ -456,7 +488,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
     const metaPath = path.join(path.dirname(filePath), `${baseName}${META_SUFFIX}`);
     const meta = readMetaFile(metaPath);
     let source = fs.readFileSync(filePath, "utf8");
-    const properties = { ...(meta.properties || {}) };
+    const properties = sanitizeSyncProperties(meta.properties);
 
     // --disable comment support (Argon pattern)
     if (source.trimStart().startsWith("--disable")) {
@@ -647,6 +679,7 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
   const dirName = path.basename(dirPath);
   const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
   const meta = readMetaFile(metaPath);
+  const metaProperties = sanitizeSyncProperties(meta.properties);
   const hasExplicitClassName = typeof meta.className === "string" && meta.className.length > 0;
   const initEntry = entries.find((entry) => {
     if (!entry.isFile()) {
@@ -661,7 +694,7 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
         name: dirName,
         className: meta.className || "Folder",
         classNameSource: hasExplicitClassName ? "meta" : "defaultFolder",
-        properties: meta.properties || {},
+        properties: metaProperties,
         keepUnknowns: meta.keepUnknowns,
         children: []
       };
@@ -670,10 +703,10 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
     baseNode.className = meta.className;
     baseNode.classNameSource = "meta";
   }
-  if (meta.properties) {
+  if (Object.keys(metaProperties).length > 0) {
     baseNode.properties = {
       ...(baseNode.properties || {}),
-      ...meta.properties
+      ...metaProperties
     };
   }
   if (meta.keepUnknowns !== undefined) {
@@ -771,7 +804,7 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options: an
     const metaPath = path.join(path.dirname(filePath), `${baseName}${META_SUFFIX}`);
     const meta = readMetaFile(metaPath);
     let source = await fsp.readFile(filePath, "utf8");
-    const properties = { ...(meta.properties || {}) };
+    const properties = sanitizeSyncProperties(meta.properties);
 
     // --disable comment support
     if (source.trimStart().startsWith("--disable")) {
@@ -812,6 +845,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
   const dirName = path.basename(dirPath);
   const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
   const meta = readMetaFile(metaPath);
+  const metaProperties = sanitizeSyncProperties(meta.properties);
   const hasExplicitClassName = typeof meta.className === "string" && meta.className.length > 0;
   const initEntry = entries.find((entry) => {
     if (!entry.isFile()) {
@@ -826,7 +860,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
         name: dirName,
         className: meta.className || "Folder",
         classNameSource: hasExplicitClassName ? "meta" : "defaultFolder",
-        properties: meta.properties || {},
+        properties: metaProperties,
         keepUnknowns: meta.keepUnknowns,
         children: []
       };
@@ -835,10 +869,10 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
     baseNode.className = meta.className;
     baseNode.classNameSource = "meta";
   }
-  if (meta.properties) {
+  if (Object.keys(metaProperties).length > 0) {
     baseNode.properties = {
       ...(baseNode.properties || {}),
-      ...meta.properties
+      ...metaProperties
     };
   }
   if (meta.keepUnknowns !== undefined) {
@@ -1040,14 +1074,15 @@ function ignoredSyncbackProperties(options: any = {}) {
 }
 
 function filterSyncbackProperties(properties, options: any = {}) {
-  if (!properties || Object.keys(properties).length === 0) {
+  const sanitized = sanitizeSyncProperties(properties);
+  if (Object.keys(sanitized).length === 0) {
     return {};
   }
   const ignored = ignoredSyncbackProperties(options);
   if (ignored.size === 0) {
-    return properties;
+    return sanitized;
   }
-  return Object.entries(properties).reduce((next, [key, value]) => {
+  return Object.entries(sanitized).reduce((next, [key, value]) => {
     if (!ignored.has(key)) {
       next[key] = value;
     }
