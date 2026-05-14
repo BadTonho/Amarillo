@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.0.32"
+local PLUGIN_VERSION = "1.0.38"
 local AMARILLO_PROTOCOL_VERSION = 1
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -720,6 +720,22 @@ local function propertyNamesForInstance(instance)
 	return propertyNames
 end
 
+local function isReservedAttributeName(attributeName)
+	return type(attributeName) == "string" and string.sub(attributeName, 1, 3) == "RBX"
+end
+
+local function syncableAttributes(attributes)
+	local filtered = {}
+	local hasAttributes = false
+	for attributeName, attributeValue in pairs(attributes or {}) do
+		if not isReservedAttributeName(attributeName) then
+			filtered[attributeName] = attributeValue
+			hasAttributes = true
+		end
+	end
+	return filtered, hasAttributes
+end
+
 local function collectProperties(instance)
 	local propertyNames = propertyNamesForInstance(instance)
 	local properties = {}
@@ -731,8 +747,8 @@ local function collectProperties(instance)
 		end
 	end
 
-	local attributes = instance:GetAttributes()
-	if next(attributes) ~= nil then
+	local attributes, hasAttributes = syncableAttributes(instance:GetAttributes())
+	if hasAttributes then
 		properties.Attributes = attributes
 	end
 
@@ -1022,15 +1038,17 @@ end
 local function setProperty(instance, propertyName, rawValue)
 	if propertyName == "Attributes" and type(rawValue) == "table" then
 		local currentAttributes = instance:GetAttributes()
-		if valuesEqual(currentAttributes, rawValue) then
+		local desiredAttributes = syncableAttributes(rawValue)
+		local currentSyncableAttributes = syncableAttributes(currentAttributes)
+		if valuesEqual(currentSyncableAttributes, desiredAttributes) then
 			return
 		end
 		for attributeName in pairs(currentAttributes) do
-			if rawValue[attributeName] == nil then
+			if not isReservedAttributeName(attributeName) and desiredAttributes[attributeName] == nil then
 				instance:SetAttribute(attributeName, nil)
 			end
 		end
-		for attributeName, attributeValue in pairs(rawValue) do
+		for attributeName, attributeValue in pairs(desiredAttributes) do
 			if not valuesEqual(currentAttributes[attributeName], attributeValue) then
 				instance:SetAttribute(attributeName, attributeValue)
 			end
@@ -1499,8 +1517,8 @@ local function collectAllProperties(instance)
 	properties["_fullName"] = instance:GetFullName()
 
 	-- Attributes
-	local attributes = instance:GetAttributes()
-	if next(attributes) ~= nil then
+	local attributes, hasAttributes = syncableAttributes(instance:GetAttributes())
+	if hasAttributes then
 		properties["Attributes"] = attributes
 	end
 

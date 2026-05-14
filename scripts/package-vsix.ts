@@ -14,6 +14,17 @@ const runtimeMcpProxy = path.join(stagingExtension, "runtime", "mcp-proxy");
 const runtimePlugin = path.join(stagingExtension, "runtime", "plugin");
 const mediaDir = path.join(stagingExtension, "media");
 const schemasDir = path.join(stagingExtension, "schemas");
+const extensionFiles = [
+  "package.json",
+  "extension.js",
+  "codex-mcp.js",
+  "mcp-config.js",
+  "project-bootstrap.js",
+  "project-discovery.js",
+  "sourcemap.js",
+  "README.md",
+  "CHANGELOG.md"
+];
 
 function ensurePathExists(targetPath, label) {
   if (!fs.existsSync(targetPath)) {
@@ -131,7 +142,7 @@ function main() {
     mkdirp(dirPath);
   }
 
-  for (const fileName of ["package.json", "extension.js", "mcp-config.js", "project-bootstrap.js", "sourcemap.js", "README.md", "CHANGELOG.md"]) {
+  for (const fileName of extensionFiles) {
     copyFile(path.join(extensionSource, fileName), path.join(stagingExtension, fileName));
   }
   copyFile(path.join(repoRoot, "amarillo-version.json"), path.join(stagingExtension, "amarillo-version.json"));

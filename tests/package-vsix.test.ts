@@ -14,6 +14,27 @@ const packageJson = JSON.parse(fs.readFileSync(
   path.join(repoRoot, "package.json"),
   "utf8"
 ));
+const extensionEntrypoint = fs.readFileSync(
+  path.join(repoRoot, "vscode-extension", "extension.js"),
+  "utf8"
+);
+
+function copiedExtensionFiles() {
+  const match = packageCli.match(/const extensionFiles = \[([\s\S]*?)\];/);
+  assert.ok(match, "Expected package-vsix to define extensionFiles.");
+  return new Set(Array.from(match[1].matchAll(/"([^"]+)"/g), (entry) => entry[1]));
+}
+
+function requiredExtensionSidecars() {
+  return Array.from(
+    new Set(
+      Array.from(extensionEntrypoint.matchAll(/require\("\.\/([^"]+)"\)/g), (entry) => {
+        const modulePath = entry[1];
+        return modulePath.endsWith(".js") ? modulePath : `${modulePath}.js`;
+      })
+    )
+  ).sort();
+}
 
 test("package:vsix synchronizes shared Amarillo versions before building", () => {
   assert.match(packageJson.scripts["package:vsix"], /npm run version:sync && npm run build && node scripts\/package-vsix\.js/);
@@ -38,6 +59,17 @@ test("package-vsix includes the shared Amarillo version manifest", () => {
   assert.match(
     packageCli,
     /copyFile\(path\.join\(repoRoot, "amarillo-version\.json"\), path\.join\(stagingExtension, "amarillo-version\.json"\)\)/
+  );
+});
+
+test("package-vsix includes sidecar modules required by the extension entrypoint", () => {
+  const copiedFiles = copiedExtensionFiles();
+  const missingSidecars = requiredExtensionSidecars().filter((fileName) => !copiedFiles.has(fileName));
+
+  assert.deepEqual(
+    missingSidecars,
+    [],
+    `Expected package-vsix to copy required extension sidecars: ${missingSidecars.join(", ")}`
   );
 });
 

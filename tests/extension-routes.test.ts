@@ -91,3 +91,60 @@ test("sidebar source models fallback-only, plugin stale, version mismatch, and s
   assert.match(extensionSource, /sync paused/);
   assert.match(extensionSource, /Destructive MCP actions are blocked/);
 });
+
+test("sidebar renders loading and error fallbacks instead of a blank webview", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /buildSidebarLoadingState/);
+  assert.match(extensionSource, /Loading Amarillo/);
+  assert.match(extensionSource, /buildSidebarErrorState/);
+  assert.match(extensionSource, /Sidebar needs attention/);
+  assert.match(extensionSource, /renderSidebarFatalHtml/);
+  assert.match(extensionSource, /withSidebarTimeout/);
+  assert.match(extensionSource, /timed out after/);
+  assert.match(extensionSource, /SIDEBAR_HEALTH_TIMEOUT_MS = 1200/);
+  assert.match(extensionSource, /SIDEBAR_STATE_TIMEOUT_MS = 4500/);
+  assert.match(extensionSource, /fetchDaemonHealth\(\{ timeout: SIDEBAR_HEALTH_TIMEOUT_MS \}\)/);
+  assert.match(extensionSource, /Bridge health check failed:/);
+  assert.match(extensionSource, /Bridge offline/);
+  assert.match(extensionSource, /Sidebar refresh failed after/);
+  assert.match(extensionSource, /this\.view\.webview\.html = renderSidebarHtml\(buildSidebarLoadingState\(\)\)/);
+  assert.match(extensionSource, /refreshThenHandleVisible/);
+  assert.match(extensionSource, /handleSidebarVisible\(this\.context, runtimeState\)/);
+});
+
+test("activation sourcemap check is delayed and respects autoGenerateSourcemap", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /SOURCEMAP_ACTIVATION_DELAY_MS = 3000/);
+  assert.match(extensionSource, /scheduleExistingWorkspaceSourcemapOnActivate/);
+  assert.match(extensionSource, /autoGenerateSourcemap/);
+  assert.match(extensionSource, /Skipping activation sourcemap check because amarillo\.autoGenerateSourcemap is disabled/);
+  assert.match(extensionSource, /Scheduling activation sourcemap check in/);
+  assert.match(extensionSource, /setTimeout\(\(\) =>/);
+  assert.doesNotMatch(extensionSource, /log\("Amarillo extension activated\."\);\s*void ensureExistingWorkspaceSourcemapOnActivate\(\);/);
+});
+
+test("sidebar visual status tones and compact layout rules are present", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  for (const tone of ["success", "warning", "danger", "info", "neutral"]) {
+    assert.match(extensionSource, new RegExp(`tone-${tone}`));
+    assert.match(extensionSource, new RegExp(`tone-border-${tone}`));
+  }
+  assert.match(extensionSource, /--tone-success-bg/);
+  assert.match(extensionSource, /--tone-warning-bg/);
+  assert.match(extensionSource, /--tone-danger-bg/);
+  assert.match(extensionSource, /text-align: center/);
+  assert.match(extensionSource, /border-radius: 8px/);
+  assert.doesNotMatch(extensionSource, /color-mix/);
+});
