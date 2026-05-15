@@ -25,6 +25,14 @@ test("MCP healthcheck command is declared", () => {
   );
 });
 
+test("Codex MCP configure command is declared", () => {
+  const commands = packageJson.contributes?.commands || [];
+  assert.ok(
+    commands.some((command) => command.command === "amarillo.configureCodexMcp"),
+    "Expected amarillo.configureCodexMcp to be contributed."
+  );
+});
+
 test("Doctor command is declared", () => {
   const commands = packageJson.contributes?.commands || [];
   assert.ok(

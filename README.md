@@ -17,7 +17,7 @@ This repository contains the **source code for the bridge and the VS Code extens
 - A single authoritative daemon serves both the Studio plugin and the VS Code extension.
 - The editor MCP does not start a second competing bridge.
 - `Amarillo: Start Bridge` ensures the local bridge is running and writes or updates the portable workspace MCP files so the AI client can talk to the existing daemon through the `stdio -> HTTP` proxy.
-- `Amarillo: Configure MCP for Workspace` remains available when you want to regenerate `mcp.json` manually.
+- `Amarillo: Configure MCP for Workspace` and `Amarillo: Configure Codex MCP` regenerate the workspace MCP files and try to register the portable bootstrap with Codex CLI.
 - The default port for the whole stack is `8323`.
 
 ## Recommended User Flow
@@ -70,7 +70,7 @@ With this layout, the shared folder is mounted into every derived place, while e
 - Running `Amarillo: Start Bridge` also writes or updates `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` in the open workspace.
 - The machine-specific secret state is written to `.amarillo/mcp-local.json`; do not commit this file.
 - If your AI or MCP client was already open, reopen the session so it reloads the workspace MCP servers.
-- `Amarillo: Configure MCP for Workspace` is still useful as a manual regenerate or repair command for `mcp.json`.
+- `Amarillo: Configure MCP for Workspace` and `Amarillo: Configure Codex MCP` try `codex mcp add amarillo -- node "<workspace>/.vscode/amarillo-mcp-bootstrap.cjs" --workspace "<workspace>"` automatically, and offer the same command to copy if Codex CLI is unavailable or registration fails.
 
 Example requests for an AI client:
 
