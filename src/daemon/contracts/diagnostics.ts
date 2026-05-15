@@ -33,6 +33,21 @@ export interface DiagnosticErrorSummary {
   lastErrorAt?: number | null;
 }
 
+export interface PerformanceMetricSummary {
+  count: number;
+  lastMs: number;
+  avgMs: number;
+  maxMs: number;
+  totalMs: number;
+  lastAt: string | null;
+}
+
+export interface PerformanceDiagnosticsPayload {
+  ok: true;
+  generatedAt: string;
+  metrics: Record<string, PerformanceMetricSummary>;
+}
+
 export interface DoctorSessionSummary {
   id: string;
   projectId: string;
@@ -53,6 +68,10 @@ export interface DoctorSessionSummary {
   lastCommandError: string | null;
   requiresManualResync: boolean;
   syncBlockedReason: string | null;
+  privilegedActionsAllowed?: boolean;
+  privilegedActionReasonCode?: string | null;
+  privilegedActionMessage?: string | null;
+  privilegedActionConfirmationEnabled?: boolean | null;
   destructiveConfirmationPending?: boolean;
   destructiveConfirmationType?: string | null;
   destructiveConfirmationSinceAt?: string | null;
@@ -95,6 +114,7 @@ export interface DoctorReportPayload {
   workspace: Record<string, unknown>;
   sessions: DoctorSessionSummary[];
   errors: DiagnosticErrorSummary;
+  performance?: Record<string, PerformanceMetricSummary>;
   recommendations: string[];
   [key: string]: unknown;
 }

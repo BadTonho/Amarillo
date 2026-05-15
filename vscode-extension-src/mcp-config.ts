@@ -151,7 +151,7 @@ function buildMcpCodexVisibilityMarkdown() {
     "",
     "MCP has separate channels:",
     "",
-    "- `tools`: callable actions such as `health`, `list_projects`, `connect_session`, `get_tree`, `get_services`, and `run_code`.",
+    "- `tools`: callable actions such as `health`, `list_projects`, `connect_session`, `get_tree`, `get_services`, and privileged `run_code`.",
     "- `resources`: URI-addressable data returned by `resources/list` and read with `resources/read`.",
     "",
     "Amarillo exposes Studio operations as MCP tools. It does not need to expose resources for native tool calling, so an empty `list_mcp_resources` result can be normal even when the MCP server is working.",

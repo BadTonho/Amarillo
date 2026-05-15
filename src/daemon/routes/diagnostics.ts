@@ -62,6 +62,11 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     return true;
   }
 
+  if (request.method === "GET" && requestUrl.pathname === "/diagnostics/perf") {
+    jsonResponse(response, 200, app.performanceReport());
+    return true;
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/projects") {
     jsonResponse(response, 200, {
       ok: true,

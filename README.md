@@ -77,7 +77,7 @@ Example requests for an AI client:
 - `health`
 - `list_projects`
 - `get_tree`
-- `run_code`
+- `run_code` (privileged; may require plugin confirmation)
 - `push_changes`
 - `pull_changes`
 
@@ -98,6 +98,7 @@ Useful commands:
 
 - `npm.cmd run typecheck`: typechecks runtime, extension, contracts, scripts, and tests.
 - `npm.cmd run check`: builds generated JavaScript and validates it with `node --check`.
+- `npm.cmd run check:sources`: verifies that generated JavaScript with a TypeScript counterpart is classified away from source inventories.
 - `npm.cmd test`: builds all generated JavaScript required by tests, then runs `node --test`.
 - `npm.cmd run diagnose:mcp -- --workspace .`: checks daemon reachability, MCP fallback auth headers, tools, and health probe.
 - `npm.cmd run clean:generated`: removes ignored generated JavaScript from runtime, extension, scripts, and tests.
@@ -129,9 +130,9 @@ Available local tasks:
 
 Available tools:
 
-- read and sync: `health`, `list_projects`, `set_active_project`, `get_tree`, `get_selection`, `inspect_instance`, `run_code`, `push_changes`, `pull_changes`, `start_playtest`, `stop_playtest`
+- read and sync: `health`, `list_projects`, `set_active_project`, `get_tree`, `get_selection`, `inspect_instance`, `push_changes`, `pull_changes`, `start_playtest`, `stop_playtest`
 - introspection: `get_properties`, `get_descendants`, `search_instances`, `get_services`, `get_instance_info`, `get_output_log`
-- destructive operations: `modify_property`, `create_instance`, `delete_instance`, `insert_model`
+- privileged operations: `run_code`, `modify_property`, `create_instance`, `delete_instance`, `insert_model`
 
 ## Tests
 
@@ -154,7 +155,7 @@ The final file will be created in `dist/`. Packaging includes only the generated
 - `node --test` should stay green
 - the HTTP daemon responds on `127.0.0.1:8323`
 - MCP responds to `initialize` and `tools/list`
-- destructive MCP operations can be blocked by session health or require explicit `Accept` / `Decline` in the Roblox plugin
+- privileged MCP operations can be blocked by session health or require explicit `Accept` / `Decline` in the Roblox plugin
 - final validation for `push/pull`, `run_code`, and introspection still depends on a real connected Roblox Studio session
 
 ## Notes

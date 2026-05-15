@@ -16,7 +16,8 @@ const {
   readWorkspaceConfig,
   resolveProjectSelectionForPlace,
   resolveProjectForPlace,
-  writeStudioProjectState
+  writeStudioProjectState,
+  writeStudioProjectStateAsync
 } = require("../src/daemon/project");
 
 function createTempWorkspace() {
@@ -441,6 +442,61 @@ test("local state roundtrip writes scripts and metadata", () => {
   assert.match(mount.children[0].children[0].source, /return 123/);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(workspace, "sync", "ReplicatedStorage", "Shared", "Hello.meta.json"), "utf8")).properties.Attributes.Demo,
+    true
+  );
+});
+
+test("async Studio snapshot writer matches sync roundtrip output", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "ReplicatedStorage", "Shared"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const changes = await writeStudioProjectStateAsync(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "Shared",
+            className: "Folder",
+            properties: {},
+            children: [
+              {
+                name: "Hello",
+                className: "ModuleScript",
+                fileKind: "module",
+                ext: ".luau",
+                source: "return 456",
+                properties: {
+                  Attributes: {
+                    AsyncDemo: true
+                  }
+                },
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.ok(changes.length >= 2);
+  const snapshot = readLocalProjectState(project);
+  const hello = snapshot.mounts[0].children[0].children[0];
+  assert.equal(hello.name, "Hello");
+  assert.match(hello.source, /return 456/);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(workspace, "sync", "ReplicatedStorage", "Shared", "Hello.meta.json"), "utf8")).properties.Attributes.AsyncDemo,
     true
   );
 });

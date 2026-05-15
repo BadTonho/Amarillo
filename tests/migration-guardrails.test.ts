@@ -26,6 +26,20 @@ test("generated JavaScript cleanup is available through npm", () => {
   assert.match(diagnoseMcpSource, /Authorization/);
 });
 
+test("generated JavaScript is classified away from canonical source inventory", () => {
+  const packageJson = JSON.parse(readText("package.json"));
+  const classifierSource = readText("scripts", "source-classifier.ts");
+  const checkSourcesSource = readText("scripts", "check-sources.ts");
+
+  assert.match(packageJson.scripts["check:sources"], /node scripts\/check-sources\.js/);
+  assert.match(packageJson.scripts.check, /npm run check:sources/);
+  assert.match(classifierSource, /sourcePathForGeneratedJavaScript/);
+  assert.match(classifierSource, /generated-javascript/);
+  assert.match(classifierSource, /vscode-extension-src/);
+  assert.match(checkSourcesSource, /generatedJavaScriptMissingSource/);
+  assert.match(checkSourcesSource, /ignored as source inventory/);
+});
+
 test("PowerShell entrypoints build generated runtime when missing", () => {
   const startDaemon = readText("scripts", "start-daemon.ps1");
   const runMcp = readText("scripts", "run-mcp.ps1");
@@ -59,12 +73,43 @@ test("runtime and extension participate in npm typecheck", () => {
   const packageJson = JSON.parse(readText("package.json"));
   const baseTsconfig = JSON.parse(readText("tsconfig.base.json"));
   const daemonTsconfig = JSON.parse(readText("tsconfig.daemon.json"));
+  const extensionTsconfig = JSON.parse(readText("tsconfig.extension.json"));
 
   assert.equal(baseTsconfig.compilerOptions.noCheck, false);
-  assert.deepEqual(daemonTsconfig.include, ["src/daemon/**/*.ts", "src/mcp-proxy/**/*.ts"]);
+  assert.deepEqual(daemonTsconfig.include, ["src/daemon/**/*.ts", "src/mcp-proxy/**/*.ts", "src/shared/**/*.ts"]);
+  assert.ok(extensionTsconfig.include.includes("src/shared/**/*.ts"));
   assert.doesNotMatch(JSON.stringify(daemonTsconfig), /src-ts/);
+  assert.match(packageJson.scripts["build:extension"], /flatten-extension-build/);
   assert.match(packageJson.scripts.typecheck, /typecheck:runtime/);
   assert.match(packageJson.scripts.typecheck, /typecheck:extension/);
+});
+
+test("shared API contracts are canonical outside the VS Code extension tree", () => {
+  const sharedSource = readText("src", "shared", "api-types.ts");
+  const extensionSource = readText("vscode-extension-src", "api-types.ts");
+
+  assert.doesNotMatch(sharedSource, /vscode-extension-src/);
+  assert.match(extensionSource, /\.\.\/src\/shared\/api-types/);
+});
+
+test("P1 service extraction modules are wired into the daemon app", () => {
+  const appSource = readText("src", "daemon", "app.ts");
+
+  for (const serviceFile of [
+    ["src", "daemon", "services", "studio-snapshot-writer.ts"],
+    ["src", "daemon", "services", "workspace-watcher.ts"],
+    ["src", "daemon", "services", "session-registry.ts"],
+    ["src", "daemon", "services", "sync-coordinator.ts"],
+    ["src", "daemon", "services", "doctor-service.ts"]
+  ]) {
+    assert.ok(fs.existsSync(path.join(repoRoot, ...serviceFile)), serviceFile.join("/"));
+  }
+
+  assert.match(appSource, /StudioSnapshotWriter/);
+  assert.match(appSource, /WorkspaceWatcher/);
+  assert.match(appSource, /SessionRegistry/);
+  assert.match(appSource, /SyncCoordinator/);
+  assert.match(appSource, /DoctorService/);
 });
 
 test("daemon HTTP dispatch no longer keeps duplicate legacy route implementations", () => {

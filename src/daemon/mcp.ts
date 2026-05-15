@@ -8,7 +8,6 @@ import type {
 } from "./contracts/mcp";
 
 const { findNodeByPath, listTools, validateToolArguments } = require("./mcp-tools");
-const { readLocalProjectStateAsync } = require("./project");
 const { startStdioMcpServer, textContent } = require("./mcp-stdio");
 
 function healthPayload(app: McpAppLike): Record<string, unknown> {
@@ -190,7 +189,9 @@ function summarizeToolResult(name, payload) {
     case "run_code":
       return {
         ...common,
-        outputLength: typeof payload.output === "string" ? payload.output.length : null
+        outputLength: typeof payload.output === "string"
+          ? payload.output.length
+          : (typeof payload.result === "string" ? payload.result.length : null)
       };
     case "modify_property":
     case "create_instance":
@@ -243,7 +244,7 @@ const TOOL_HANDLERS = {
     const session = app.sessions.get(args.sessionId);
     const project = session ? app.getProjectById(session.projectId) : null;
     const result = await app.enqueueCommand(args.sessionId, "apply_project_tree", {
-      project: project ? await readLocalProjectStateAsync(project, app.projectReadOptions(session)) : null,
+      project: project ? await app.readLocalProjectStateAsyncWithPerf(project, app.projectReadOptions(session)) : null,
       reason: "mcp_pull"
     }, true);
     return textContent({ ok: true, result });
@@ -299,6 +300,10 @@ async function handleTool(app: McpAppLike, name: string, args: McpToolArguments 
   try {
     const result = await executeTool(app, name, args || {});
     const payload = parseToolPayload(result);
+    const durationMs = Date.now() - startedAt;
+    if (typeof app.recordPerformance === "function") {
+      app.recordPerformance("mcp.call.duration", durationMs);
+    }
     if (typeof app.recordMcpAudit === "function") {
       app.recordMcpAudit({
         tool: name,
@@ -312,11 +317,15 @@ async function handleTool(app: McpAppLike, name: string, args: McpToolArguments 
         confirmed: payload?.confirmed === true,
         reasonCode: payload?.reasonCode || null,
         error: payload?.error || null,
-        durationMs: Date.now() - startedAt
+        durationMs
       });
     }
     return result;
   } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (typeof app.recordPerformance === "function") {
+      app.recordPerformance("mcp.call.duration", durationMs);
+    }
     if (source && typeof app.recordMcpFailure === "function") {
       app.recordMcpFailure(source, error, { toolName: name });
     }
@@ -333,7 +342,7 @@ async function handleTool(app: McpAppLike, name: string, args: McpToolArguments 
         confirmed: false,
         reasonCode: null,
         error: error.message,
-        durationMs: Date.now() - startedAt
+        durationMs
       });
     }
     throw error;

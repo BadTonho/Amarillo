@@ -1,13 +1,27 @@
 "use strict";
 
+const { performance } = require("node:perf_hooks");
 const { patchStudioFileSource } = require("../project");
-const { SESSION_TOKEN_HEADER, STUDIO_SYNC_MAX_JSON_BODY_BYTES, jsonResponse, readJsonBody } = require("../http-utils");
+const {
+  SESSION_TOKEN_HEADER,
+  STUDIO_SYNC_MAX_JSON_BODY_BYTES,
+  jsonBodyByteLength,
+  jsonResponse,
+  readJsonBody,
+  requestContentLength
+} = require("../http-utils");
 
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
 
 function requestHasSessionToken(request) {
   const token = request.headers?.[SESSION_TOKEN_HEADER];
   return typeof token === "string" && token.trim().length > 0;
+}
+
+function recordStudioPollDuration(app, startedAt) {
+  if (typeof app.recordPerformance === "function") {
+    app.recordPerformance("studio.poll.duration", performance.now() - startedAt);
+  }
 }
 
 function recordStudioSnapshotFailure(app, session, body, statusCode, code, message, request) {
@@ -37,8 +51,10 @@ function recordStudioSnapshotFailure(app, session, body, statusCode, code, messa
 
 async function handleStudioRoutes(app, request, response, requestUrl) {
   if (request.method === "GET" && requestUrl.pathname === "/studio/poll") {
+    const pollStartedAt = performance.now();
     const sessionId = requestUrl.searchParams.get("sessionId");
     if (!sessionId) {
+      recordStudioPollDuration(app, pollStartedAt);
       jsonResponse(response, 200, {
         ok: true,
         mode: "offer",
@@ -51,16 +67,19 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
 
     const session = app.sessions.get(sessionId);
     if (!session) {
+      recordStudioPollDuration(app, pollStartedAt);
       jsonResponse(response, 404, { ok: false, error: "Session not found." });
       return true;
     }
     if (!app.isSessionRequestAuthorized(request, session)) {
+      recordStudioPollDuration(app, pollStartedAt);
       jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
       return true;
     }
     app.updateSessionPluginVersion(session, {
       pluginVersion: requestUrl.searchParams.get("pluginVersion"),
-      pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion")
+      pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion"),
+      privilegedActionConfirmationEnabled: requestUrl.searchParams.get("privilegedActionConfirmationEnabled")
     });
     app.updateDestructiveConfirmationState(session, {
       destructiveConfirmationPending: requestUrl.searchParams.get("destructiveConfirmationPending"),
@@ -71,6 +90,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
 
     if (session.pendingCommands.length > 0) {
       const data = app.dequeueCommands(sessionId);
+      recordStudioPollDuration(app, pollStartedAt);
       jsonResponse(response, 200, { ok: true, ...data });
       return true;
     }
@@ -86,8 +106,10 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       }
       try {
         const data = app.dequeueCommands(sessionId);
+        recordStudioPollDuration(app, pollStartedAt);
         jsonResponse(response, 200, { ok: true, ...data });
       } catch (_error) {
+        recordStudioPollDuration(app, pollStartedAt);
         jsonResponse(response, 200, { ok: true, commands: [] });
       }
     };
@@ -116,7 +138,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
     app.updateSessionPluginVersion(session, body);
     app.updateDestructiveConfirmationState(session, body);
     app.markStudioSessionContact(session);
-    if (body.ok) {
+    if (body.ok || body.blocked === true || body.declined === true) {
       app.completeCommand(body.sessionId, body.commandId, body);
     } else {
       app.rejectCommand(body.sessionId, body.commandId, body.error || "Studio reported an error.");
@@ -127,6 +149,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
 
   if (request.method === "POST" && requestUrl.pathname === "/studio/snapshot") {
     const body = await readJsonBody(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES });
+    const requestByteLength = requestContentLength(request) ?? jsonBodyByteLength(body);
     const session = app.sessions.get(body.sessionId);
     if (!session) {
       const message = "Studio session not found for snapshot.";
@@ -141,6 +164,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       return true;
     }
     app.updateSessionPluginVersion(session, body);
+    app.updateDestructiveConfirmationState(session, body);
     app.markStudioSessionContact(session);
     if (app.isSessionVersionBlocked(session)) {
       const message = app.syncBlockedReason(session);
@@ -153,7 +177,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       return true;
     }
     try {
-      app.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto");
+      app.updateStudioSnapshot(body.sessionId, body.snapshot, body.reason || "auto", { requestByteLength });
     } catch (error) {
       const statusCode = error.statusCode || 500;
       const code = error.code || "STUDIO-SNAPSHOT";
@@ -179,6 +203,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       return true;
     }
     app.updateSessionPluginVersion(session, body);
+    app.updateDestructiveConfirmationState(session, body);
     app.markStudioSessionContact(session);
     if (app.isSessionVersionBlocked(session)) {
       jsonResponse(response, 409, {

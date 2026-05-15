@@ -25,6 +25,7 @@ export interface ConnectionAcceptBody {
   truthSource?: unknown;
   pluginVersion?: unknown;
   pluginProtocolVersion?: unknown;
+  privilegedActionConfirmationEnabled?: unknown;
 }
 
 export interface ConnectionDiffBody {
@@ -51,6 +52,7 @@ export interface NormalizedConnectionAccept {
   truthSource: TruthSource;
   pluginVersion: string | null;
   pluginProtocolVersion: string | number | null;
+  privilegedActionConfirmationEnabled: boolean | null;
 }
 
 export interface NormalizedConnectionDiff {
@@ -109,6 +111,25 @@ function optionalVersion(value: unknown): string | number | null {
   return typeof value === "number" ? value : String(value);
 }
 
+function optionalBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  return null;
+}
+
 export function normalizeTruthSource(value: unknown): TruthSource {
   return value === "studio" ? "studio" : "pc";
 }
@@ -146,7 +167,8 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
     projectId: optionalString(body.projectId),
     truthSource: normalizeTruthSource(body.truthSource),
     pluginVersion: optionalString(body.pluginVersion),
-    pluginProtocolVersion: optionalVersion(body.pluginProtocolVersion)
+    pluginProtocolVersion: optionalVersion(body.pluginProtocolVersion),
+    privilegedActionConfirmationEnabled: optionalBoolean(body.privilegedActionConfirmationEnabled)
   };
 }
 

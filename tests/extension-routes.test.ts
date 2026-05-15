@@ -5,6 +5,21 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
+function readGeneratedExtensionFile(fileName) {
+  return fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", fileName),
+    "utf8"
+  );
+}
+
+function readGeneratedExtensionBundle() {
+  return [
+    "extension.js",
+    "sidebar.js",
+    "bridge-state.js"
+  ].map(readGeneratedExtensionFile).join("\n");
+}
+
 test("VS Code execute code command uses the daemon exec route", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),
@@ -93,10 +108,7 @@ test("sidebar source models fallback-only, plugin stale, version mismatch, and s
 });
 
 test("sidebar renders loading and error fallbacks instead of a blank webview", () => {
-  const extensionSource = fs.readFileSync(
-    path.join(__dirname, "..", "vscode-extension", "extension.js"),
-    "utf8"
-  );
+  const extensionSource = readGeneratedExtensionBundle();
 
   assert.match(extensionSource, /buildSidebarLoadingState/);
   assert.match(extensionSource, /Loading Amarillo/);
@@ -117,10 +129,7 @@ test("sidebar renders loading and error fallbacks instead of a blank webview", (
 });
 
 test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
-  const extensionSource = fs.readFileSync(
-    path.join(__dirname, "..", "vscode-extension", "extension.js"),
-    "utf8"
-  );
+  const extensionSource = readGeneratedExtensionBundle();
   const packageJson = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "package.json"),
     "utf8"
@@ -155,10 +164,7 @@ test("activation sourcemap check is delayed and respects autoGenerateSourcemap",
 });
 
 test("sidebar visual status tones and compact layout rules are present", () => {
-  const extensionSource = fs.readFileSync(
-    path.join(__dirname, "..", "vscode-extension", "extension.js"),
-    "utf8"
-  );
+  const extensionSource = readGeneratedExtensionBundle();
 
   for (const tone of ["success", "warning", "danger", "info", "neutral"]) {
     assert.match(extensionSource, new RegExp(`tone-${tone}`));

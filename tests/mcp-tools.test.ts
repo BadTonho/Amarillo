@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { validateToolArguments } = require("../src/daemon/mcp-tools");
+const { TOOL_DEFINITIONS, validateToolArguments } = require("../src/daemon/mcp-tools");
 
 test("validateToolArguments rejects missing required arguments", () => {
   assert.throws(
@@ -40,4 +40,10 @@ test("validateToolArguments preserves valid argument objects", () => {
   };
 
   assert.equal(validateToolArguments("create_instance", args), args);
+});
+
+test("run_code tool is documented as privileged", () => {
+  const tool = TOOL_DEFINITIONS.find((candidate) => candidate.name === "run_code");
+  assert.ok(tool);
+  assert.match(tool.description, /Privileged operation/);
 });

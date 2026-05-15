@@ -74,9 +74,11 @@ export interface McpAppLike {
   requestStudioSelection(sessionId?: string): Promise<unknown>;
   runStudioCode(sessionId?: string, code?: string): Promise<unknown>;
   getProjectById(projectId: string): RuntimeProject | null;
+  readLocalProjectStateAsyncWithPerf(project: RuntimeProject, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
   enqueueCommand(sessionId: string | undefined, type: string, payload: Record<string, unknown>, waitForResult?: boolean): Promise<Record<string, unknown>>;
   enqueueDestructiveCommand(sessionId: string | undefined, type: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>;
   projectReadOptions(session: RuntimeSession): Record<string, unknown>;
+  recordPerformance?(name: string, durationMs: number): void;
   recordMcpContact?(source: string, details: Record<string, unknown>): void;
   recordMcpFailure?(source: string, error: unknown, details: Record<string, unknown>): void;
   recordMcpAudit?(entry: Record<string, unknown>): void;

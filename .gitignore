@@ -26,6 +26,7 @@ id_ed25519*
 
 # Generated runtime and package artifacts
 dist/
+.extension-build/
 *.vsix
 *.vsixmanifest
 src/daemon/**/*.js
