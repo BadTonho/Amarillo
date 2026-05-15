@@ -20,7 +20,7 @@ Generate the VSIX:
 npm.cmd run package:vsix
 ```
 
-`package:vsix` runs `version:sync` and `build` automatically. The TypeScript source in `src/daemon`, `src/mcp-proxy`, and `vscode-extension-src` is compiled before packaging, and the VSIX is written to `dist/`. The packaged runtime includes generated JavaScript only; the packager also fails if it finds local machine references such as `C:\Users\...`, editor extension paths, or `rbx-studio-mcp.exe`.
+`package:vsix` runs `version:sync` and `build` automatically. `version:sync` updates the plugin source fragment in `src/plugin-src/`, and `build` regenerates the committed `src/plugin/Amarillo.lua` before packaging. The TypeScript source in `src/daemon`, `src/mcp-proxy`, and `vscode-extension-src` is compiled before packaging, and the VSIX is written to `dist/`. The packaged runtime includes generated JavaScript and the generated single-file Roblox plugin; the packager also fails if it finds local machine references such as `C:\Users\...`, editor extension paths, or `rbx-studio-mcp.exe`.
 
 To install it locally:
 

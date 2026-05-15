@@ -1,0 +1,14 @@
+{
+  "modules": [
+    "00_bootstrap.lua",
+    "10_settings_status.lua",
+    "20_http.lua",
+    "30_values_properties.lua",
+    "40_snapshot_sync.lua",
+    "50_commands.lua",
+    "60_connection_flow.lua",
+    "70_privileged_actions.lua",
+    "80_ui.lua",
+    "90_watchers_loops.lua"
+  ]
+}

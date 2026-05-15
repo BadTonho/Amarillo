@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { buildPlugin } = require("./build-plugin");
 
 const repoRoot = path.join(__dirname, "..");
 const versionPath = path.join(repoRoot, "amarillo-version.json");
@@ -194,10 +195,11 @@ replaceInFile("src/daemon/version.ts", [
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
 ]);
 
-replaceInFile("src/plugin/Amarillo.lua", [
+replaceInFile("src/plugin-src/00_bootstrap.lua", [
   [/local PLUGIN_VERSION = "[^"]+"/, `local PLUGIN_VERSION = "${version.pluginVersion}"`],
   [/local AMARILLO_PROTOCOL_VERSION = \d+/, `local AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion}`]
 ]);
+buildPlugin();
 
 replaceInFile("vscode-extension-src/extension.ts", [
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
