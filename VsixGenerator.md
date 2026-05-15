@@ -11,7 +11,7 @@ cd .\amarillo
 Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version. Legacy direct-runtime `.vscode/mcp.json` files are updated best-effort, but the current MCP flow uses a portable bootstrap instead:
 
 ```powershell
-npm.cmd run version:set -- 1.0.38
+npm.cmd run version:set -- 1.1.0
 ```
 
 Generate the VSIX:
@@ -40,6 +40,7 @@ Then run these VS Code commands from the Command Palette:
 ```text
 Developer: Reload Window
 Amarillo: Configure MCP for Workspace
+Amarillo: Configure Codex MCP
 Amarillo: Install Roblox Studio Plugin
 Amarillo: Start Bridge
 ```
@@ -69,7 +70,7 @@ hasBridgeToken: True
 toolCount: 22
 ```
 
-If `status` cannot find the bridge token or local state, run `Amarillo: Configure MCP for Workspace` or `Amarillo: Start Bridge`, then restart the AI/MCP session so it reloads `.vscode/mcp.json`.
+If `status` cannot find the bridge token or local state, run `Amarillo: Configure MCP for Workspace`, `Amarillo: Configure Codex MCP`, or `Amarillo: Start Bridge`, then restart the AI/MCP session so it reloads `.vscode/mcp.json`.
 
 To verify Codex CLI native registration specifically, run:
 
@@ -77,7 +78,7 @@ To verify Codex CLI native registration specifically, run:
 codex mcp list
 ```
 
-If the `amarillo` server is not listed, register the portable workspace bootstrap manually:
+`Amarillo: Configure Codex MCP` tries to register the portable workspace bootstrap automatically. If the `amarillo` server is still not listed, register it manually:
 
 ```powershell
 codex mcp add amarillo -- node ".\.vscode\amarillo-mcp-bootstrap.cjs" --workspace "."
@@ -109,6 +110,7 @@ Then reload VS Code and run:
 
 ```text
 Amarillo: Configure MCP for Workspace
+Amarillo: Configure Codex MCP
 Amarillo: Install Roblox Studio Plugin
 Amarillo: Start Bridge
 ```

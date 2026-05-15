@@ -7,7 +7,10 @@ const path = require("node:path");
 const http = require("node:http");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { inspectCodexMcpRegistration } = require("./codex-mcp");
+const {
+  ensureCodexMcpRegistration,
+  inspectCodexMcpRegistration
+} = require("./codex-mcp");
 const { ensureWorkspaceMcpConfig } = require("./mcp-config");
 const {
   isIgnoredProjectDiscoveryDirectoryName,
@@ -532,7 +535,13 @@ function mcpStateTone(mcpShield) {
 function codexMcpStateLabel(codexMcp) {
   switch (codexMcp?.status) {
     case "configured":
+    case "registered":
+    case "updated":
       return "registered";
+    case "needs_update":
+      return "needs update";
+    case "update_declined":
+      return "update skipped";
     case "not_configured":
       return "not registered";
     case "unavailable":
@@ -548,15 +557,53 @@ function codexMcpStateLabel(codexMcp) {
 
 function shouldWarnAboutCodexMcp(codexMcp) {
   return codexMcp?.status === "not_configured"
+    || codexMcp?.status === "needs_update"
+    || codexMcp?.status === "update_declined"
+    || codexMcp?.status === "unavailable"
     || codexMcp?.status === "timeout"
     || codexMcp?.status === "error";
 }
 
+function shouldOfferCodexMcpManualCommand(codexMcp) {
+  return Boolean(codexMcp?.suggestedCommand) && shouldWarnAboutCodexMcp(codexMcp);
+}
+
 function logCodexMcpDiagnostics(codexMcp) {
   log(`Codex MCP: ${codexMcpStateLabel(codexMcp)}. ${codexMcp?.message || "No Codex MCP diagnostic message."}`);
-  if (codexMcp?.status === "not_configured") {
+  if (shouldOfferCodexMcpManualCommand(codexMcp)) {
     log(`Codex MCP registration command: ${codexMcp.suggestedCommand}`);
     log("Codex MCP note: this command only registers the portable bootstrap; it does not copy bridge tokens into shared config.");
+  }
+}
+
+function codexMcpConfigureSummary(codexMcp) {
+  const label = codexMcpStateLabel(codexMcp);
+  if (codexMcp?.restartRequired) {
+    return ` Codex MCP: ${label}. Restart or reopen the Codex session so the MCP tools are loaded.`;
+  }
+  if (shouldOfferCodexMcpManualCommand(codexMcp)) {
+    return ` Codex MCP: ${label}. Use Copy Command or see the Amarillo output for the manual registration command.`;
+  }
+  return ` Codex MCP: ${label}.`;
+}
+
+async function confirmCodexMcpUpdate(codexMcp) {
+  const choice = await vscode.window.showWarningMessage(
+    `${codexMcp?.message || "Codex MCP already has an amarillo server."} Update it to this workspace?`,
+    "Update Codex MCP",
+    "Keep Existing"
+  );
+  return choice === "Update Codex MCP";
+}
+
+async function showConfigureMcpMessage(message, codexMcp) {
+  const actions = shouldOfferCodexMcpManualCommand(codexMcp) ? ["Copy Command"] : [];
+  const choice = shouldWarnAboutCodexMcp(codexMcp)
+    ? await vscode.window.showWarningMessage(message, ...actions)
+    : await vscode.window.showInformationMessage(message, ...actions);
+  if (choice === "Copy Command" && codexMcp?.suggestedCommand) {
+    await vscode.env.clipboard.writeText(codexMcp.suggestedCommand);
+    vscode.window.showInformationMessage("Codex MCP command copied. Run it, then restart or reopen the Codex session.");
   }
 }
 
@@ -2845,8 +2892,15 @@ async function configureMcp(context) {
     sourcemapWarning = ` Sourcemap warning: ${error.message}`;
   }
   const mcpSetup = await ensureWorkspaceMcp(context);
+  const codexMcp = await ensureCodexMcpRegistration(workspaceRoot, {
+    confirmUpdate: confirmCodexMcpUpdate
+  });
+  logCodexMcpDiagnostics(codexMcp);
   refreshSidebar();
-  vscode.window.showInformationMessage(`${mcpSetup.message} to use the bridge at ${mcpSetup.host}:${mcpSetup.port}.${sourcemapWarning}${mcpReloadHint(mcpSetup.mcpConfigResult)}`);
+  await showConfigureMcpMessage(
+    `${mcpSetup.message} to use the bridge at ${mcpSetup.host}:${mcpSetup.port}.${sourcemapWarning}${mcpReloadHint(mcpSetup.mcpConfigResult)}${codexMcpConfigureSummary(codexMcp)}`,
+    codexMcp
+  );
 }
 
 async function sendFilesToStudio() {
@@ -3053,6 +3107,7 @@ function activate(context) {
     vscode.commands.registerCommand("amarillo.doctor", () => runDoctor()),
     vscode.commands.registerCommand("amarillo.mcpHealthcheck", () => runMcpHealthcheck()),
     vscode.commands.registerCommand("amarillo.configureMcp", () => configureMcp(context)),
+    vscode.commands.registerCommand("amarillo.configureCodexMcp", () => configureMcp(context)),
     vscode.commands.registerCommand("amarillo.openOutput", () => outputChannel.show(true)),
     vscode.commands.registerCommand("amarillo.refreshSidebar", () => refreshSidebar()),
     vscode.commands.registerCommand("amarillo.sendFilesToStudio", async () => {
