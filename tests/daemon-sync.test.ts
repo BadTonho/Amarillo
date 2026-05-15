@@ -1,0 +1,855 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { PluginRobloxApp } = require("../src/daemon/app");
+const { readLocalProjectState } = require("../src/daemon/project");
+const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
+const {
+  createTempWorkspace,
+  createWorkspaceWithProject,
+  createWorkspaceWithInheritedProjects,
+  invoke,
+  wait,
+  seedStudioSnapshotFromLocalProject,
+  findSnapshotNodeByPath
+} = require("./helpers/daemon-workspace");
+
+
+test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-snapshot-auth",
+    placeId: 0,
+    truthSource: "studio",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
+  });
+  assert.equal(accept.statusCode, 200);
+  const sessionId = accept.payload.session.id;
+
+  const rejected = await invoke(app, "POST", "/studio/snapshot", {
+    sessionId,
+    reason: "initial_accept",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
+    snapshot: { mounts: [] }
+  });
+
+  assert.equal(rejected.statusCode, 401);
+  assert.equal(rejected.payload.code, "UNAUTHORIZED");
+
+  const session = app.sessions.get(sessionId);
+  assert.equal(session.lastCommandError, "Missing or invalid Studio session token.");
+
+  const errors = app.errorTracker.query({ resolved: false, code: "STUDIO-SNAPSHOT-AUTH", limit: 1 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].sessionId, sessionId);
+  assert.equal(errors[0].projectId, "Game.project.json");
+  assert.equal(errors[0].context.route, "/studio/snapshot");
+  assert.equal(errors[0].context.statusCode, 401);
+  assert.equal(errors[0].context.reason, "initial_accept");
+  assert.equal(errors[0].context.truthSource, "studio");
+  assert.equal(errors[0].context.hasSessionToken, false);
+});
+
+test("session open no longer auto-enqueues apply_project_tree on session_opened", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const { session } = app.openSession(0, null);
+
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(session.connectionState, "ready");
+});
+
+test("failed initial PC sync can be retried by the same Studio window", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const first = app.acceptConnection({
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const firstCommand = app.dequeueCommands(first.session.id).commands[0];
+  app.rejectCommand(first.session.id, firstCommand.id, "Initial apply failed.");
+
+  assert.equal(first.session.connectionState, "error");
+  assert.equal(first.session.lastCommandError, "Initial apply failed.");
+
+  const retry = app.acceptConnection({
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "pc"
+  });
+
+  assert.equal(retry.ok, true);
+  assert.equal(retry.session.id, first.session.id);
+  assert.equal(retry.session.connectionState, "accepted");
+  assert.equal(retry.session.lastCommandError, null);
+  assert.equal(retry.session.inFlightCommands.size, 0);
+  assert.equal(retry.session.pendingCommands.length, 1);
+  assert.equal(retry.session.pendingCommands[0].payload.reason, "initial_pc_truth");
+});
+
+test("corrected apply snapshot replaces assumed daemon cache and writes metadata", async () => {
+  const workspace = createWorkspaceWithProject();
+  fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService", "ImplicitGui"), { recursive: true });
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "manual_pull"
+  });
+
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    result: "Snapshot aplicado",
+    snapshot: {
+      mounts: [
+        {
+          id: "ServerScriptService",
+          segments: ["ServerScriptService"],
+          children: [
+            {
+              name: "Hello",
+              className: "Script",
+              classNameSource: "studio",
+              fileKind: "server",
+              ext: ".server.luau",
+              source: "return 1",
+              properties: {},
+              children: []
+            },
+            {
+              name: "ImplicitGui",
+              className: "ScreenGui",
+              classNameSource: "studio",
+              properties: {},
+              children: []
+            }
+          ]
+        }
+      ]
+    }
+  });
+
+  assert.equal(session.lastStudioSnapshot.mounts[0].children[1].className, "ScreenGui");
+  await wait(350);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "ImplicitGui", "init.meta.json"), "utf8")).className,
+    "ScreenGui"
+  );
+});
+
+test("Studio truth writes the initial snapshot to disk and marks the session ready", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const result = app.acceptConnection({
+    studioInstanceId: "studio-a",
+    placeId: 0,
+    truthSource: "studio"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.session.connectionState, "accepted");
+
+  app.updateStudioSnapshot(result.session.id, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 42",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "initial_accept");
+
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  assert.equal(app.sessions.get(result.session.id).connectionState, "ready");
+  assert.match(
+    fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "utf8"),
+    /return 42/
+  );
+});
+
+test("shared and exclusive files target only the derived sessions that include them", async () => {
+  const workspace = createWorkspaceWithInheritedProjects();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const lobbySession = app.openSession(101, null).session;
+  const dungeonSession = app.openSession(202, null).session;
+
+  app.onWorkspaceFileChanged(path.join(workspace, "shared", "ServerScriptService", "Common.server.luau"));
+  await wait(320);
+
+  assert.equal(lobbySession.pendingCommands.length, 1);
+  assert.equal(dungeonSession.pendingCommands.length, 1);
+
+  app.dequeueCommands(lobbySession.id);
+  app.dequeueCommands(dungeonSession.id);
+
+  app.onWorkspaceFileChanged(path.join(workspace, "places", "Lobby", "ReplicatedStorage", "Lobby.server.luau"));
+  await wait(320);
+
+  assert.equal(lobbySession.pendingCommands.length, 1);
+  assert.equal(dungeonSession.pendingCommands.length, 0);
+});
+
+test("new VS Code script files enqueue a project tree apply instead of a file patch", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const newScriptPath = path.join(workspace, "sync", "ServerScriptService", "NewScript.server.luau");
+  fs.writeFileSync(newScriptPath, "return 2", "utf8");
+  app.onWorkspaceFileChanged(newScriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  const mount = session.pendingCommands[0].payload.project.mounts.find((candidate) => candidate.id === "ServerScriptService");
+  assert.ok(mount.children.some((child) => child.name === "NewScript"));
+});
+
+test("VS Code script moves carry sidecar metadata before applying the tree", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  const mountRoot = path.join(workspace, "sync", "ServerScriptService");
+  const oldScriptPath = path.join(mountRoot, "Hello.server.luau");
+  const oldMetaPath = path.join(mountRoot, "Hello.meta.json");
+  fs.writeFileSync(oldMetaPath, JSON.stringify({
+    properties: {
+      Disabled: true
+    }
+  }, null, 2));
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const targetDir = path.join(mountRoot, "Moved");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const newScriptPath = path.join(targetDir, "Hello.server.luau");
+  fs.renameSync(oldScriptPath, newScriptPath);
+  app.onWorkspaceFileChanged(newScriptPath);
+  await wait(320);
+
+  assert.equal(fs.existsSync(oldMetaPath), false);
+  assert.equal(fs.existsSync(path.join(targetDir, "Hello.meta.json")), true);
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  const mount = session.pendingCommands[0].payload.project.mounts.find((candidate) => candidate.id === "ServerScriptService");
+  assert.equal(mount.children.some((child) => child.name === "Hello"), false);
+  const movedFolder = mount.children.find((child) => child.name === "Moved");
+  const movedScript = movedFolder.children.find((child) => child.name === "Hello");
+  assert.equal(movedScript.properties.Disabled, true);
+});
+
+test("VS Code rename notifications carry moved scripts into the daemon sync queue", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  const mountRoot = path.join(workspace, "sync", "ServerScriptService");
+  const oldScriptPath = path.join(mountRoot, "Hello.server.luau");
+  const oldMetaPath = path.join(mountRoot, "Hello.meta.json");
+  fs.writeFileSync(oldMetaPath, JSON.stringify({
+    properties: {
+      Disabled: true
+    }
+  }, null, 2));
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const targetDir = path.join(mountRoot, "Moved");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const newScriptPath = path.join(targetDir, "Hello.server.luau");
+  fs.renameSync(oldScriptPath, newScriptPath);
+
+  const response = await invoke(app, "POST", "/workspace/files-changed", {
+    source: "vscode_rename",
+    events: [
+      {
+        type: "vscode_rename",
+        oldPath: oldScriptPath,
+        newPath: newScriptPath
+      }
+    ]
+  });
+  await wait(320);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+  assert.equal(response.payload.accepted, 2);
+  assert.equal(fs.existsSync(oldMetaPath), false);
+  assert.equal(fs.existsSync(path.join(targetDir, "Hello.meta.json")), true);
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  const mount = session.pendingCommands[0].payload.project.mounts.find((candidate) => candidate.id === "ServerScriptService");
+  const movedFolder = mount.children.find((child) => child.name === "Moved");
+  const movedScript = movedFolder.children.find((child) => child.name === "Hello");
+  assert.equal(movedScript.properties.Disabled, true);
+});
+
+test("Studio source patches update the daemon snapshot after a VS Code move", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const mountRoot = path.join(workspace, "sync", "ServerScriptService");
+  const oldScriptPath = path.join(mountRoot, "Hello.server.luau");
+  const targetDir = path.join(mountRoot, "Moved");
+  fs.mkdirSync(targetDir, { recursive: true });
+  const newScriptPath = path.join(targetDir, "Hello.server.luau");
+  fs.renameSync(oldScriptPath, newScriptPath);
+  app.onWorkspaceFileChanged(newScriptPath);
+  await wait(320);
+
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  app.completeCommand(session.id, dequeued.commands[0].id, { ok: true });
+
+  const previousHash = session.lastStudioHash;
+  const response = await invoke(app, "POST", "/studio/patch-source", {
+    sessionId: session.id,
+    path: ["ServerScriptService", "Moved", "Hello"],
+    source: "return 99"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+  assert.equal(fs.readFileSync(newScriptPath, "utf8"), "return 99");
+  assert.notEqual(session.lastStudioHash, previousHash);
+  const movedScript = findSnapshotNodeByPath(session.lastStudioSnapshot, ["ServerScriptService", "Moved", "Hello"]);
+  assert.equal(movedScript.source, "return 99");
+});
+
+test("existing VS Code script edits still use the fast file patch path", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 42", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(120);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_file_patch");
+  assert.deepEqual(session.pendingCommands[0].payload.path, ["ServerScriptService", "Hello"]);
+  assert.equal(session.pendingCommands[0].payload.source, "return 42");
+});
+
+test("large VS Code script edit bursts fall back to a project tree apply", async () => {
+  const workspace = createWorkspaceWithProject();
+  const serviceRoot = path.join(workspace, "sync", "ServerScriptService");
+  for (let index = 0; index < 25; index++) {
+    fs.writeFileSync(path.join(serviceRoot, `Burst${index}.server.luau`), `return ${index}`, "utf8");
+  }
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  for (let index = 0; index < 25; index++) {
+    const scriptPath = path.join(serviceRoot, `Burst${index}.server.luau`);
+    fs.writeFileSync(scriptPath, `return ${index + 100}`, "utf8");
+    app.onWorkspaceFileChanged(scriptPath);
+  }
+  await wait(180);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  assert.equal(session.pendingCommands[0].payload.reason, "workspace_patch_burst");
+  const script = findSnapshotNodeByPath(session.pendingCommands[0].payload.project, ["ServerScriptService", "Burst24"]);
+  assert.equal(script.source, "return 124");
+});
+
+test("rejected fast file patches fall back to a full project tree apply", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const emotesDir = path.join(workspace, "sync", "ServerScriptService", "Emotes");
+  fs.mkdirSync(emotesDir, { recursive: true });
+  fs.writeFileSync(path.join(emotesDir, "Script.server.luau"), "return 'emote'", "utf8");
+  app.refreshWorkspace();
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Emotes", "Script"],
+    source: "return 'edited'"
+  });
+
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  assert.equal(dequeued.commands[0].type, "apply_file_patch");
+  app.rejectCommand(
+    session.id,
+    dequeued.commands[0].id,
+    "Instance not found for path: ServerScriptService.Emotes.Script"
+  );
+  await wait(120);
+
+  assert.equal(session.pendingCommands.length, 1);
+  const fallback = session.pendingCommands[0];
+  assert.equal(fallback.type, "apply_project_tree");
+  assert.equal(fallback.payload.reason, "file_patch_rejected");
+  const script = findSnapshotNodeByPath(fallback.payload.project, ["ServerScriptService", "Emotes", "Script"]);
+  assert.equal(script.source, "return 'emote'");
+});
+
+test("sync guard marks timed out apply commands as degraded and pauses auto-sync", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "test_timeout"
+  }, false, 10);
+  await wait(25);
+
+  assert.equal(session.sync.state, "degraded");
+  assert.equal(session.sync.lastFailure.commandType, "apply_project_tree");
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 100", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 0);
+});
+
+test("verified apply snapshot clears degraded sync state", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+
+  app.markSyncDegraded(session, "test degradation");
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: readLocalProjectState(project)
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+  assert.ok(session.sync.lastVerifiedAt);
+});
+
+test("apply project tree with a mismatched Studio snapshot marks sync degraded", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const expectedSnapshot = readLocalProjectState(project);
+  const staleSnapshot = readLocalProjectState(project);
+  staleSnapshot.mounts[0].children[0].source = "return 'stale'";
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: staleSnapshot
+  });
+
+  assert.equal(session.sync.state, "degraded");
+  assert.match(session.sync.degradedReason, /hash did not match/);
+  assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+});
+
+test("unverified fast file patch degrades but verified patch updates snapshot", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 10"
+  });
+  let command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, { ok: true });
+  assert.equal(session.sync.state, "degraded");
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 11"
+  });
+  command = app.dequeueCommands(session.id).commands[0];
+  const verifiedSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  verifiedSnapshot.mounts[0].children[0].source = "return 11";
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: verifiedSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  const script = findSnapshotNodeByPath(session.lastStudioSnapshot, ["ServerScriptService", "Hello"]);
+  assert.equal(script.source, "return 11");
+});
+
+test("fast file patch with a stale Studio snapshot marks sync degraded", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 99"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  const staleSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  staleSnapshot.mounts[0].children[0].source = "return 1";
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: staleSnapshot
+  });
+
+  assert.equal(session.sync.state, "degraded");
+  assert.match(session.sync.degradedReason, /file patch source/);
+  assert.equal(session.sync.lastFailure.commandType, "apply_file_patch");
+});
+
+test("Studio snapshot writes coalesce bursts and persist the latest snapshot", async () => {
+  const workspace = createWorkspaceWithProject();
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  app.updateStudioSnapshot(session.id, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 2",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "auto");
+  app.updateStudioSnapshot(session.id, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 3",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "auto");
+
+  assert.equal(app.pendingStudioWrites.size, 1);
+  await wait(360);
+
+  assert.equal(app.pendingStudioWrites.size, 0);
+  assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 3");
+  const helloWrites = app.activityLog
+    .query({ limit: 10, includeDetails: true })
+    .filter((entry) => entry.relativePath === "sync/ServerScriptService/Hello.server.luau");
+  assert.equal(helloWrites.length, 1);
+  assert.equal(helloWrites[0].detail.newText, "return 3");
+});
+
+test("unchanged Studio snapshots update cache without scheduling disk writes", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const snapshot = {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 7",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  };
+
+  app.updateStudioSnapshot(session.id, snapshot, "auto", { requestByteLength: 123 });
+  await app.drainPendingStudioWrites(1000);
+  const firstAppliedAt = session.lastAppliedAt;
+  const firstHash = session.lastStudioHash;
+
+  app.updateStudioSnapshot(session.id, JSON.parse(JSON.stringify(snapshot)), "auto", { requestByteLength: 456 });
+
+  assert.equal(session.lastStudioHash, firstHash);
+  assert.equal(session.lastAppliedAt, firstAppliedAt);
+  assert.equal(app.pendingStudioWrites.size, 0);
+});
+
+test("Studio snapshot write jobs clean up after skipped and failed writes", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const snapshot = {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 2",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  };
+
+  const project = app.getProjectById(session.projectId);
+  app.allProjects = [];
+  app.projects = [];
+  app.updateStudioSnapshot(session.id, snapshot, "manual");
+  await app.drainPendingStudioWrites(1000);
+  assert.equal(app.pendingStudioWrites.size, 0);
+  assert.equal(session.lastAppliedAt, null);
+
+  app.allProjects = [project];
+  app.projects = [project];
+  const blockedMountPath = path.join(workspace, "blocked-mount");
+  fs.writeFileSync(blockedMountPath, "not a directory", "utf8");
+  project.mounts[0].absolutePath = blockedMountPath;
+
+  app.updateStudioSnapshot(session.id, snapshot, "manual");
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(app.pendingStudioWrites.size, 0);
+  assert.equal(session.sync.state, "degraded");
+  assert.match(session.sync.degradedReason, /Failed to write Studio snapshot to disk/);
+});
+
+test("daemon stop flushes pending Studio snapshot writes immediately", async () => {
+  const workspace = createWorkspaceWithProject();
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  app.updateStudioSnapshot(session.id, {
+    mounts: [
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'stopped'",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "auto");
+  assert.equal(app.pendingStudioWrites.size, 1);
+
+  const startedAt = Date.now();
+  await app.stop();
+
+  assert.ok(Date.now() - startedAt < 250);
+  assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 'stopped'");
+  assert.equal(app.pendingStudioWrites.size, 0);
+});
+
+test("deleted VS Code files enqueue a project tree apply so Studio mirrors removals", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.rmSync(scriptPath);
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  const mount = session.pendingCommands[0].payload.project.mounts.find((candidate) => candidate.id === "ServerScriptService");
+  assert.equal(mount.children.some((child) => child.name === "Hello"), false);
+});
+
+test("autoSyncToStudio false disables automatic VS Code file apply commands", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    autoSyncToStudio: false
+  });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 99", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 0);
+});
+
+test("autoSyncToStudio can be disabled through workspace plugin config", async () => {
+  const workspace = createWorkspaceWithProject();
+  fs.writeFileSync(path.join(workspace, ".pluginroblox.json"), JSON.stringify({
+    daemonPort: 8323,
+    autoSyncToStudio: false
+  }, null, 2));
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  assert.equal(app.autoSyncToStudio, false);
+});
+
+test("manual pull still sends files to Studio when autoSyncToStudio is disabled", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    autoSyncToStudio: false
+  });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  const pullPromise = invoke(app, "POST", `/session/${session.id}/pull`, {});
+  await wait(20);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, { ok: true, result: "Snapshot aplicado" });
+
+  const response = await pullPromise;
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.ok, true);
+});
+
+test("version-blocked sessions reject manual sync recovery endpoints", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const sessionId = accept.payload.session.id;
+
+  for (const action of ["pull", "push", "resync"]) {
+    const response = await invoke(app, "POST", `/session/${sessionId}/${action}`, {});
+    assert.equal(response.statusCode, 409, `${action} should be blocked`);
+    assert.equal(response.payload.ok, false);
+    assert.match(response.payload.error, /Plugin update required/);
+  }
+});
+
+test("auto-sync ignores version-blocked sessions", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-old",
+    placeId: 0,
+    truthSource: "pc"
+  });
+  const session = app.sessions.get(accept.payload.session.id);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 200", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(app.sessionSummary(session).requiresPluginUpdate, true);
+});

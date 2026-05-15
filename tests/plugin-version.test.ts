@@ -16,15 +16,31 @@ const pluginSource = fs.readFileSync(
 
 test("Roblox plugin declares Amarillo version and protocol constants", () => {
   assert.match(pluginSource, /local PLUGIN_VERSION = "\d+\.\d+\.\d+"/);
-  assert.match(pluginSource, /local AMARILLO_PROTOCOL_VERSION = 1/);
+  assert.match(pluginSource, /local AMARILLO_PROTOCOL_VERSION = \d+/);
 });
 
 test("Roblox plugin sends version metadata in handshake, polling, snapshots, and command results", () => {
   assert.match(pluginSource, /pluginVersion = PLUGIN_VERSION/);
   assert.match(pluginSource, /pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION/);
+  assert.match(pluginSource, /privilegedActionConfirmationEnabled = state\.confirmPrivilegedActions == true/);
   assert.match(pluginSource, /addVersionPayload\(body\)/);
   assert.match(pluginSource, /addVersionPayload\(bodyTable\)/);
   assert.match(pluginSource, /pluginVersionQuery\(\)/);
+});
+
+test("Roblox plugin gates run_code behind privileged action confirmation", () => {
+  assert.match(pluginSource, /confirmPrivilegedActions = true/);
+  assert.match(pluginSource, /if command\.type == "run_code" then[\s\S]+showDestructiveConfirmation\(command\)[\s\S]+executeRunCode\(command\)/);
+  assert.match(pluginSource, /title = "Confirm Luau Execution"/);
+  assert.match(pluginSource, /Privileged action confirmation/);
+  assert.match(pluginSource, /run_code, modify_property, create_instance, delete_instance, or insert_model/);
+});
+
+test("Roblox plugin reuses the serialized snapshot body for automatic snapshot cache checks", () => {
+  assert.match(pluginSource, /lastSnapshotBodyJson = nil/);
+  assert.match(pluginSource, /local bodyJson = HttpService:JSONEncode\(bodyTable\)/);
+  assert.match(pluginSource, /bodyJson == state\.lastSnapshotBodyJson/);
+  assert.doesNotMatch(pluginSource, /JSONEncode\(snapshot\)/);
 });
 
 test("Roblox plugin confirms apply commands with verification snapshots", () => {
@@ -77,6 +93,33 @@ test("Roblox plugin filters reserved RBX attributes during sync", () => {
   assert.match(pluginSource, /local desiredAttributes = syncableAttributes\(rawValue\)/);
   assert.match(pluginSource, /not isReservedAttributeName\(attributeName\) and desiredAttributes\[attributeName\] == nil/);
   assert.match(pluginSource, /for attributeName, attributeValue in pairs\(desiredAttributes\) do/);
+});
+
+test("Roblox plugin wraps mutating Studio writes in defensive helpers", () => {
+  assert.match(pluginSource, /local function safeSetProperty\(target, propertyName, value, contextLabel\)/);
+  assert.match(pluginSource, /local function safeSetAttribute\(target, attributeName, value, contextLabel\)/);
+  assert.match(pluginSource, /local function safeSetParent\(target, newParent, contextLabel\)/);
+  assert.match(pluginSource, /local okProperty, propertyErr = setProperty\(instance, propName, rawValue\)/);
+  assert.match(pluginSource, /local okParent, parentErr = safeSetParent\(newInstance, parent, "MCP create parent"\)/);
+  assert.doesNotMatch(pluginSource, /instance\[propertyName\]\s*=/);
+  assert.equal((pluginSource.match(/:SetAttribute\(/g) || []).length, 1);
+  assert.equal((pluginSource.match(/\.Parent\s*=(?!=)/g) || []).length, 1);
+});
+
+test("Roblox plugin aggregates safe-set failures for Doctor diagnostics", () => {
+  assert.match(pluginSource, /local SAFE_SET_ERROR_DEDUPE_SECONDS = 30\.0/);
+  assert.match(pluginSource, /local SAFE_SET_FAILURE_REPORT_LIMIT = 10/);
+  assert.match(pluginSource, /local function beginSafeSetFailureAggregation\(command\)/);
+  assert.match(pluginSource, /local function recordSafeSetFailure\(operation, target, fieldName, err, contextLabel, extraContext\)/);
+  assert.match(pluginSource, /local function finishSafeSetFailureAggregation\(cycle\)/);
+  assert.match(pluginSource, /recordSafeSetFailure\("property", target, propertyName, err, contextLabel\)/);
+  assert.match(pluginSource, /recordSafeSetFailure\("attribute", target, attributeName, err, contextLabel\)/);
+  assert.match(pluginSource, /recordSafeSetFailure\("parent", target, "Parent", err, contextLabel/);
+  assert.match(pluginSource, /local safeSetCycle = beginSafeSetFailureAggregation\(command\)/);
+  assert.match(pluginSource, /finishSafeSetFailureAggregation\(safeSetCycle\)/);
+  assert.match(pluginSource, /safeSetFailureKey\(failure\.operation, failure\.instance, fieldName, failure\.error, cycle\.reason\)/);
+  assert.match(pluginSource, /reportPluginError\(message, "PLUGIN-SAFE-SET", \{/);
+  assert.match(pluginSource, /totalFailures = totalFailures,[\s\S]+uniqueFailures = #failures,[\s\S]+failures = limitedFailures/);
 });
 
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {

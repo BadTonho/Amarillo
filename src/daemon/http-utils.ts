@@ -11,6 +11,7 @@ const AUTHORIZATION_HEADER = "authorization";
 const SESSION_TOKEN_HEADER = "x-amarillo-session-token";
 const SESSION_TOKEN_HEADER_DISPLAY = "X-Amarillo-Session-Token";
 const MCP_AUTH_HELP_PATH = "/mcp/auth-help";
+const JSON_BODY_BYTE_LENGTH = Symbol("amarilloJsonBodyByteLength");
 
 function authHelpPayload() {
   return {
@@ -128,10 +129,32 @@ async function readJsonBody<T = Record<string, unknown>>(request: IncomingMessag
   }
 
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+    const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as T;
+    if (parsed && typeof parsed === "object") {
+      Object.defineProperty(parsed, JSON_BODY_BYTE_LENGTH, {
+        enumerable: false,
+        value: totalBytes
+      });
+    }
+    return parsed;
   } catch (_error) {
     throw new HttpError(400, "INVALID_JSON", "Request body must be valid JSON.");
   }
+}
+
+function jsonBodyByteLength(value: unknown): number | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const byteLength = Number((value as Record<symbol, unknown>)[JSON_BODY_BYTE_LENGTH]);
+  return Number.isFinite(byteLength) && byteLength >= 0 ? byteLength : null;
+}
+
+function requestContentLength(request: IncomingMessage): number | null {
+  const rawValue = request.headers?.["content-length"];
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  const byteLength = Number(value);
+  return Number.isFinite(byteLength) && byteLength >= 0 ? byteLength : null;
 }
 
 function normalizeToken(value: unknown): string | null {
@@ -177,7 +200,9 @@ export {
   bridgeTokenFromHeaders,
   errorResponse,
   jsonResponse,
+  jsonBodyByteLength,
   normalizeToken,
+  requestContentLength,
   readJsonBody,
   timingSafeEqualString
 };

@@ -98,7 +98,7 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
   },
   {
     name: "run_code",
-    description: "Executes Luau in the connected Studio session.",
+    description: "Executes Luau in the connected Studio session. Privileged operation; the plugin can require confirmation before running.",
     inputSchema: {
       type: "object",
       required: ["sessionId", "code"],

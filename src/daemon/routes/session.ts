@@ -12,6 +12,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       connectionState: body.connectionState || "ready",
       pluginVersion: body.pluginVersion || null,
       pluginProtocolVersion: body.pluginProtocolVersion || null,
+      privilegedActionConfirmationEnabled: body.privilegedActionConfirmationEnabled ?? null,
       requirePluginVersion: body.requirePluginVersion === true
     });
     jsonResponse(response, 200, {
@@ -67,7 +68,9 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       return true;
     }
     const result = await app.enqueueCommand(sessionId, "apply_project_tree", {
-      project: await readLocalProjectStateAsync(project, app.projectReadOptions(session)),
+      project: app.readLocalProjectStateAsyncWithPerf
+        ? await app.readLocalProjectStateAsyncWithPerf(project, app.projectReadOptions(session))
+        : await readLocalProjectStateAsync(project, app.projectReadOptions(session)),
       reason: "manual_pull"
     }, true);
     jsonResponse(response, 200, { ok: true, result });
@@ -111,7 +114,9 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       return true;
     }
     const result = await app.enqueueCommand(sessionId, "apply_project_tree", {
-      project: await readLocalProjectStateAsync(project, app.projectReadOptions(session)),
+      project: app.readLocalProjectStateAsyncWithPerf
+        ? await app.readLocalProjectStateAsyncWithPerf(project, app.projectReadOptions(session))
+        : await readLocalProjectStateAsync(project, app.projectReadOptions(session)),
       reason: "manual_resync"
     }, true);
     jsonResponse(response, 200, {
@@ -132,7 +137,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
   if (request.method === "POST" && action === "exec") {
     const body = await readJsonBody(request);
     const result = await app.runStudioCode(sessionId, body.code || "");
-    jsonResponse(response, 200, { ok: true, result });
+    jsonResponse(response, result.blocked ? 409 : 200, { ok: result.ok !== false, result });
     return true;
   }
 

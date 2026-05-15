@@ -20,7 +20,7 @@ const PLUGIN_COMMANDS = [
   {
     name: "run_code",
     purpose: "Runs Luau code through the plugin thread.",
-    notes: "Requires a connected Studio session."
+    notes: "Privileged. The plugin can require confirmation before executing arbitrary Luau."
   },
   {
     name: "get_tree",
@@ -172,7 +172,7 @@ function buildInstructionsMarkdown(context: any = {}) {
     "- Open Roblox Studio, reload the Amarillo plugin if needed, and connect it to the workspace.",
     "- Run `Amarillo: Doctor` when something looks wrong; it checks workspace, sessions, sync, MCP, versions, errors, and activity in one report.",
     "- Use the MCP tools through your AI client, or use the plugin UI for connect, sync, selection, playtest, logs, and Luau execution.",
-    "- Destructive operations are `modify_property`, `create_instance`, `delete_instance`, and `insert_model`; the plugin can require `Accept` or `Decline` before applying them.",
+    "- Privileged operations are `run_code`, `modify_property`, `create_instance`, `delete_instance`, and `insert_model`; the plugin can require `Accept` or `Decline` before applying them.",
     "",
     "## Native MCP Workflow",
     "",
@@ -183,9 +183,9 @@ function buildInstructionsMarkdown(context: any = {}) {
     "- Start with `health` to confirm the daemon is online, inspect discovered projects, and collect the available `sessions[].id` values.",
     "- If the workspace has multiple projects, call `list_projects` and `set_active_project` before opening a new Studio connection or when you need to change the default target.",
     "- Any Studio tool that requires `sessionId` should reuse the `id` returned by `health`; if no session is listed, connect the Amarillo plugin in Studio first.",
-    "- Safe default flow: `health` -> `list_projects` -> `get_tree` or `get_selection` -> inspection tools -> `pull_changes` or `run_code` -> destructive tools only when needed.",
-    "- For automated creation/load tests, prefer `run_code` so Studio can create test objects without entering the manual destructive-action confirmation flow.",
-    "- If `health.sessions[].destructiveConfirmationPending` is true, approve or decline that prompt in Roblox Studio before sending another destructive tool call.",
+    "- Safe default flow: `health` -> `list_projects` -> `get_tree` or `get_selection` -> inspection tools -> `pull_changes` or privileged tools only when needed.",
+    "- Treat `run_code` as privileged arbitrary Luau execution; use it only when inspection tools cannot answer the question or the user has approved Studio-side changes.",
+    "- If `health.sessions[].destructiveConfirmationPending` is true, approve or decline that prompt in Roblox Studio before sending another privileged tool call.",
     "- Use `pull_changes` when the local workspace is the source of truth and you want to apply it in Studio. Use `push_changes` when Studio has changes you want to save back to disk.",
     "",
     "## MCP Shield Fallback",
@@ -194,7 +194,7 @@ function buildInstructionsMarkdown(context: any = {}) {
     "- Protected fallback routes require `X-Amarillo-Bridge-Token: <bridge token>`; `Authorization: Bearer <bridge token>` is also accepted for manual HTTP clients.",
     "- Check `GET /mcp/status` for config/runtime diagnostics, `GET /mcp/tools` for the tool list, and `POST /mcp/probe` to verify the fallback can call `health`.",
     "- Use `POST /mcp/call` with `{ \"name\": \"health\", \"arguments\": {} }` or any documented tool name/arguments when native MCP is unavailable.",
-    "- Destructive tool responses may include `reasonCode`, `blocked`, `declined`, and `confirmed` so callers can distinguish health gates from user rejection.",
+    "- Privileged tool responses may include `reasonCode`, `blocked`, `declined`, and `confirmed` so callers can distinguish health gates from user rejection.",
     "- In VS Code, run `Amarillo: MCP Healthcheck` to see whether `.vscode/mcp.json` and `.amarillo/mcp-local.json` are valid and to get the fallback URL.",
     "",
     "## Local Diagnostic Files",

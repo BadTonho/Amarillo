@@ -1375,6 +1375,256 @@ function writeStudioProjectState(project, snapshot, options: any = {}) {
   return changes;
 }
 
+async function pathExistsAsync(targetPath) {
+  try {
+    await fsp.access(targetPath);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+async function listDirectoryEntriesAsync(dirPath) {
+  if (!await pathExistsAsync(dirPath)) {
+    return [];
+  }
+  return fsp.readdir(dirPath, { withFileTypes: true });
+}
+
+async function writeTextFileIfChangedAsync(filePath, value, options: any = {}) {
+  let existed = false;
+  try {
+    const current = await fsp.readFile(filePath, "utf8");
+    existed = true;
+    if (current === value) {
+      return false;
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  await fsp.writeFile(filePath, value, "utf8");
+  notifyFileChange(options, {
+    action: existed ? "modify" : "create",
+    filePath,
+    ...fileInfoForContent(value)
+  });
+  return true;
+}
+
+function writeJsonFileAsync(filePath, value, options: any = {}) {
+  return writeTextFileIfChangedAsync(filePath, JSON.stringify(value, null, 2), options);
+}
+
+async function collectExistingFileInfosAsync(targetPath, results = []) {
+  let stats;
+  try {
+    stats = await fsp.stat(targetPath);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return results;
+    }
+    throw error;
+  }
+  if (stats.isFile()) {
+    results.push({
+      filePath: targetPath,
+      size: stats.size,
+      hash: hashBuffer(await fsp.readFile(targetPath))
+    });
+    return results;
+  }
+  if (stats.isDirectory()) {
+    for (const entry of await fsp.readdir(targetPath, { withFileTypes: true })) {
+      await collectExistingFileInfosAsync(path.join(targetPath, entry.name), results);
+    }
+  }
+  return results;
+}
+
+async function removePathAsync(targetPath, options: any = {}) {
+  const removedFiles = await collectExistingFileInfosAsync(targetPath);
+  if (removedFiles.length === 0 && !await pathExistsAsync(targetPath)) {
+    return;
+  }
+  await fsp.rm(targetPath, { recursive: true, force: true });
+  for (const file of removedFiles) {
+    notifyFileChange(options, {
+      action: "delete",
+      filePath: file.filePath,
+      size: file.size,
+      hash: file.hash
+    });
+  }
+}
+
+async function shouldPreserveSyncbackEntryAsync(fullPath, entryName, options: any = {}) {
+  const syncback = syncbackConfig(options);
+  const baseName = syncbackEntryBaseName(entryName);
+  if ((syncback.ignoreNames || []).includes(baseName)) {
+    return true;
+  }
+  if (matchesSyncbackGlob(fullPath, entryName, options)) {
+    return true;
+  }
+  if ((syncback.ignoreClasses || []).length > 0) {
+    let stats = null;
+    try {
+      stats = await fsp.stat(fullPath);
+    } catch (_error) {
+      stats = null;
+    }
+    if (stats?.isDirectory()) {
+      const metaPath = path.join(fullPath, `init${META_SUFFIX}`);
+      try {
+        const meta = JSON.parse(await fsp.readFile(metaPath, "utf8"));
+        if ((syncback.ignoreClasses || []).includes(meta.className)) {
+          return true;
+        }
+      } catch (_error) {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+async function cleanupUnexpectedEntriesAsync(nodeDir, node, withInitScript = false, options: any = {}) {
+  const expected = expectedEntriesForNode(node, withInitScript, options, nodeDir);
+  for (const entry of await listDirectoryEntriesAsync(nodeDir)) {
+    const fullPath = path.join(nodeDir, entry.name);
+    if (!expected.has(entry.name) && !await shouldPreserveSyncbackEntryAsync(fullPath, entry.name, options)) {
+      await removePathAsync(fullPath, options);
+    }
+  }
+}
+
+async function writeScriptNodeAsync(parentDir, node, asInit = false, options: any = {}) {
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
+  const extension = scriptExtensionForNode(node);
+  const fileName = asInit ? `init${extension}` : `${node.name}${extension}`;
+  await writeTextFileIfChangedAsync(path.join(parentDir, fileName), node.source || "", options);
+
+  const meta = metaForScriptNode(node, options);
+  if (Object.keys(meta).length > 0) {
+    const metaName = asInit ? `init${META_SUFFIX}` : `${node.name}${META_SUFFIX}`;
+    await writeJsonFileAsync(path.join(parentDir, metaName), meta, options);
+  }
+}
+
+async function writeFolderNodeAsync(parentDir, node, options: any = {}) {
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
+  const nodeDir = path.join(parentDir, node.name);
+  await fsp.mkdir(nodeDir, { recursive: true });
+
+  const meta = metaForNode(node, options);
+  if (Object.keys(meta).length > 0) {
+    await writeJsonFileAsync(path.join(nodeDir, `init${META_SUFFIX}`), meta, options);
+  }
+
+  if (Array.isArray(node.children)) {
+    for (const child of node.children) {
+      await writeNodeAsync(nodeDir, child, options);
+    }
+  }
+
+  if (node.keepUnknowns !== true) {
+    await cleanupUnexpectedEntriesAsync(nodeDir, node, false, options);
+  }
+}
+
+async function writeNodeAsync(parentDir, node, options: any = {}) {
+  if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
+    return;
+  }
+  if (node.fileKind) {
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      const nodeDir = path.join(parentDir, node.name);
+      await fsp.mkdir(nodeDir, { recursive: true });
+      await writeScriptNodeAsync(nodeDir, node, true, options);
+      for (const child of node.children) {
+        await writeNodeAsync(nodeDir, child, options);
+      }
+      if (node.keepUnknowns !== true) {
+        await cleanupUnexpectedEntriesAsync(nodeDir, node, true, options);
+      }
+      return;
+    }
+    await writeScriptNodeAsync(parentDir, node, false, options);
+    return;
+  }
+
+  await writeFolderNodeAsync(parentDir, node, options);
+}
+
+async function writeMountSnapshotAsync(mount, children, options: any = {}) {
+  const mountOptions = {
+    ...options,
+    mount
+  };
+  await fsp.mkdir(mount.absolutePath, { recursive: true });
+  for (const child of children) {
+    if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
+      continue;
+    }
+    await writeNodeAsync(mount.absolutePath, child, mountOptions);
+  }
+
+  const expected = new Set();
+  for (const child of children) {
+    if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
+      continue;
+    }
+    if (child.fileKind && (!child.children || child.children.length === 0)) {
+      const ext = scriptExtensionForNode(child);
+      expected.add(`${child.name}${ext}`);
+      const meta = metaForScriptNode(child, mountOptions);
+      if (Object.keys(meta).length > 0) {
+        expected.add(`${child.name}${META_SUFFIX}`);
+      }
+    } else {
+      expected.add(child.name);
+    }
+  }
+
+  for (const entry of await listDirectoryEntriesAsync(mount.absolutePath)) {
+    const fullPath = path.join(mount.absolutePath, entry.name);
+    if (!expected.has(entry.name) && !await shouldPreserveSyncbackEntryAsync(fullPath, entry.name, mountOptions)) {
+      await removePathAsync(fullPath, mountOptions);
+    }
+  }
+}
+
+async function writeStudioProjectStateAsync(project, snapshot, options: any = {}) {
+  const changes = [];
+  const writeOptions = {
+    ...options,
+    syncback: project.syncback || {},
+    project,
+    onFileChange: (change) => {
+      changes.push(change);
+      if (typeof options.onFileChange === "function") {
+        options.onFileChange(change);
+      }
+    }
+  };
+  const mountMap = new Map(project.mounts.map((mount) => [mount.id, mount]));
+  for (const mountSnapshot of snapshot.mounts || []) {
+    const mount = mountMap.get(mountSnapshot.id);
+    if (!mount) {
+      continue;
+    }
+    await writeMountSnapshotAsync(mount, mountSnapshot.children || [], writeOptions);
+  }
+  return changes;
+}
+
 function buildProjectSelectionMessage(reason, project, placeId) {
   const numericPlaceId = Number(placeId || 0);
   const placeLabel = numericPlaceId > 0
@@ -1558,6 +1808,7 @@ module.exports = {
   resolveProjectSelectionForPlace: projectResolver.resolveProjectSelectionForPlace,
   resolveProjectForPlace: projectResolver.resolveProjectForPlace,
   writeStudioProjectState,
+  writeStudioProjectStateAsync,
   patchStudioFileSource
 };
 

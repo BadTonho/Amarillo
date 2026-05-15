@@ -17,10 +17,13 @@ const schemasDir = path.join(stagingExtension, "schemas");
 const extensionFiles = [
   "package.json",
   "extension.js",
+  "api-types.js",
+  "bridge-state.js",
   "codex-mcp.js",
   "mcp-config.js",
   "project-bootstrap.js",
   "project-discovery.js",
+  "sidebar.js",
   "sourcemap.js",
   "README.md",
   "CHANGELOG.md"

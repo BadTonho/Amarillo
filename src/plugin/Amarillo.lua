@@ -10,8 +10,8 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.1"
-local AMARILLO_PROTOCOL_VERSION = 1
+local PLUGIN_VERSION = "1.1.2"
+local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
 local DEFAULT_PORT = 8323
@@ -27,6 +27,8 @@ local REMOTE_PUSH_SUPPRESSION_SECONDS = 1.0
 local SCRIPT_PATCH_DEBOUNCE_SECONDS = 0.35
 local INITIAL_STUDIO_SYNC_RETRY_SECONDS = 2.0
 local INITIAL_STUDIO_SYNC_LOG_SECONDS = 10.0
+local SAFE_SET_ERROR_DEDUPE_SECONDS = 30.0
+local SAFE_SET_FAILURE_REPORT_LIMIT = 10
 
 local state = {
 	host = DEFAULT_HOST,
@@ -54,7 +56,7 @@ local state = {
 	settingsProjectId = nil,
 	availableProjects = {},
 	currentView = "home",
-	lastSnapshotJson = nil,
+	lastSnapshotBodyJson = nil,
 	suppressPushUntil = 0,
 	lastPollAt = 0,
 	lastSnapshotAt = 0,
@@ -66,7 +68,7 @@ local state = {
 	openDocumentCache = {},
 	pendingDestructiveCommand = nil,
 	pendingDestructiveSinceAt = nil,
-	confirmDestructiveActions = true,
+	confirmPrivilegedActions = true,
 	syncState = "ready",
 	syncMessage = nil,
 	versionState = "unknown",
@@ -83,6 +85,7 @@ local executeModifyProperty
 local executeCreateInstance
 local executeDeleteInstance
 local executeInsertModel
+local executeRunCode
 local executeDestructiveCommand
 local showDestructiveConfirmation
 local hideDestructiveConfirmation
@@ -121,6 +124,7 @@ local function addVersionPayload(body)
 	body = body or {}
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+	body.privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
 	addDestructiveConfirmationPayload(body)
 	return body
 end
@@ -128,6 +132,7 @@ end
 local function pluginVersionQuery()
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
+		.. "&privilegedActionConfirmationEnabled=" .. tostring(state.confirmPrivilegedActions == true)
 	if state.pendingDestructiveCommand then
 		query = query
 			.. "&destructiveConfirmationPending=true"
@@ -313,8 +318,9 @@ local function saveSettings()
 		port = state.port,
 		projectId = state.selectedProjectId,
 		portCustomized = state.portCustomized,
-		confirmDestructiveActions = state.confirmDestructiveActions,
-		confirmPropertyChanges = state.confirmDestructiveActions
+		confirmPrivilegedActions = state.confirmPrivilegedActions,
+		confirmDestructiveActions = state.confirmPrivilegedActions,
+		confirmPropertyChanges = state.confirmPrivilegedActions
 	})
 end
 
@@ -334,10 +340,12 @@ local function loadSettings()
 			end
 		end
 		state.selectedProjectId = saved.projectId
-		if saved.confirmDestructiveActions ~= nil then
-			state.confirmDestructiveActions = saved.confirmDestructiveActions
+		if saved.confirmPrivilegedActions ~= nil then
+			state.confirmPrivilegedActions = saved.confirmPrivilegedActions
+		elseif saved.confirmDestructiveActions ~= nil then
+			state.confirmPrivilegedActions = saved.confirmDestructiveActions
 		elseif saved.confirmPropertyChanges ~= nil then
-			state.confirmDestructiveActions = saved.confirmPropertyChanges
+			state.confirmPrivilegedActions = saved.confirmPropertyChanges
 		end
 		if migratedLegacyPort then
 			saveSettings()
@@ -692,6 +700,156 @@ local function safeGetProperty(instance, propertyName)
 	return nil
 end
 
+local function safeInstanceLabel(target)
+	local label = target and target.Name or "?"
+	pcall(function()
+		label = target:GetFullName()
+	end)
+	return label
+end
+
+local safeSetFailureCycle = nil
+local safeSetFailureDedupe = {}
+
+local function safeSetFailureKey(operation, instanceLabel, fieldName, err, reason)
+	return tostring(operation) .. "\n" .. tostring(instanceLabel) .. "\n" .. tostring(fieldName) .. "\n" .. tostring(err) .. "\n" .. tostring(reason or "")
+end
+
+local function beginSafeSetFailureAggregation(command)
+	local payload = command and command.payload or nil
+	local cycle = {
+		previous = safeSetFailureCycle,
+		commandId = command and command.id or nil,
+		commandType = command and command.type or "apply_project_tree",
+		reason = payload and payload.reason or nil,
+		totalFailures = 0,
+		failures = {},
+		failuresByKey = {}
+	}
+	safeSetFailureCycle = cycle
+	return cycle
+end
+
+local function recordSafeSetFailure(operation, target, fieldName, err, contextLabel, extraContext)
+	local cycle = safeSetFailureCycle
+	if not cycle then
+		return
+	end
+	local instanceLabel = safeInstanceLabel(target)
+	local errorText = tostring(err)
+	local key = safeSetFailureKey(operation, instanceLabel, fieldName, errorText, cycle.reason)
+	local entry = cycle.failuresByKey[key]
+	cycle.totalFailures = cycle.totalFailures + 1
+	if entry then
+		entry.count = entry.count + 1
+		return
+	end
+	entry = {
+		operation = operation,
+		instance = instanceLabel,
+		contextLabel = contextLabel and tostring(contextLabel) or nil,
+		error = errorText,
+		count = 1,
+		commandType = cycle.commandType,
+		commandId = cycle.commandId,
+		reason = cycle.reason
+	}
+	if operation == "attribute" then
+		entry.attribute = tostring(fieldName)
+	else
+		entry.property = tostring(fieldName)
+	end
+	if extraContext then
+		for keyName, value in pairs(extraContext) do
+			entry[keyName] = value
+		end
+	end
+	cycle.failuresByKey[key] = entry
+	table.insert(cycle.failures, entry)
+end
+
+local function finishSafeSetFailureAggregation(cycle)
+	if safeSetFailureCycle ~= cycle then
+		return
+	end
+	safeSetFailureCycle = cycle.previous
+	local timestamp = now()
+	local failures = {}
+	local totalFailures = 0
+	local suppressedFailures = 0
+	for _, failure in ipairs(cycle.failures) do
+		local fieldName = failure.attribute or failure.property or "?"
+		local key = safeSetFailureKey(failure.operation, failure.instance, fieldName, failure.error, cycle.reason)
+		local lastReportedAt = safeSetFailureDedupe[key]
+		if lastReportedAt and (timestamp - lastReportedAt) < SAFE_SET_ERROR_DEDUPE_SECONDS then
+			suppressedFailures = suppressedFailures + failure.count
+		else
+			safeSetFailureDedupe[key] = timestamp
+			totalFailures = totalFailures + failure.count
+			table.insert(failures, failure)
+		end
+	end
+	if #failures == 0 then
+		return
+	end
+	local limitedFailures = {}
+	for index, failure in ipairs(failures) do
+		if index > SAFE_SET_FAILURE_REPORT_LIMIT then
+			break
+		end
+		table.insert(limitedFailures, failure)
+	end
+	local message = "Safe-set failed during apply_project_tree: "
+		.. tostring(totalFailures)
+		.. " failure(s) across "
+		.. tostring(#failures)
+		.. " unique target/property/error combination(s)."
+	reportPluginError(message, "PLUGIN-SAFE-SET", {
+		commandId = cycle.commandId,
+		commandType = cycle.commandType,
+		reason = cycle.reason,
+		totalFailures = totalFailures,
+		uniqueFailures = #failures,
+		suppressedFailures = suppressedFailures,
+		failures = limitedFailures
+	}, "warning")
+end
+
+local function safeSetProperty(target, propertyName, value, contextLabel)
+	local ok, err = pcall(function()
+		target[propertyName] = value
+	end)
+	if not ok then
+		appendLog("safeSetProperty failed (" .. tostring(contextLabel or propertyName) .. " on " .. safeInstanceLabel(target) .. "): " .. tostring(err))
+		recordSafeSetFailure("property", target, propertyName, err, contextLabel)
+	end
+	return ok, err
+end
+
+local function safeSetAttribute(target, attributeName, value, contextLabel)
+	local ok, err = pcall(function()
+		target:SetAttribute(attributeName, value)
+	end)
+	if not ok then
+		appendLog("safeSetAttribute failed (" .. tostring(contextLabel or attributeName) .. " on " .. safeInstanceLabel(target) .. "): " .. tostring(err))
+		recordSafeSetFailure("attribute", target, attributeName, err, contextLabel)
+	end
+	return ok, err
+end
+
+local function safeSetParent(target, newParent, contextLabel)
+	local ok, err = pcall(function()
+		target.Parent = newParent
+	end)
+	if not ok then
+		appendLog("safeSetParent failed (" .. tostring(contextLabel or safeInstanceLabel(target)) .. " -> " .. safeInstanceLabel(newParent) .. "): " .. tostring(err))
+		recordSafeSetFailure("parent", target, "Parent", err, contextLabel, {
+			parent = safeInstanceLabel(newParent)
+		})
+	end
+	return ok, err
+end
+
 local propertyNameCache = {}
 
 local function propertyNamesForInstance(instance)
@@ -859,11 +1017,10 @@ local function updateScriptSourceIfChanged(instance, desiredSource, openDocument
 	end
 
 	if not sourceUpdated then
-		pcall(function()
-			instance.Source = desiredSource
-		end)
+		local okSource = safeSetProperty(instance, "Source", desiredSource, "script source update")
+		sourceUpdated = okSource == true
 	end
-	return true
+	return sourceUpdated
 end
 
 local function indexDesiredChildren(children)
@@ -1072,46 +1229,58 @@ end
 
 local function setProperty(instance, propertyName, rawValue)
 	if propertyName == "Attributes" and type(rawValue) == "table" then
-		local currentAttributes = instance:GetAttributes()
+		local okAttributes, currentAttributes = pcall(function()
+			return instance:GetAttributes()
+		end)
+		if not okAttributes then
+			appendLog("setProperty failed (Attributes read): " .. tostring(currentAttributes))
+			return false, tostring(currentAttributes)
+		end
 		local desiredAttributes = syncableAttributes(rawValue)
 		local currentSyncableAttributes = syncableAttributes(currentAttributes)
 		if valuesEqual(currentSyncableAttributes, desiredAttributes) then
-			return
+			return true
 		end
 		for attributeName in pairs(currentAttributes) do
 			if not isReservedAttributeName(attributeName) and desiredAttributes[attributeName] == nil then
-				instance:SetAttribute(attributeName, nil)
+				local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, nil, "sync remove attribute")
+				if not okAttribute then
+					return false, tostring(attributeErr)
+				end
 			end
 		end
 		for attributeName, attributeValue in pairs(desiredAttributes) do
 			if not valuesEqual(currentAttributes[attributeName], attributeValue) then
-				instance:SetAttribute(attributeName, attributeValue)
+				local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, attributeValue, "sync set attribute")
+				if not okAttribute then
+					return false, tostring(attributeErr)
+				end
 			end
 		end
-		return
+		return true
 	end
 
 	local currentValue = safeGetProperty(instance, propertyName)
 	local currentSerialized = serializeValue(currentValue)
 	if currentSerialized ~= nil and valuesEqual(currentSerialized, rawValue) then
-		return
+		return true
 	end
 	local converted = convertIncomingValue(currentValue, rawValue)
 	if currentValue == converted then
-		return
+		return true
 	end
-	local ok, err = pcall(function()
-		instance[propertyName] = converted
-	end)
-	if not ok then
-		appendLog("setProperty failed (" .. tostring(propertyName) .. "): " .. tostring(err))
-	end
+	local ok, err = safeSetProperty(instance, propertyName, converted, "sync property")
+	return ok, err
 end
 
 local function applyProperties(instance, properties)
 	for propertyName, value in pairs(properties or {}) do
-		setProperty(instance, propertyName, value)
+		local ok, err = setProperty(instance, propertyName, value)
+		if not ok then
+			return false, err
+		end
 	end
+	return true
 end
 
 local function isImplicitFolderNode(desiredNode)
@@ -1221,15 +1390,24 @@ local function ensureInstance(parent, desiredNode)
 	end
 
 	if not existing then
-		existing = Instance.new(desiredNode.className)
-		existing.Name = desiredNode.name
-		existing.Parent = parent
+		local okNew, newInstance = pcall(function()
+			return Instance.new(desiredNode.className)
+		end)
+		if not okNew then
+			appendLog("Failed to create during sync: " .. tostring(desiredNode.className) .. " " .. tostring(desiredNode.name) .. " -> " .. tostring(newInstance))
+			return nil, true
+		end
+		existing = newInstance
+		local okName = safeSetProperty(existing, "Name", desiredNode.name, "sync create name")
+		local okParent = okName and safeSetParent(existing, parent, "sync create parent")
+		if not okName or not okParent then
+			destroyUnexpectedChild(existing, "failed sync create cleanup")
+			return nil, true
+		end
 	end
 
 	if existing.Name ~= desiredNode.name then
-		local okRename, renameErr = pcall(function()
-			existing.Name = desiredNode.name
-		end)
+		local okRename, renameErr = safeSetProperty(existing, "Name", desiredNode.name, "sync rename")
 		if not okRename then
 			appendLog("Failed to rename during sync: " .. describeInstanceForLog(existing) .. " -> " .. tostring(renameErr))
 			return nil, true
@@ -1243,7 +1421,10 @@ local function applyNode(parent, desiredNode, openDocumentSources)
 	if not instance then
 		return corrected
 	end
-	applyProperties(instance, desiredNode.properties)
+	local okProperties = applyProperties(instance, desiredNode.properties)
+	if not okProperties then
+		corrected = true
+	end
 
 	if desiredNode.fileKind and desiredNode.source ~= nil then
 		updateScriptSourceIfChanged(instance, desiredNode.source, openDocumentSources)
@@ -1316,7 +1497,7 @@ local function applySyncSummary(sessionSummary)
 	end
 end
 
-local function applyProjectSnapshot(projectSnapshot)
+local function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
 	end
@@ -1325,6 +1506,7 @@ local function applyProjectSnapshot(projectSnapshot)
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
 	local correctedDuringApply = false
 	local appliedSnapshot = nil
+	local safeSetCycle = beginSafeSetFailureAggregation(command)
 
 	local okApply, applyError = xpcall(function()
 		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
@@ -1365,14 +1547,13 @@ local function applyProjectSnapshot(projectSnapshot)
 		end
 
 		state.treeCache = normalizeProjectSnapshotForCache(appliedSnapshot or projectSnapshot)
-		if state.treeCache then
-			state.lastSnapshotJson = HttpService:JSONEncode(state.treeCache)
-		end
+		state.lastSnapshotBodyJson = nil
 	end, function(err)
 		return tostring(err)
 	end)
 
 	state.isApplyingRemote = false
+	finishSafeSetFailureAggregation(safeSetCycle)
 	if not okApply then
 		appendLog("Apply project snapshot failed: " .. tostring(applyError))
 		return false, tostring(applyError)
@@ -1385,7 +1566,7 @@ local function postCommandResult(commandId, okValue, payload)
 	if not state.sessionId then
 		return
 	end
-	if okValue ~= true and payload and payload.error then
+	if okValue ~= true and payload and payload.error and payload.blocked ~= true and payload.declined ~= true then
 		reportPluginError(payload.error, "PLUGIN-COMMAND", {
 			commandId = commandId
 		}, "error")
@@ -1423,6 +1604,19 @@ local function executeLuau(code)
 	end
 
 	return true, result
+end
+
+executeRunCode = function(command)
+	local ok, result = executeLuau(command.payload.code or "")
+	postCommandResult(command.id, ok, {
+		result = result,
+		error = ok and nil or tostring(result),
+		blocked = false,
+		declined = false,
+		confirmed = true,
+		reasonCode = ok and nil or "LUAU_EXECUTION_FAILED"
+	})
+	appendLog(ok and "Luau executed through the daemon." or ("Luau failed: " .. tostring(result)))
 end
 
 local function getSelectionSummary()
@@ -1581,7 +1775,7 @@ end
 local function handleCommand(command)
 	if command.type == "apply_project_tree" then
 		local isInitialPcSync = state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth"
-		local ok, message, appliedSnapshot = applyProjectSnapshot(command.payload.project)
+		local ok, message, appliedSnapshot = applyProjectSnapshot(command.payload.project, command)
 		if ok and isInitialPcSync then
 			state.awaitingInitialSync = false
 			local watcherOk, watcherErr = pcall(startWatcher)
@@ -1639,12 +1833,22 @@ local function handleCommand(command)
 	end
 
 	if command.type == "run_code" then
-		local ok, result = executeLuau(command.payload.code or "")
-		postCommandResult(command.id, ok, {
-			result = result,
-			error = ok and nil or tostring(result)
-		})
-		appendLog(ok and "Luau executed through the daemon." or ("Luau failed: " .. tostring(result)))
+		if state.confirmPrivilegedActions then
+			if state.pendingDestructiveCommand then
+				postCommandResult(command.id, false, {
+					error = "Another privileged action is already awaiting confirmation.",
+					blocked = true,
+					declined = false,
+					confirmed = false,
+					reasonCode = "CONFIRMATION_ALREADY_PENDING"
+				})
+				appendLog("run_code rejected: another privileged action is already awaiting confirmation.")
+				return
+			end
+			showDestructiveConfirmation(command)
+			return
+		end
+		executeRunCode(command)
 		return
 	end
 
@@ -1898,16 +2102,16 @@ local function handleCommand(command)
 			return
 		end
 
-		if state.confirmDestructiveActions then
+		if state.confirmPrivilegedActions then
 			if state.pendingDestructiveCommand then
 				postCommandResult(command.id, false, {
-					error = "Another destructive action is already awaiting confirmation.",
+					error = "Another privileged action is already awaiting confirmation.",
 					blocked = true,
 					declined = false,
 					confirmed = false,
 					reasonCode = "CONFIRMATION_ALREADY_PENDING"
 				})
-				appendLog("modify_property rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				appendLog("modify_property rejeitado: ja existe uma acao privilegiada aguardando confirmacao.")
 				return
 			end
 			showDestructiveConfirmation(command)
@@ -1919,16 +2123,16 @@ local function handleCommand(command)
 	end
 
 	if command.type == "create_instance" then
-		if state.confirmDestructiveActions then
+		if state.confirmPrivilegedActions then
 			if state.pendingDestructiveCommand then
 				postCommandResult(command.id, false, {
-					error = "Another destructive action is already awaiting confirmation.",
+					error = "Another privileged action is already awaiting confirmation.",
 					blocked = true,
 					declined = false,
 					confirmed = false,
 					reasonCode = "CONFIRMATION_ALREADY_PENDING"
 				})
-				appendLog("create_instance rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				appendLog("create_instance rejeitado: ja existe uma acao privilegiada aguardando confirmacao.")
 				return
 			end
 			showDestructiveConfirmation(command)
@@ -1939,16 +2143,16 @@ local function handleCommand(command)
 	end
 
 	if command.type == "delete_instance" then
-		if state.confirmDestructiveActions then
+		if state.confirmPrivilegedActions then
 			if state.pendingDestructiveCommand then
 				postCommandResult(command.id, false, {
-					error = "Another destructive action is already awaiting confirmation.",
+					error = "Another privileged action is already awaiting confirmation.",
 					blocked = true,
 					declined = false,
 					confirmed = false,
 					reasonCode = "CONFIRMATION_ALREADY_PENDING"
 				})
-				appendLog("delete_instance rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				appendLog("delete_instance rejeitado: ja existe uma acao privilegiada aguardando confirmacao.")
 				return
 			end
 			showDestructiveConfirmation(command)
@@ -1959,16 +2163,16 @@ local function handleCommand(command)
 	end
 
 	if command.type == "insert_model" then
-		if state.confirmDestructiveActions then
+		if state.confirmPrivilegedActions then
 			if state.pendingDestructiveCommand then
 				postCommandResult(command.id, false, {
-					error = "Another destructive action is already awaiting confirmation.",
+					error = "Another privileged action is already awaiting confirmation.",
 					blocked = true,
 					declined = false,
 					confirmed = false,
 					reasonCode = "CONFIRMATION_ALREADY_PENDING"
 				})
-				appendLog("insert_model rejeitado: ja existe uma acao destrutiva aguardando confirmacao.")
+				appendLog("insert_model rejeitado: ja existe uma acao privilegiada aguardando confirmacao.")
 				return
 			end
 			showDestructiveConfirmation(command)
@@ -2055,12 +2259,11 @@ local function syncSnapshot(reason)
 	}
 	addVersionPayload(bodyTable)
 	local bodyJson = HttpService:JSONEncode(bodyTable)
-	local snapshotJson = HttpService:JSONEncode(snapshot)
-	if snapshotJson == state.lastSnapshotJson and reason ~= "manual" and reason ~= "initial_accept" then
+	if bodyJson == state.lastSnapshotBodyJson and reason ~= "manual" and reason ~= "initial_accept" then
 		return
 	end
 
-	state.lastSnapshotJson = snapshotJson
+	state.lastSnapshotBodyJson = bodyJson
 	state.treeCache = snapshot
 	local ok, response = requestRawBody("POST", "/studio/snapshot", bodyJson)
 	appendLog(ok and ("Sending snapshot: " .. (reason or "auto")) or ("Failed to send snapshot: " .. tostring(response)))
@@ -2149,7 +2352,7 @@ function resetSessionState(statusText)
 	state.pendingConnectionContext = nil
 	state.pendingDestructiveCommand = nil
 	state.pendingDestructiveSinceAt = nil
-	state.lastSnapshotJson = nil
+	state.lastSnapshotBodyJson = nil
 	state.syncState = "ready"
 	state.syncMessage = nil
 	state.versionState = "unknown"
@@ -2175,7 +2378,7 @@ local function hideConnectionPrompt()
 	state.pendingConnectionContext = nil
 end
 
--- ===== Destructive Action Confirmation System =====
+-- ===== Privileged Action Confirmation System =====
 local function formatValueForDisplay(value)
 	if type(value) == "table" then
 		local okEncode, encoded = pcall(function()
@@ -2217,7 +2420,10 @@ executeModifyProperty = function(command)
 			-- Eh um atributo, setar como atributo
 			local ok, err = pcall(function()
 				ChangeHistoryService:SetWaypoint("MCP modify attribute: " .. propName)
-				instance:SetAttribute(propName, rawValue)
+				local okAttribute, attributeErr = safeSetAttribute(instance, propName, rawValue, "MCP modify attribute")
+				if not okAttribute then
+					error(attributeErr)
+				end
 				ChangeHistoryService:SetWaypoint("MCP modify attribute done")
 			end)
 			postCommandResult(command.id, ok, {
@@ -2237,7 +2443,10 @@ executeModifyProperty = function(command)
 
 	local ok, err = pcall(function()
 		ChangeHistoryService:SetWaypoint("MCP modify property: " .. propName)
-		setProperty(instance, propName, rawValue)
+		local okProperty, propertyErr = setProperty(instance, propName, rawValue)
+		if not okProperty then
+			error(propertyErr)
+		end
 		ChangeHistoryService:SetWaypoint("MCP modify property done")
 	end)
 	postCommandResult(command.id, ok, {
@@ -2271,14 +2480,31 @@ executeCreateInstance = function(command)
 	local instanceName = command.payload.name or className
 	local ok, result = pcall(function()
 		ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
-		local newInstance = Instance.new(className)
-		newInstance.Name = instanceName
-
-		for propName, propValue in pairs(command.payload.properties or {}) do
-			setProperty(newInstance, propName, propValue)
+		local okNew, newInstance = pcall(function()
+			return Instance.new(className)
+		end)
+		if not okNew then
+			error(newInstance)
+		end
+		local okName, nameErr = safeSetProperty(newInstance, "Name", instanceName, "MCP create name")
+		if not okName then
+			destroyUnexpectedChild(newInstance, "failed MCP create cleanup")
+			error(nameErr)
 		end
 
-		newInstance.Parent = parent
+		for propName, propValue in pairs(command.payload.properties or {}) do
+			local okProperty, propertyErr = setProperty(newInstance, propName, propValue)
+			if not okProperty then
+				destroyUnexpectedChild(newInstance, "failed MCP create cleanup")
+				error(propertyErr)
+			end
+		end
+
+		local okParent, parentErr = safeSetParent(newInstance, parent, "MCP create parent")
+		if not okParent then
+			destroyUnexpectedChild(newInstance, "failed MCP create cleanup")
+			error(parentErr)
+		end
 		ChangeHistoryService:SetWaypoint("MCP create instance done")
 		return newInstance:GetFullName()
 	end)
@@ -2405,7 +2631,10 @@ executeInsertModel = function(command)
 		end
 		local insertedName = children[1].Name
 		for _, child in ipairs(children) do
-			child.Parent = workspace
+			local okParent, parentErr = safeSetParent(child, workspace, "MCP insert model parent")
+			if not okParent then
+				error(parentErr)
+			end
 		end
 		model:Destroy()
 		ChangeHistoryService:SetWaypoint("MCP insert model done")
@@ -2431,6 +2660,10 @@ executeInsertModel = function(command)
 end
 
 executeDestructiveCommand = function(command)
+	if command.type == "run_code" then
+		executeRunCode(command)
+		return
+	end
 	if command.type == "modify_property" then
 		executeModifyProperty(command)
 		return
@@ -2449,6 +2682,19 @@ executeDestructiveCommand = function(command)
 end
 
 local function destructiveConfirmationContent(command)
+	if command.type == "run_code" then
+		local code = tostring(command.payload.code or "")
+		local preview = string.gsub(code, "\r", "")
+		if #preview > 160 then
+			preview = string.sub(preview, 1, 157) .. "..."
+		end
+		return {
+			title = "Confirm Luau Execution",
+			body = "Code length: " .. tostring(#code) .. " characters",
+			detail = preview ~= "" and preview or "(empty code)",
+			logMessage = "Luau execution awaiting confirmation."
+		}
+	end
 	if command.type == "modify_property" then
 		local propName = tostring(command.payload.property or "?")
 		local instancePath = tostring(command.payload.path or "?")
@@ -2482,11 +2728,19 @@ local function destructiveConfirmationContent(command)
 			logMessage = "Instance deletion awaiting confirmation: " .. tostring(command.payload.path)
 		}
 	end
+	if command.type == "insert_model" then
+		return {
+			title = "Confirm Model Insert",
+			body = "Marketplace query: " .. tostring(command.payload.query or "?"),
+			detail = "The first free model match will be inserted into Workspace.",
+			logMessage = "Model insert awaiting confirmation: " .. tostring(command.payload.query)
+		}
+	end
 	return {
-		title = "Confirm Model Insert",
-		body = "Marketplace query: " .. tostring(command.payload.query or "?"),
-		detail = "The first free model match will be inserted into Workspace.",
-		logMessage = "Model insert awaiting confirmation: " .. tostring(command.payload.query)
+		title = "Confirm Privileged Action",
+		body = "Action: " .. tostring(command.type or "?"),
+		detail = "Accept to run this Studio operation.",
+		logMessage = "Privileged action awaiting confirmation: " .. tostring(command.type)
 	}
 end
 
@@ -2533,13 +2787,13 @@ declineDestructiveAction = function()
 	state.pendingDestructiveSinceAt = nil
 	hideDestructiveConfirmation()
 	postCommandResult(command.id, false, {
-		error = "Destructive action declined by user.",
+		error = "Privileged action declined by user.",
 		blocked = false,
 		declined = true,
 		confirmed = false,
 		reasonCode = "DECLINED_BY_USER"
 	})
-	appendLog("Destructive action declined: " .. tostring(command.type))
+	appendLog("Privileged action declined: " .. tostring(command.type))
 end
 
 local function openConnectionPrompt(context)
@@ -2636,7 +2890,8 @@ local function acceptPendingConnection(truthSource)
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		pluginVersion = PLUGIN_VERSION,
-		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
+		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -2919,14 +3174,14 @@ local function makeTextLabel(parent, text, size, position, textSize)
 	label.Text = text
 	label.Size = size
 	label.Position = position
-	label.Parent = parent
+	safeSetParent(label, parent, "UI TextLabel parent")
 	return label
 end
 
 local function addCorner(instance, radius)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = radius or UDim.new(0, 8)
-	corner.Parent = instance
+	safeSetParent(corner, instance, "UI corner parent")
 end
 
 local function makeButton(parent, text, size, position, callback)
@@ -2940,7 +3195,7 @@ local function makeButton(parent, text, size, position, callback)
 	button.AutoButtonColor = true
 	button.Size = size
 	button.Position = position
-	button.Parent = parent
+	safeSetParent(button, parent, "UI button parent")
 	addCorner(button)
 	button.MouseButton1Click:Connect(callback)
 	return button
@@ -2961,7 +3216,7 @@ local function makeTextBox(parent, placeholder, size, position, multiline)
 	box.BorderSizePixel = 0
 	box.Size = size
 	box.Position = position
-	box.Parent = parent
+	safeSetParent(box, parent, "UI text box parent")
 	addCorner(box)
 	return box
 end
@@ -2972,7 +3227,7 @@ local function makeCard(parent, size, position, color)
 	card.BorderSizePixel = 0
 	card.Size = size
 	card.Position = position
-	card.Parent = parent
+	safeSetParent(card, parent, "UI card parent")
 	addCorner(card, UDim.new(0, 12))
 	return card
 end
@@ -3158,24 +3413,24 @@ local root = Instance.new("Frame")
 root.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
 root.BorderSizePixel = 0
 root.Size = UDim2.fromScale(1, 1)
-root.Parent = widget
+safeSetParent(root, widget, "UI root parent")
 
 state.ui.homePage = Instance.new("Frame")
 state.ui.homePage.BackgroundTransparency = 1
 state.ui.homePage.Size = UDim2.fromScale(1, 1)
-state.ui.homePage.Parent = root
+safeSetParent(state.ui.homePage, root, "UI home page parent")
 
 state.ui.settingsPage = Instance.new("Frame")
 state.ui.settingsPage.BackgroundTransparency = 1
 state.ui.settingsPage.Size = UDim2.fromScale(1, 1)
 state.ui.settingsPage.Visible = false
-state.ui.settingsPage.Parent = root
+safeSetParent(state.ui.settingsPage, root, "UI settings page parent")
 
 state.ui.advancedPage = Instance.new("Frame")
 state.ui.advancedPage.BackgroundTransparency = 1
 state.ui.advancedPage.Size = UDim2.fromScale(1, 1)
 state.ui.advancedPage.Visible = false
-state.ui.advancedPage.Parent = root
+safeSetParent(state.ui.advancedPage, root, "UI advanced page parent")
 
 do
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
@@ -3242,46 +3497,46 @@ state.ui.projectListCanvas.AutomaticCanvasSize = Enum.AutomaticSize.None
 state.ui.projectListCanvas.Size = UDim2.new(1, -32, 0, 118)
 state.ui.projectListCanvas.Position = UDim2.fromOffset(16, 278)
 state.ui.projectListCanvas.CanvasSize = UDim2.new(0, 0, 0, 0)
-state.ui.projectListCanvas.Parent = settingsCard
+safeSetParent(state.ui.projectListCanvas, settingsCard, "UI project list canvas parent")
 addCorner(state.ui.projectListCanvas)
 state.ui.projectList = Instance.new("Frame")
 state.ui.projectList.BackgroundTransparency = 1
 state.ui.projectList.Size = UDim2.new(1, -6, 0, 0)
 state.ui.projectList.Position = UDim2.fromOffset(0, 0)
-state.ui.projectList.Parent = state.ui.projectListCanvas
+safeSetParent(state.ui.projectList, state.ui.projectListCanvas, "UI project list parent")
 local projectListPadding = Instance.new("UIPadding")
 projectListPadding.PaddingTop = UDim.new(0, 4)
 projectListPadding.PaddingBottom = UDim.new(0, 4)
 projectListPadding.PaddingLeft = UDim.new(0, 0)
 projectListPadding.PaddingRight = UDim.new(0, 0)
-projectListPadding.Parent = state.ui.projectList
+safeSetParent(projectListPadding, state.ui.projectList, "UI project list padding parent")
 local projectListLayout = Instance.new("UIListLayout")
 projectListLayout.Padding = UDim.new(0, 4)
-projectListLayout.Parent = state.ui.projectList
+safeSetParent(projectListLayout, state.ui.projectList, "UI project list layout parent")
 projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
 	state.ui.projectList.Size = UDim2.new(1, -6, 0, projectListLayout.AbsoluteContentSize.Y + 8)
 	state.ui.projectListCanvas.CanvasSize = UDim2.new(0, 0, 0, projectListLayout.AbsoluteContentSize.Y + 8)
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
--- Confirm destructive actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Destructive action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+-- Confirm privileged actions toggle
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before run_code, modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmDestructiveActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
-	state.confirmDestructiveActions = not state.confirmDestructiveActions
-	state.ui.confirmPropToggle.Text = state.confirmDestructiveActions and "Enabled" or "Disabled"
-	if state.confirmDestructiveActions then
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
+	state.confirmPrivilegedActions = not state.confirmPrivilegedActions
+	state.ui.confirmPropToggle.Text = state.confirmPrivilegedActions and "Enabled" or "Disabled"
+	if state.confirmPrivilegedActions then
 		setButtonStyle(state.ui.confirmPropToggle, "primary")
 	else
 		setButtonStyle(state.ui.confirmPropToggle, "secondary")
 	end
 	saveSettings()
-	appendLog("Destructive action confirmation " .. (state.confirmDestructiveActions and "enabled" or "disabled") .. ".")
+	appendLog("Privileged action confirmation " .. (state.confirmPrivilegedActions and "enabled" or "disabled") .. ".")
 end)
-if state.confirmDestructiveActions then
+if state.confirmPrivilegedActions then
 	setButtonStyle(state.ui.confirmPropToggle, "primary")
 else
 	setButtonStyle(state.ui.confirmPropToggle, "secondary")
@@ -3340,7 +3595,7 @@ state.ui.connectionPromptOverlay.BorderSizePixel = 0
 state.ui.connectionPromptOverlay.Size = UDim2.fromScale(1, 1)
 state.ui.connectionPromptOverlay.Visible = false
 state.ui.connectionPromptOverlay.ZIndex = 20
-state.ui.connectionPromptOverlay.Parent = root
+safeSetParent(state.ui.connectionPromptOverlay, root, "UI connection prompt parent")
 
 local connectionPromptCard = makeCard(state.ui.connectionPromptOverlay, UDim2.new(1, -48, 0, 220), UDim2.fromOffset(24, 170), Color3.fromRGB(24, 27, 33))
 connectionPromptCard.ZIndex = 21
@@ -3367,7 +3622,7 @@ state.ui.connectionPromptChooseStudio.Visible = false
 state.ui.connectionPromptChooseStudio.ZIndex = 22
 end
 
--- ===== Destructive Action Confirmation Overlay =====
+-- ===== Privileged Action Confirmation Overlay =====
 do
 state.ui.propertyConfirmOverlay = Instance.new("Frame")
 state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -3376,12 +3631,12 @@ state.ui.propertyConfirmOverlay.BorderSizePixel = 0
 state.ui.propertyConfirmOverlay.Size = UDim2.fromScale(1, 1)
 state.ui.propertyConfirmOverlay.Visible = false
 state.ui.propertyConfirmOverlay.ZIndex = 30
-state.ui.propertyConfirmOverlay.Parent = root
+safeSetParent(state.ui.propertyConfirmOverlay, root, "UI property confirm parent")
 
 local propertyConfirmCard = makeCard(state.ui.propertyConfirmOverlay, UDim2.new(1, -48, 0, 250), UDim2.fromOffset(24, 150), Color3.fromRGB(24, 27, 33))
 propertyConfirmCard.ZIndex = 31
 
-state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Destructive Action", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
+state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Privileged Action", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
 state.ui.propertyConfirmTitle.Font = Enum.Font.GothamBold
 state.ui.propertyConfirmTitle.ZIndex = 32
 
@@ -3419,7 +3674,7 @@ state.ui.diffOverlay.BorderSizePixel = 0
 state.ui.diffOverlay.Size = UDim2.fromScale(1, 1)
 state.ui.diffOverlay.Visible = false
 state.ui.diffOverlay.ZIndex = 40
-state.ui.diffOverlay.Parent = root
+safeSetParent(state.ui.diffOverlay, root, "UI diff overlay parent")
 
 local diffCard = makeCard(state.ui.diffOverlay, UDim2.new(1, -48, 0, 400), UDim2.fromOffset(24, 80), Color3.fromRGB(24, 27, 33))
 diffCard.ZIndex = 41
@@ -3439,23 +3694,23 @@ state.ui.diffListCanvas.ScrollBarThickness = 6
 state.ui.diffListCanvas.Size = UDim2.new(1, -32, 0, 260)
 state.ui.diffListCanvas.Position = UDim2.fromOffset(16, 72)
 state.ui.diffListCanvas.ZIndex = 42
-state.ui.diffListCanvas.Parent = diffCard
+safeSetParent(state.ui.diffListCanvas, diffCard, "UI diff list canvas parent")
 addCorner(state.ui.diffListCanvas)
 
 state.ui.diffList = Instance.new("Frame")
 state.ui.diffList.BackgroundTransparency = 1
 state.ui.diffList.Size = UDim2.new(1, -6, 0, 0)
 state.ui.diffList.ZIndex = 42
-state.ui.diffList.Parent = state.ui.diffListCanvas
+safeSetParent(state.ui.diffList, state.ui.diffListCanvas, "UI diff list parent")
 
 local diffListPadding = Instance.new("UIPadding")
 diffListPadding.PaddingTop = UDim.new(0, 4)
 diffListPadding.PaddingBottom = UDim.new(0, 4)
-diffListPadding.Parent = state.ui.diffList
+safeSetParent(diffListPadding, state.ui.diffList, "UI diff list padding parent")
 
 local diffListLayout = Instance.new("UIListLayout")
 diffListLayout.Padding = UDim.new(0, 4)
-diffListLayout.Parent = state.ui.diffList
+safeSetParent(diffListLayout, state.ui.diffList, "UI diff list layout parent")
 
 state.ui.diffConfirmBtn = makeButton(diffCard, "Confirm", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 348), function() end) -- Connected later
 state.ui.diffConfirmBtn.ZIndex = 42

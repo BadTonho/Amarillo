@@ -1,10 +1,11 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "./vscode-extension-src",
-    "outDir": "./vscode-extension"
+    "rootDir": ".",
+    "outDir": "./.extension-build"
   },
   "include": [
-    "vscode-extension-src/**/*.ts"
+    "vscode-extension-src/**/*.ts",
+    "src/shared/**/*.ts"
   ]
 }

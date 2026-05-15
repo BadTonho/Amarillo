@@ -103,6 +103,7 @@ export interface SyncCommand {
   id: string;
   type: string;
   payload: SyncCommandPayload;
+  queuedAt: number;
   expectedHash?: string | null;
   syncGuardTimer?: NodeJS.Timeout | null;
 }
@@ -112,6 +113,18 @@ export interface CommandDeferred {
   resolve: (value?: unknown) => void;
   reject: (reason?: unknown) => void;
   timeout?: NodeJS.Timeout;
+}
+
+export interface PendingStudioWrite {
+  sessionId: string;
+  reason: string;
+  snapshotHash: string | null;
+  queuedAt: number;
+  updatedAt: number;
+  timer: NodeJS.Timeout | null;
+  running: boolean;
+  promise: Promise<void>;
+  resolve: () => void;
 }
 
 export interface RuntimeSession {
@@ -143,6 +156,7 @@ export interface RuntimeSession {
   requirePluginVersion: boolean;
   pluginVersion: string | null;
   pluginProtocolVersion: number | null;
+  privilegedActionConfirmationEnabled: boolean | null;
   lastPluginVersionSeenAt: string | null;
   lastCommandError: string | null;
   destructiveConfirmationPending: boolean;
@@ -161,6 +175,7 @@ export interface SessionOpenOptions {
   requirePluginVersion?: boolean;
   pluginVersion?: string | number | null;
   pluginProtocolVersion?: string | number | null;
+  privilegedActionConfirmationEnabled?: boolean | string | number | null;
 }
 
 export interface ConnectionOfferRuntime {

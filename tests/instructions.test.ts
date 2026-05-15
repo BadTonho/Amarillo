@@ -39,6 +39,7 @@ test("instructions markdown includes plugin commands and MCP tools", () => {
   assert.match(markdown, /## Studio Plugin Commands/);
   assert.match(markdown, /### apply_project_tree/);
   assert.match(markdown, /### modify_property/);
+  assert.match(markdown, /Privileged operations are `run_code`/);
   assert.match(markdown, /## Native MCP Workflow/);
   assert.match(markdown, /Start with `health`/);
   assert.match(markdown, /requires `sessionId` should reuse the `id` returned by `health`/);
@@ -46,6 +47,7 @@ test("instructions markdown includes plugin commands and MCP tools", () => {
   assert.match(markdown, /### get_tree/);
   assert.match(markdown, /### delete_instance/);
   assert.match(markdown, /### insert_model/);
+  assert.match(markdown, /Treat `run_code` as privileged arbitrary Luau execution/);
   assert.match(markdown, /mcp\.jsonl/);
   assert.match(markdown, /reasonCode/);
   assert.match(markdown, /Game\.project\.json/);

@@ -18,6 +18,7 @@ import type {
   ErrorTrackerLike,
   McpAuditLogLike,
   McpShieldState,
+  PendingStudioWrite,
   ProjectCatalogIssue,
   ProjectSelection,
   RateLimiterLike,
@@ -33,6 +34,7 @@ const http = require("node:http");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { once } = require("node:events");
+const { performance } = require("node:perf_hooks");
 const {
   loadWorkspaceProjectCatalog,
   moveOrphanScriptMetaForFile,
@@ -40,13 +42,21 @@ const {
   readLocalProjectStateAsync,
   readWorkspaceConfig,
   resolveProjectSelectionForPlace,
-  writeStudioProjectState
+  writeStudioProjectState,
+  writeStudioProjectStateAsync
 } = require("./project");
 const { ErrorTracker } = require("./lib/error-tracker");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { McpAuditLog } = require("./lib/mcp-audit-log");
 const { RateLimiter } = require("./lib/rate-limiter");
+const { PerfTracker } = require("./lib/perf-tracker");
+const { hashSnapshot, normalizeAndHashSnapshot } = require("./lib/snapshot-hash");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
+const { DoctorService } = require("./services/doctor-service");
+const { SessionRegistry } = require("./services/session-registry");
+const { StudioSnapshotWriter } = require("./services/studio-snapshot-writer");
+const { SyncCoordinator } = require("./services/sync-coordinator");
+const { WorkspaceWatcher } = require("./services/workspace-watcher");
 const { handleConnectionRoutes } = require("./routes/connection");
 const { handleDiagnosticsRoutes } = require("./routes/diagnostics");
 const { handleMcpRoutes } = require("./routes/mcp");
@@ -86,24 +96,6 @@ const {
 const { shouldIgnoreProjectDiscoveryPath } = require("./project-discovery");
 
 // OPT-001/002: Simplified hash — direct JSON.stringify with sorted keys
-function hashSnapshot(snapshot) {
-  const json = JSON.stringify(snapshot, (_, value) => {
-    if (Array.isArray(value)) {
-      return value;
-    }
-    if (value && typeof value === "object") {
-      return Object.keys(value)
-        .sort()
-        .reduce((accumulator, key) => {
-          accumulator[key] = value[key];
-          return accumulator;
-        }, {});
-    }
-    return value;
-  });
-  return crypto.createHash("sha1").update(json).digest("hex");
-}
-
 function createDeferred(): CommandDeferred {
   let resolve: (value?: unknown) => void = () => {};
   let reject: (reason?: unknown) => void = () => {};
@@ -130,6 +122,7 @@ function logSync(event, details: Record<string, unknown> = {}) {
 const SCRIPT_PATCH_DEBOUNCE_MS = 75;
 const SCRIPT_PATCH_BURST_LIMIT = 25;
 const PROJECT_TREE_DEBOUNCE_MS = 250;
+const WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS = 50;
 const COMMAND_RESULT_TIMEOUT_MS = 120000;
 const SYNC_COMMAND_TIMEOUT_MS = 30000;
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
@@ -328,7 +321,7 @@ class PluginRobloxApp {
   sessions: Map<string, RuntimeSession>;
   connectionOffer: ConnectionOfferRuntime | null;
   fileWatchers: FSWatcher[];
-  pendingStudioWrites: Map<string, NodeJS.Timeout>;
+  pendingStudioWrites: Map<string, PendingStudioWrite>;
   lastWorkspaceRefresh: string | null;
   lastDiskWriteTime: number | null;
   lastProjectIssueKeys: Set<string>;
@@ -341,6 +334,12 @@ class PluginRobloxApp {
   recentUnauthorizedHttpRequests: Map<string, number>;
   rateLimiter: RateLimiterLike;
   shuttingDown: boolean;
+  perfTracker: any;
+  doctorService: any;
+  sessionRegistry: any;
+  studioSnapshotWriter: any;
+  syncCoordinator: any;
+  workspaceWatcher: any;
 
   constructor(options: AppOptions) {
     this.workspaceRoot = path.resolve(options.workspaceRoot || process.cwd());
@@ -370,7 +369,7 @@ class PluginRobloxApp {
     this.sessions = new Map<string, RuntimeSession>();
     this.connectionOffer = null;
     this.fileWatchers = [];
-    this.pendingStudioWrites = new Map<string, NodeJS.Timeout>();
+    this.pendingStudioWrites = new Map<string, PendingStudioWrite>();
     this.lastWorkspaceRefresh = null;
     this.lastDiskWriteTime = null;
     this.lastProjectIssueKeys = new Set();
@@ -390,6 +389,21 @@ class PluginRobloxApp {
     this.recentUnauthorizedHttpRequests = new Map<string, number>();
     this.rateLimiter = new RateLimiter({ maxRequests: 120, windowMs: 1000 });
     this.shuttingDown = false;
+    this.perfTracker = new PerfTracker();
+    this.doctorService = new DoctorService(this);
+    this.sessionRegistry = new SessionRegistry(this);
+    this.studioSnapshotWriter = new StudioSnapshotWriter({
+      app: this,
+      logSync,
+      initialStudioSyncReason: INITIAL_STUDIO_SYNC_REASON
+    });
+    this.pendingStudioWrites = this.studioSnapshotWriter.pendingWrites;
+    this.syncCoordinator = new SyncCoordinator(this);
+    this.workspaceWatcher = new WorkspaceWatcher({
+      app: this,
+      logSync,
+      eventDebounceMs: WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS
+    });
   }
 
   createSessionToken() {
@@ -573,26 +587,21 @@ class PluginRobloxApp {
 
     // Stop accepting file-system events
     for (const watcher of this.fileWatchers) {
-      watcher.close();
+      try {
+        watcher.close();
+      } catch (error) {
+        this.recordError({
+          component: "daemon",
+          severity: "warning",
+          code: "WATCHER-CLOSE",
+          message: error.message,
+          stack: error.stack
+        });
+      }
     }
     this.fileWatchers = [];
 
-    // Wait for pending disk writes to finish (max 5s)
-    if (this.pendingStudioWrites.size > 0) {
-      await Promise.race([
-        new Promise<void>((resolve) => {
-          const check = () => {
-            if (this.pendingStudioWrites.size === 0) {
-              resolve();
-            } else {
-              setTimeout(check, 100);
-            }
-          };
-          check();
-        }),
-        new Promise<void>((resolve) => setTimeout(resolve, 5000))
-      ]);
-    }
+    await this.drainPendingStudioWrites(5000);
 
     // Drain in-flight commands and resolve pending responses
     for (const session of this.sessions.values()) {
@@ -613,6 +622,45 @@ class PluginRobloxApp {
       this.httpServer.close();
       await once(this.httpServer, "close");
       this.httpServer = null;
+    }
+  }
+
+  recordPerformance(name, durationMs) {
+    return this.perfTracker.record(name, durationMs);
+  }
+
+  performanceSummary() {
+    return this.perfTracker.summary();
+  }
+
+  performanceReport() {
+    return this.perfTracker.report();
+  }
+
+  normalizeAndHashSnapshotWithPerf(snapshot) {
+    const startedAt = performance.now();
+    try {
+      return normalizeAndHashSnapshot(snapshot);
+    } finally {
+      this.recordPerformance("snapshot.hash.duration", performance.now() - startedAt);
+    }
+  }
+
+  readLocalProjectStateWithPerf(project, options = {}) {
+    const startedAt = performance.now();
+    try {
+      return readLocalProjectState(project, options);
+    } finally {
+      this.recordPerformance("project.read.duration", performance.now() - startedAt);
+    }
+  }
+
+  async readLocalProjectStateAsyncWithPerf(project, options = {}) {
+    const startedAt = performance.now();
+    try {
+      return await readLocalProjectStateAsync(project, options);
+    } finally {
+      this.recordPerformance("project.read.duration", performance.now() - startedAt);
     }
   }
 
@@ -721,6 +769,12 @@ class PluginRobloxApp {
     if (pluginVersion || pluginProtocolVersion !== null) {
       session.lastPluginVersionSeenAt = new Date().toISOString();
     }
+    if (Object.prototype.hasOwnProperty.call(metadata, "privilegedActionConfirmationEnabled")) {
+      session.privilegedActionConfirmationEnabled = coerceBoolean(
+        (metadata as Record<string, unknown>).privilegedActionConfirmationEnabled,
+        session.privilegedActionConfirmationEnabled ?? null
+      );
+    }
   }
 
   sessionVersionStatus(session) {
@@ -813,7 +867,12 @@ class PluginRobloxApp {
     };
   }
 
-  destructiveActionPolicy(session, action = "destructive action") {
+  protectedStudioActionPolicy(session, action = "protected action", kind = "privileged") {
+    const actionNoun = kind === "destructive" ? "destructive action" : "privileged action";
+    const changeNoun = kind === "destructive" ? "destructive changes" : "privileged actions";
+    const allowedMessage = kind === "destructive"
+      ? "Destructive actions are allowed."
+      : "Privileged actions are allowed.";
     if (!session) {
       return {
         allowed: false,
@@ -849,12 +908,12 @@ class PluginRobloxApp {
       };
     }
     if (session.destructiveConfirmationPending === true) {
-      const actionType = session.destructiveConfirmationType || "destructive action";
+      const actionType = session.destructiveConfirmationType || actionNoun;
       return {
         allowed: false,
         blocked: true,
         reasonCode: "DESTRUCTIVE_CONFIRMATION_PENDING",
-        message: `${action} blocked: Roblox Studio is already waiting for confirmation for ${actionType}. Approve or decline it in Studio before sending another destructive action.`
+        message: `${action} blocked: Roblox Studio is already waiting for confirmation for ${actionType}. Approve or decline it in Studio before sending another ${actionNoun}.`
       };
     }
     const contact = this.studioContactStatus(session);
@@ -863,7 +922,7 @@ class PluginRobloxApp {
         allowed: false,
         blocked: true,
         reasonCode: "STUDIO_CONTACT_CRITICAL",
-        message: `${action} blocked: ${contact.message} Wait for Roblox Studio to reconnect before applying destructive changes.`
+        message: `${action} blocked: ${contact.message} Wait for Roblox Studio to reconnect before applying ${changeNoun}.`
       };
     }
     if (contact.state === "stale") {
@@ -871,15 +930,23 @@ class PluginRobloxApp {
         allowed: false,
         blocked: true,
         reasonCode: "STUDIO_CONTACT_STALE",
-        message: `${action} blocked: ${contact.message} Wait for a fresh Studio poll before applying destructive changes.`
+        message: `${action} blocked: ${contact.message} Wait for a fresh Studio poll before applying ${changeNoun}.`
       };
     }
     return {
       allowed: true,
       blocked: false,
       reasonCode: null,
-      message: "Destructive actions are allowed."
+      message: allowedMessage
     };
+  }
+
+  destructiveActionPolicy(session, action = "destructive action") {
+    return this.protectedStudioActionPolicy(session, action, "destructive");
+  }
+
+  privilegedActionPolicy(session, action = "privileged action") {
+    return this.protectedStudioActionPolicy(session, action, "privileged");
   }
 
   syncBlockedReason(session) {
@@ -1315,6 +1382,10 @@ class PluginRobloxApp {
     session.requirePluginVersion = options.requirePluginVersion === true;
     session.pluginVersion = normalizeVersion(options.pluginVersion);
     session.pluginProtocolVersion = normalizeProtocolVersion(options.pluginProtocolVersion);
+    session.privilegedActionConfirmationEnabled = coerceBoolean(
+      options.privilegedActionConfirmationEnabled,
+      null
+    );
     session.lastPluginVersionSeenAt = session.pluginVersion || session.pluginProtocolVersion !== null
       ? new Date().toISOString()
       : null;
@@ -1328,53 +1399,113 @@ class PluginRobloxApp {
   }
 
   startWatchers() {
-    // OPT-009: More aggressive filtering to reduce CPU overhead from fs.watch
-    let configRefreshTimer = null;
-    let configRefreshTarget = null;
-    const watcher = fs.watch(this.workspaceRoot, { recursive: true }, (eventType, fileName) => {
+    return this.workspaceWatcher.start();
+
+    let configRefreshTimer: NodeJS.Timeout | null = null;
+    let configRefreshTarget: string | null = null;
+    let eventFlushTimer: NodeJS.Timeout | null = null;
+    const pendingEvents = new Map<string, { eventType: string; normalized: string }>();
+
+    const scheduleConfigRefresh = (normalized: string) => {
+      if (normalized.endsWith(".project.json")) {
+        configRefreshTarget = normalized;
+      }
+      if (configRefreshTimer) {
+        clearTimeout(configRefreshTimer);
+      }
+      configRefreshTimer = setTimeout(() => {
+        if (this.shuttingDown) {
+          return;
+        }
+        const refreshTarget = configRefreshTarget;
+        configRefreshTimer = null;
+        configRefreshTarget = null;
+        this.refreshWorkspace();
+        if (refreshTarget) {
+          this.handleProjectDefinitionChanged(refreshTarget);
+        }
+      }, 200);
+      if (typeof configRefreshTimer.unref === "function") {
+        configRefreshTimer.unref();
+      }
+    };
+
+    const isRelevantWorkspaceFile = (normalized: string) => (
+      normalized.endsWith(".lua")
+      || normalized.endsWith(".luau")
+      || normalized.endsWith(".meta.json")
+      || normalized.endsWith(".model.json")
+      || normalized.endsWith(".rbxm")
+      || normalized.endsWith(".rbxmx")
+      || normalized.endsWith(".project.json")
+    );
+
+    const flushWorkspaceEvents = () => {
+      eventFlushTimer = null;
+      if (this.shuttingDown) {
+        pendingEvents.clear();
+        return;
+      }
+      const events = Array.from(pendingEvents.values());
+      pendingEvents.clear();
+
+      for (const event of events) {
+        const normalized = event.normalized;
+        if (normalized === "argon.toml" || normalized === ".pluginroblox.json" || normalized.endsWith(".project.json")) {
+          scheduleConfigRefresh(normalized);
+        }
+
+        if (isRelevantWorkspaceFile(normalized)) {
+          this.onWorkspaceFileChanged(path.join(this.workspaceRoot, normalized), event.eventType);
+        }
+      }
+    };
+
+    const queueWorkspaceEvent = (eventType, fileName) => {
       if (!fileName) {
         return;
       }
-      const normalized = String(fileName).replace(/\\/g, "/");
-
-      // Skip known non-relevant directories early
-      if (shouldIgnoreProjectDiscoveryPath(normalized)) {
+      const normalized = String(fileName).replace(/\\/g, "/").replace(/^\.\//, "");
+      if (!normalized || shouldIgnoreProjectDiscoveryPath(normalized)) {
         return;
       }
 
-      // Debounce config refreshes to avoid repeated workspace reloads
-      if (normalized === "argon.toml" || normalized === ".pluginroblox.json" || normalized.endsWith(".project.json")) {
-        if (normalized.endsWith(".project.json")) {
-          configRefreshTarget = normalized;
-        }
-        if (configRefreshTimer) {
-          clearTimeout(configRefreshTimer);
-        }
-        configRefreshTimer = setTimeout(() => {
-          const refreshTarget = configRefreshTarget;
-          configRefreshTimer = null;
-          configRefreshTarget = null;
-          this.refreshWorkspace();
-          if (refreshTarget) {
-            this.handleProjectDefinitionChanged(refreshTarget);
-          }
-        }, 200);
+      pendingEvents.set(normalized, {
+        eventType: String(eventType || "change"),
+        normalized
+      });
+      if (eventFlushTimer) {
+        clearTimeout(eventFlushTimer);
       }
+      eventFlushTimer = setTimeout(flushWorkspaceEvents, WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS);
+      if (typeof eventFlushTimer.unref === "function") {
+        eventFlushTimer.unref();
+      }
+    };
 
-      // Only forward relevant file types to the change handler
-      if (
-        normalized.endsWith(".lua")
-        || normalized.endsWith(".luau")
-        || normalized.endsWith(".meta.json")
-        || normalized.endsWith(".model.json")
-        || normalized.endsWith(".rbxm")
-        || normalized.endsWith(".rbxmx")
-        || normalized.endsWith(".project.json")
-      ) {
-        this.onWorkspaceFileChanged(path.join(this.workspaceRoot, fileName), eventType);
-      }
-    });
-    this.fileWatchers.push(watcher);
+    try {
+      const watcher = fs.watch(this.workspaceRoot, { recursive: true }, queueWorkspaceEvent);
+      watcher.on("error", (error) => {
+        this.recordError({
+          component: "daemon",
+          severity: "warning",
+          code: "WATCHER-ERROR",
+          message: error.message,
+          context: { workspaceRoot: this.workspaceRoot },
+          stack: error.stack
+        });
+      });
+      this.fileWatchers.push(watcher);
+    } catch (error) {
+      this.recordError({
+        component: "daemon",
+        severity: "warning",
+        code: "WATCHER-START",
+        message: error.message,
+        context: { workspaceRoot: this.workspaceRoot },
+        stack: error.stack
+      });
+    }
   }
 
   handleProjectDefinitionChanged(changedProjectId) {
@@ -1449,7 +1580,7 @@ class PluginRobloxApp {
       });
       // OPT-006: Use async file reading to avoid blocking the event loop
       try {
-        const projectState = await readLocalProjectStateAsync(project, this.projectReadOptions(session));
+        const projectState = await this.readLocalProjectStateAsyncWithPerf(project, this.projectReadOptions(session));
         this.enqueueCommand(session.id, "apply_project_tree", {
           project: projectState,
           reason
@@ -1460,7 +1591,7 @@ class PluginRobloxApp {
           error: error.message
         });
         this.enqueueCommand(session.id, "apply_project_tree", {
-          project: readLocalProjectState(project, this.projectReadOptions(session)),
+          project: this.readLocalProjectStateWithPerf(project, this.projectReadOptions(session)),
           reason
         });
       }
@@ -1907,6 +2038,10 @@ class PluginRobloxApp {
       requirePluginVersion: options.requirePluginVersion === true,
       pluginVersion: normalizeVersion(options.pluginVersion),
       pluginProtocolVersion: normalizeProtocolVersion(options.pluginProtocolVersion),
+      privilegedActionConfirmationEnabled: coerceBoolean(
+        options.privilegedActionConfirmationEnabled,
+        null
+      ),
       lastPluginVersionSeenAt: null,
       lastCommandError: null,
       destructiveConfirmationPending: false,
@@ -1978,6 +2113,7 @@ class PluginRobloxApp {
     truthSource = "pc",
     pluginVersion = null,
     pluginProtocolVersion = null,
+    privilegedActionConfirmationEnabled = null,
     requirePluginVersion = false
   }) {
     if (offerId) {
@@ -2007,6 +2143,7 @@ class PluginRobloxApp {
         studioInstanceId,
         pluginVersion,
         pluginProtocolVersion,
+        privilegedActionConfirmationEnabled,
         requirePluginVersion
       });
     } catch (error) {
@@ -2046,7 +2183,7 @@ class PluginRobloxApp {
       });
     } else if (normalizedTruthSource === "pc") {
       this.enqueueCommand(session.id, "apply_project_tree", {
-        project: readLocalProjectState(project, this.projectReadOptions(session)),
+        project: this.readLocalProjectStateWithPerf(project, this.projectReadOptions(session)),
         reason: INITIAL_PC_SYNC_REASON
       });
     }
@@ -2174,16 +2311,10 @@ class PluginRobloxApp {
     }
   }
 
-  cacheStudioSnapshot(session, snapshot, reason = "command_verified") {
-    const normalized = {
-      ...snapshot,
-      mounts: (snapshot.mounts || []).map((mount) => ({
-        ...mount,
-        children: mount.children || []
-      }))
-    };
-    const snapshotHash = hashSnapshot(normalized);
-    session.lastStudioSnapshot = normalized;
+  cacheStudioSnapshot(session, snapshot, reason = "command_verified", snapshotInfo = null) {
+    const effectiveSnapshotInfo = snapshotInfo || this.normalizeAndHashSnapshotWithPerf(snapshot);
+    const snapshotHash = effectiveSnapshotInfo.hash;
+    session.lastStudioSnapshot = effectiveSnapshotInfo.normalized;
     session.lastStudioHash = snapshotHash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_cached", {
@@ -2255,10 +2386,11 @@ class PluginRobloxApp {
     const command: SyncCommand = {
       id: crypto.randomUUID(),
       type,
-      payload
+      payload,
+      queuedAt: Date.now()
     };
     if (type === "apply_project_tree" && payload?.project) {
-      command.expectedHash = hashSnapshot(payload.project);
+      command.expectedHash = this.normalizeAndHashSnapshotWithPerf(payload.project).hash;
       this.ensureSessionSyncState(session).lastExpectedHash = command.expectedHash;
     }
     logSync("enqueue_command", {
@@ -2304,7 +2436,11 @@ class PluginRobloxApp {
       throw new Error("Studio session not found.");
     }
     const commands = session.pendingCommands.splice(0, session.pendingCommands.length);
+    const nowMs = Date.now();
     for (const command of commands) {
+      if (Number.isFinite(command.queuedAt)) {
+        this.recordPerformance("command.queue_age", nowMs - command.queuedAt);
+      }
       session.inFlightCommands.set(command.id, command);
     }
     if (commands.length > 0) {
@@ -2418,15 +2554,9 @@ class PluginRobloxApp {
     if (!projectSnapshot) {
       return;
     }
-    const normalized = {
-      ...projectSnapshot,
-      mounts: (projectSnapshot.mounts || []).map((mount) => ({
-        ...mount,
-        children: mount.children || []
-      }))
-    };
-    session.lastStudioSnapshot = normalized;
-    session.lastStudioHash = hashSnapshot(normalized);
+    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(projectSnapshot);
+    session.lastStudioSnapshot = snapshotInfo.normalized;
+    session.lastStudioHash = snapshotInfo.hash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_project_apply", {
       sessionId: session.id,
@@ -2446,15 +2576,9 @@ class PluginRobloxApp {
     }
 
     node.source = String(source ?? "");
-    const normalized = {
-      ...session.lastStudioSnapshot,
-      mounts: (session.lastStudioSnapshot.mounts || []).map((mount) => ({
-        ...mount,
-        children: mount.children || []
-      }))
-    };
-    session.lastStudioSnapshot = normalized;
-    session.lastStudioHash = hashSnapshot(normalized);
+    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(session.lastStudioSnapshot);
+    session.lastStudioSnapshot = snapshotInfo.normalized;
+    session.lastStudioHash = snapshotInfo.hash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_source_patch", {
       sessionId: session.id,
@@ -2518,69 +2642,105 @@ class PluginRobloxApp {
     deferred.reject(new Error(error));
   }
 
-  updateStudioSnapshot(sessionId, snapshot, reason = "auto") {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      throw new Error("Studio session not found.");
+  scheduleStudioSnapshotWrite(session: RuntimeSession, reason, writeNow) {
+    return this.studioSnapshotWriter.schedule(session, reason, writeNow);
+
+    const sessionId = session.id;
+    const delayMs = writeNow ? 0 : 300;
+    const existing = this.pendingStudioWrites.get(sessionId);
+
+    if (existing) {
+      if (existing.timer) {
+        clearTimeout(existing.timer);
+      }
+      existing.reason = reason;
+      existing.snapshotHash = session.lastStudioHash || null;
+      existing.updatedAt = Date.now();
+      existing.timer = setTimeout(() => {
+        void this.flushStudioWrite(sessionId);
+      }, delayMs);
+      if (typeof existing.timer.unref === "function") {
+        existing.timer.unref();
+      }
+      logSync("disk_write_coalesced", {
+        sessionId,
+        reason,
+        snapshotHash: existing.snapshotHash,
+        delayMs
+      });
+      return existing.promise;
     }
-    if (this.isSessionVersionBlocked(session)) {
-      const reason = this.syncBlockedReason(session);
-      const error = new Error(`Studio snapshot write blocked: ${reason}`) as Error & { statusCode?: number; code?: string };
-      error.statusCode = 409;
-      error.code = "VERSION-BLOCKED";
-      throw error;
-    }
-    const nextHash = hashSnapshot({
-      ...snapshot,
-      mounts: (snapshot.mounts || []).map((mount) => ({
-        ...mount,
-        children: mount.children || []
-      }))
-    });
-    const prevHash = session.lastStudioHash;
-    const hashChanged = nextHash !== prevHash;
-    logSync("studio_snapshot_received", {
+
+    let resolveWrite: () => void = () => {};
+    const job: PendingStudioWrite = {
       sessionId,
       reason,
-      snapshotSize: JSON.stringify(snapshot).length,
-      hash: nextHash,
-      hashChanged,
-      previousHash: prevHash
+      snapshotHash: session.lastStudioHash || null,
+      queuedAt: Date.now(),
+      updatedAt: Date.now(),
+      timer: null,
+      running: false,
+      promise: new Promise<void>((resolve) => {
+        resolveWrite = resolve;
+      }),
+      resolve: resolveWrite
+    };
+
+    job.timer = setTimeout(() => {
+      void this.flushStudioWrite(sessionId);
+    }, delayMs);
+    if (typeof job.timer.unref === "function") {
+      job.timer.unref();
+    }
+    this.pendingStudioWrites.set(sessionId, job);
+    logSync("disk_write_scheduled", {
+      sessionId,
+      reason,
+      snapshotHash: job.snapshotHash,
+      delayMs
     });
-    this.cacheStudioSnapshot(session, snapshot, reason);
-    this.ensureSessionSyncState(session).lastObservedHash = nextHash;
+    return job.promise;
+  }
 
-    if (!hashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
-      logSync("disk_write_skipped", {
-        sessionId,
-        reason: "snapshot_unchanged",
-        snapshotHash: session.lastStudioHash
-      });
-      return;
+  async flushStudioWrite(sessionId) {
+    return this.studioSnapshotWriter.flush(sessionId);
+
+    const job = this.pendingStudioWrites.get(sessionId);
+    if (!job) {
+      return Promise.resolve();
+    }
+    if (job.running) {
+      return job.promise;
+    }
+    job.running = true;
+    if (job.timer) {
+      clearTimeout(job.timer);
+      job.timer = null;
     }
 
-    if (this.pendingStudioWrites.has(sessionId)) {
-      clearTimeout(this.pendingStudioWrites.get(sessionId));
-    }
-
-    const writeNow = reason === "manual" || reason === INITIAL_STUDIO_SYNC_REASON;
-    const timer = setTimeout(() => {
-      const project = this.getProjectById(session.projectId);
-      if (!project || !session.lastStudioSnapshot) {
+    const session = this.sessions.get(sessionId);
+    const reason = job.reason;
+    try {
+      const project = session ? this.getProjectById(session.projectId) : null;
+      if (!session || !project || !session.lastStudioSnapshot) {
         logSync("disk_write_skipped", {
           sessionId,
-          reason: project ? "no_snapshot" : "no_project"
+          reason: !session ? "no_session" : (project ? "no_snapshot" : "no_project"),
+          requestedReason: reason
         });
-        return;
+        return job.promise;
       }
+
+      const startedAt = Date.now();
       logSync("disk_write_start", {
         sessionId,
         reason,
         snapshotHash: session.lastStudioHash
       });
       this.lastDiskWriteTime = Date.now();
+      let changes = [];
       try {
-        writeStudioProjectState(project, session.lastStudioSnapshot, {
+        changes = await writeStudioProjectStateAsync(project, session.lastStudioSnapshot, {
           onFileChange: (change) => {
             this.recordActivity(change, {
               direction: "studio_to_pc",
@@ -2591,7 +2751,6 @@ class PluginRobloxApp {
           }
         });
       } catch (error) {
-        this.pendingStudioWrites.delete(sessionId);
         this.markSyncDegraded(session, `Failed to write Studio snapshot to disk: ${error.message}`, {
           code: "DISK-WRITE",
           observedHash: session.lastStudioHash || null
@@ -2606,9 +2765,9 @@ class PluginRobloxApp {
           context: { reason },
           stack: error.stack
         });
-        return;
+        return job.promise;
       }
-      this.pendingStudioWrites.delete(sessionId);
+
       session.lastAppliedAt = new Date().toISOString();
       if (reason === "manual" || reason === INITIAL_STUDIO_SYNC_REASON) {
         this.markSyncVerified(session, session.lastStudioHash);
@@ -2618,10 +2777,76 @@ class PluginRobloxApp {
       }
       logSync("disk_write_complete", {
         sessionId,
-        timestamp: session.lastAppliedAt
+        timestamp: session.lastAppliedAt,
+        durationMs: Date.now() - startedAt,
+        changedFiles: changes.length
       });
-    }, writeNow ? 0 : 300);
-    this.pendingStudioWrites.set(sessionId, timer);
+    } finally {
+      if (this.pendingStudioWrites.get(sessionId) === job) {
+        this.pendingStudioWrites.delete(sessionId);
+      }
+      job.resolve();
+    }
+
+    return job.promise;
+  }
+
+  async drainPendingStudioWrites(timeoutMs = 5000) {
+    return this.studioSnapshotWriter.drain(timeoutMs);
+
+    const jobs = Array.from(this.pendingStudioWrites.values());
+    if (jobs.length === 0) {
+      return;
+    }
+
+    for (const job of jobs) {
+      void this.flushStudioWrite(job.sessionId);
+    }
+
+    await Promise.race([
+      Promise.all(jobs.map((job) => job.promise)),
+      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+    ]);
+  }
+
+  updateStudioSnapshot(sessionId, snapshot, reason = "auto", options: { requestByteLength?: number | null } = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error("Studio session not found.");
+    }
+    if (this.isSessionVersionBlocked(session)) {
+      const reason = this.syncBlockedReason(session);
+      const error = new Error(`Studio snapshot write blocked: ${reason}`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 409;
+      error.code = "VERSION-BLOCKED";
+      throw error;
+    }
+    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(snapshot);
+    const nextHash = snapshotInfo.hash;
+    const prevHash = session.lastStudioHash;
+    const hashChanged = nextHash !== prevHash;
+    logSync("studio_snapshot_received", {
+      sessionId,
+      reason,
+      snapshotSize: options.requestByteLength || snapshotInfo.byteLength,
+      hash: nextHash,
+      hashChanged,
+      previousHash: prevHash
+    });
+    this.cacheStudioSnapshot(session, snapshot, reason, snapshotInfo);
+    this.ensureSessionSyncState(session).lastObservedHash = nextHash;
+
+    if (!hashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
+      logSync("disk_write_skipped", {
+        sessionId,
+        reason: "snapshot_unchanged",
+        snapshotHash: session.lastStudioHash
+      });
+      return;
+    }
+
+    const writeNow = reason === "manual" || reason === INITIAL_STUDIO_SYNC_REASON;
+    this.scheduleStudioSnapshotWrite(session, reason, writeNow);
   }
 
   async requestStudioTree(sessionId) {
@@ -2652,13 +2877,37 @@ class PluginRobloxApp {
   }
 
   async runStudioCode(sessionId, code) {
-    const result = await this.enqueueCommand(sessionId, "run_code", { code }, true);
-    if (!result.ok) {
-      throw new Error(result.error || "Luau execution failed.");
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error("Studio session not found.");
     }
-    const sanitized = { ...result };
+    const policy = this.privilegedActionPolicy(session, "run_code");
+    if (!policy.allowed) {
+      return {
+        ok: false,
+        error: policy.message,
+        blocked: true,
+        declined: false,
+        confirmed: false,
+        reasonCode: policy.reasonCode,
+        sessionId: session.id
+      };
+    }
+    const result = await this.enqueueCommand(sessionId, "run_code", { code }, true);
+    const normalized = this.normalizePrivilegedCommandResult(session, result);
+    if (!normalized.ok && (normalized.blocked || normalized.declined)) {
+      return normalized;
+    }
+    if (!normalized.ok) {
+      throw new Error(normalized.error || "Luau execution failed.");
+    }
+    const sanitized = { ...normalized };
     delete sanitized.error;
     return sanitized;
+  }
+
+  normalizePrivilegedCommandResult(session, result: DestructiveCommandResult = {}) {
+    return this.normalizeDestructiveCommandResult(session, result);
   }
 
   normalizeDestructiveCommandResult(session, result: DestructiveCommandResult = {}) {
@@ -2747,6 +2996,7 @@ class PluginRobloxApp {
     const syncBlockedReason = this.syncBlockedReason(session);
     const contact = this.studioContactStatus(session);
     const destructive = this.destructiveActionPolicy(session);
+    const privileged = this.privilegedActionPolicy(session);
     const destructiveSinceAtMs = parseTimestampMs(session.destructiveConfirmationSinceAt);
     const destructiveConfirmationAgeMs = session.destructiveConfirmationPending && destructiveSinceAtMs !== null
       ? Math.max(0, Date.now() - destructiveSinceAtMs)
@@ -2788,6 +3038,10 @@ class PluginRobloxApp {
       destructiveActionsAllowed: destructive.allowed,
       destructiveActionReasonCode: destructive.reasonCode,
       destructiveActionMessage: destructive.allowed ? null : destructive.message,
+      privilegedActionsAllowed: privileged.allowed,
+      privilegedActionReasonCode: privileged.reasonCode,
+      privilegedActionMessage: privileged.allowed ? null : privileged.message,
+      privilegedActionConfirmationEnabled: session.privilegedActionConfirmationEnabled ?? null,
       destructiveConfirmationPending: session.destructiveConfirmationPending === true,
       destructiveConfirmationType: session.destructiveConfirmationType || null,
       destructiveConfirmationSinceAt: session.destructiveConfirmationSinceAt || null,
@@ -2796,6 +3050,8 @@ class PluginRobloxApp {
   }
 
   doctorReport() {
+    return this.doctorService.report();
+
     const sessions = Array.from(this.sessions.values()).map((session) => this.sessionSummary(session));
     const versions = this.versionPayload();
     const mcp = mcpShieldSummary(this);
@@ -3060,7 +3316,8 @@ class PluginRobloxApp {
 
 module.exports = {
   PluginRobloxApp,
-  hashSnapshot
+  hashSnapshot,
+  normalizeAndHashSnapshot
 };
 
 

@@ -46,6 +46,7 @@ interface ConnectionApp {
   getProjectById(projectId: string | null): ConnectionProject | null;
   resolveProject(placeId: number, preferredProjectId?: string | null): ConnectionProject | null;
   calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource): string[];
+  readLocalProjectStateAsyncWithPerf?(project: ConnectionProject): Promise<StudioSnapshot>;
 }
 
 async function handleConnectionRoutes(
@@ -105,7 +106,9 @@ async function handleConnectionRoutes(
       jsonResponse(response, 404, { ok: false, error: "Project not found" });
       return true;
     }
-    const pcSnapshot = await readLocalProjectStateAsync(project) as StudioSnapshot;
+    const pcSnapshot = app.readLocalProjectStateAsyncWithPerf
+      ? await app.readLocalProjectStateAsyncWithPerf(project)
+      : await readLocalProjectStateAsync(project) as StudioSnapshot;
     const studioSnapshot = body.studioSnapshot;
     const changes = app.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
     jsonResponse(response, 200, {

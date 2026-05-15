@@ -1,6 +1,6 @@
 {
-  "extensionVersion": "1.1.1",
-  "daemonVersion": "1.1.1",
-  "pluginVersion": "1.1.1",
-  "protocolVersion": 1
+  "extensionVersion": "1.1.2",
+  "daemonVersion": "1.1.2",
+  "pluginVersion": "1.1.2",
+  "protocolVersion": 2
 }
