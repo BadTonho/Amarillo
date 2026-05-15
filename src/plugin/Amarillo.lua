@@ -65,6 +65,7 @@ local state = {
 	pendingScriptPatches = {},
 	openDocumentCache = {},
 	pendingDestructiveCommand = nil,
+	pendingDestructiveSinceAt = nil,
 	confirmDestructiveActions = true,
 	syncState = "ready",
 	syncMessage = nil,
@@ -92,16 +93,50 @@ local function now()
 	return os.clock()
 end
 
+local function currentIsoTime()
+	local ok, value = pcall(function()
+		return DateTime.now():ToIsoDate()
+	end)
+	if ok and value then
+		return value
+	end
+	return tostring(os.time())
+end
+
+local function addDestructiveConfirmationPayload(body)
+	body = body or {}
+	if state.pendingDestructiveCommand then
+		body.destructiveConfirmationPending = true
+		body.destructiveConfirmationType = state.pendingDestructiveCommand.type
+		body.destructiveConfirmationSinceAt = state.pendingDestructiveSinceAt
+	else
+		body.destructiveConfirmationPending = false
+		body.destructiveConfirmationType = nil
+		body.destructiveConfirmationSinceAt = nil
+	end
+	return body
+end
+
 local function addVersionPayload(body)
 	body = body or {}
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+	addDestructiveConfirmationPayload(body)
 	return body
 end
 
 local function pluginVersionQuery()
-	return "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
+	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
+	if state.pendingDestructiveCommand then
+		query = query
+			.. "&destructiveConfirmationPending=true"
+			.. "&destructiveConfirmationType=" .. HttpService:UrlEncode(tostring(state.pendingDestructiveCommand.type or ""))
+			.. "&destructiveConfirmationSinceAt=" .. HttpService:UrlEncode(tostring(state.pendingDestructiveSinceAt or ""))
+	else
+		query = query .. "&destructiveConfirmationPending=false"
+	end
+	return query
 end
 
 local function setTextIfPresent(element, text)
@@ -2113,6 +2148,7 @@ function resetSessionState(statusText)
 	state.projectSelectionMessage = nil
 	state.pendingConnectionContext = nil
 	state.pendingDestructiveCommand = nil
+	state.pendingDestructiveSinceAt = nil
 	state.lastSnapshotJson = nil
 	state.syncState = "ready"
 	state.syncMessage = nil
@@ -2456,6 +2492,7 @@ end
 
 showDestructiveConfirmation = function(command)
 	state.pendingDestructiveCommand = command
+	state.pendingDestructiveSinceAt = currentIsoTime()
 	if state.ui.propertyConfirmOverlay then
 		local content = destructiveConfirmationContent(command)
 		setTextIfPresent(state.ui.propertyConfirmTitle, content.title)
@@ -2473,6 +2510,7 @@ hideDestructiveConfirmation = function()
 		state.ui.propertyConfirmOverlay.Visible = false
 	end
 	state.pendingDestructiveCommand = nil
+	state.pendingDestructiveSinceAt = nil
 end
 
 acceptDestructiveAction = function()
@@ -2481,6 +2519,7 @@ acceptDestructiveAction = function()
 		return
 	end
 	state.pendingDestructiveCommand = nil
+	state.pendingDestructiveSinceAt = nil
 	hideDestructiveConfirmation()
 	executeDestructiveCommand(command)
 end
@@ -2491,6 +2530,7 @@ declineDestructiveAction = function()
 		return
 	end
 	state.pendingDestructiveCommand = nil
+	state.pendingDestructiveSinceAt = nil
 	hideDestructiveConfirmation()
 	postCommandResult(command.id, false, {
 		error = "Destructive action declined by user.",

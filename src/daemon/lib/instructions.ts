@@ -184,6 +184,8 @@ function buildInstructionsMarkdown(context: any = {}) {
     "- If the workspace has multiple projects, call `list_projects` and `set_active_project` before opening a new Studio connection or when you need to change the default target.",
     "- Any Studio tool that requires `sessionId` should reuse the `id` returned by `health`; if no session is listed, connect the Amarillo plugin in Studio first.",
     "- Safe default flow: `health` -> `list_projects` -> `get_tree` or `get_selection` -> inspection tools -> `pull_changes` or `run_code` -> destructive tools only when needed.",
+    "- For automated creation/load tests, prefer `run_code` so Studio can create test objects without entering the manual destructive-action confirmation flow.",
+    "- If `health.sessions[].destructiveConfirmationPending` is true, approve or decline that prompt in Roblox Studio before sending another destructive tool call.",
     "- Use `pull_changes` when the local workspace is the source of truth and you want to apply it in Studio. Use `push_changes` when Studio has changes you want to save back to disk.",
     "",
     "## MCP Shield Fallback",

@@ -129,6 +129,12 @@ export interface RuntimeSession {
   inFlightCommands: Map<string, SyncCommand>;
   fileChangeTimer: NodeJS.Timeout | null;
   filePatchTimers: Map<string, NodeJS.Timeout>;
+  filePatchBatchTimer: NodeJS.Timeout | null;
+  filePatchBatch: Map<string, {
+    project: RuntimeProject;
+    filePath: string;
+    instanceSegments: string[];
+  }>;
   lastAppliedAt: string | null;
   sync: SyncState;
   connectionState: string;
@@ -139,6 +145,9 @@ export interface RuntimeSession {
   pluginProtocolVersion: number | null;
   lastPluginVersionSeenAt: string | null;
   lastCommandError: string | null;
+  destructiveConfirmationPending: boolean;
+  destructiveConfirmationType: string | null;
+  destructiveConfirmationSinceAt: string | null;
   projectSelectionReason: string | null;
   projectSelectionMessage: string | null;
   _pollWaiter: (() => void) | null;

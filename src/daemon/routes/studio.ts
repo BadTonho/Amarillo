@@ -62,6 +62,11 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       pluginVersion: requestUrl.searchParams.get("pluginVersion"),
       pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion")
     });
+    app.updateDestructiveConfirmationState(session, {
+      destructiveConfirmationPending: requestUrl.searchParams.get("destructiveConfirmationPending"),
+      destructiveConfirmationType: requestUrl.searchParams.get("destructiveConfirmationType"),
+      destructiveConfirmationSinceAt: requestUrl.searchParams.get("destructiveConfirmationSinceAt")
+    });
     app.markStudioSessionContact(session);
 
     if (session.pendingCommands.length > 0) {
@@ -109,6 +114,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       return true;
     }
     app.updateSessionPluginVersion(session, body);
+    app.updateDestructiveConfirmationState(session, body);
     app.markStudioSessionContact(session);
     if (body.ok) {
       app.completeCommand(body.sessionId, body.commandId, body);

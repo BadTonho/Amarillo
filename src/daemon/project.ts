@@ -1090,14 +1090,41 @@ function filterSyncbackProperties(properties, options: any = {}) {
   }, {});
 }
 
+function normalizedScriptKindForNode(node) {
+  if (node.fileKind === "client" || node.className === "LocalScript") {
+    return "client";
+  }
+  if (node.fileKind === "server" || node.className === "Script") {
+    return "server";
+  }
+  return "module";
+}
+
+function isCompatibleScriptExtension(kind, ext) {
+  if (typeof ext !== "string" || !/\.(lua|luau)$/i.test(ext)) {
+    return false;
+  }
+  if (kind === "client") {
+    return /\.client\.(lua|luau)$/i.test(ext);
+  }
+  if (kind === "server") {
+    return /\.server\.(lua|luau)$/i.test(ext);
+  }
+  return /^\.(lua|luau)$/i.test(ext);
+}
+
 function scriptExtensionForNode(node) {
-  return node.ext || (
-    node.fileKind === "server"
-      ? ".server.luau"
-      : node.fileKind === "client"
-        ? ".client.luau"
-        : ".luau"
-  );
+  const kind = normalizedScriptKindForNode(node);
+  if (isCompatibleScriptExtension(kind, node.ext)) {
+    return node.ext;
+  }
+  if (kind === "client") {
+    return ".client.luau";
+  }
+  if (kind === "server") {
+    return ".server.luau";
+  }
+  return ".luau";
 }
 
 function matchesSyncbackGlob(fullPath, entryName, options: any = {}) {

@@ -445,6 +445,72 @@ test("local state roundtrip writes scripts and metadata", () => {
   );
 });
 
+test("studio snapshot writes script extensions from class and file kind", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "Scripts");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/Scripts"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "ClientMain",
+            className: "LocalScript",
+            fileKind: "client",
+            ext: ".server.luau",
+            source: "print('client')",
+            properties: {},
+            children: []
+          },
+          {
+            name: "ServerMain",
+            className: "Script",
+            fileKind: "server",
+            source: "print('server')",
+            properties: {},
+            children: []
+          },
+          {
+            name: "SharedUtil",
+            className: "ModuleScript",
+            fileKind: "module",
+            source: "return {}",
+            properties: {},
+            children: []
+          },
+          {
+            name: "LegacyClient",
+            className: "LocalScript",
+            fileKind: "client",
+            ext: ".client.lua",
+            source: "print('legacy')",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(fs.existsSync(path.join(syncRoot, "ClientMain.client.luau")), true);
+  assert.equal(fs.existsSync(path.join(syncRoot, "ClientMain.server.luau")), false);
+  assert.equal(fs.existsSync(path.join(syncRoot, "ServerMain.server.luau")), true);
+  assert.equal(fs.existsSync(path.join(syncRoot, "SharedUtil.luau")), true);
+  assert.equal(fs.existsSync(path.join(syncRoot, "LegacyClient.client.lua")), true);
+});
+
 test("reserved RBX attributes are stripped when reading local metadata", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");

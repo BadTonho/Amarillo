@@ -53,6 +53,10 @@ export interface DoctorSessionSummary {
   lastCommandError: string | null;
   requiresManualResync: boolean;
   syncBlockedReason: string | null;
+  destructiveConfirmationPending?: boolean;
+  destructiveConfirmationType?: string | null;
+  destructiveConfirmationSinceAt?: string | null;
+  destructiveConfirmationAgeMs?: number | null;
   [key: string]: unknown;
 }
 

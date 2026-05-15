@@ -1199,6 +1199,31 @@ test("existing VS Code script edits still use the fast file patch path", async (
   assert.equal(session.pendingCommands[0].payload.source, "return 42");
 });
 
+test("large VS Code script edit bursts fall back to a project tree apply", async () => {
+  const workspace = createWorkspaceWithProject();
+  const serviceRoot = path.join(workspace, "sync", "ServerScriptService");
+  for (let index = 0; index < 25; index++) {
+    fs.writeFileSync(path.join(serviceRoot, `Burst${index}.server.luau`), `return ${index}`, "utf8");
+  }
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  for (let index = 0; index < 25; index++) {
+    const scriptPath = path.join(serviceRoot, `Burst${index}.server.luau`);
+    fs.writeFileSync(scriptPath, `return ${index + 100}`, "utf8");
+    app.onWorkspaceFileChanged(scriptPath);
+  }
+  await wait(180);
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "apply_project_tree");
+  assert.equal(session.pendingCommands[0].payload.reason, "workspace_patch_burst");
+  const script = findSnapshotNodeByPath(session.pendingCommands[0].payload.project, ["ServerScriptService", "Burst24"]);
+  assert.equal(script.source, "return 124");
+});
+
 test("rejected fast file patches fall back to a full project tree apply", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -1280,6 +1305,31 @@ test("verified apply snapshot clears degraded sync state", async () => {
   assert.ok(session.sync.lastVerifiedAt);
 });
 
+test("apply project tree with a mismatched Studio snapshot marks sync degraded", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const expectedSnapshot = readLocalProjectState(project);
+  const staleSnapshot = readLocalProjectState(project);
+  staleSnapshot.mounts[0].children[0].source = "return 'stale'";
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: staleSnapshot
+  });
+
+  assert.equal(session.sync.state, "degraded");
+  assert.match(session.sync.degradedReason, /hash did not match/);
+  assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+});
+
 test("unverified fast file patch degrades but verified patch updates snapshot", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -1310,6 +1360,64 @@ test("unverified fast file patch degrades but verified patch updates snapshot", 
   assert.equal(session.sync.state, "ready");
   const script = findSnapshotNodeByPath(session.lastStudioSnapshot, ["ServerScriptService", "Hello"]);
   assert.equal(script.source, "return 11");
+});
+
+test("fast file patch with a stale Studio snapshot marks sync degraded", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 99"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  const staleSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  staleSnapshot.mounts[0].children[0].source = "return 1";
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: staleSnapshot
+  });
+
+  assert.equal(session.sync.state, "degraded");
+  assert.match(session.sync.degradedReason, /file patch source/);
+  assert.equal(session.sync.lastFailure.commandType, "apply_file_patch");
+});
+
+test("runStudioCode removes success text from the error field", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  const resultPromise = app.runStudioCode(session.id, "return 'ok'");
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    result: "ok",
+    error: "ok"
+  });
+
+  const result = await resultPromise;
+  assert.equal(result.ok, true);
+  assert.equal(result.result, "ok");
+  assert.equal(Object.prototype.hasOwnProperty.call(result, "error"), false);
+});
+
+test("healthy session summaries hide stale lastCommandError values", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  session.lastCommandError = "Another destructive action is already awaiting confirmation.";
+
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.payload.sessions[0].syncState, "ready");
+  assert.equal(health.payload.sessions[0].lastCommandError, null);
+  assert.equal(session.lastCommandError, "Another destructive action is already awaiting confirmation.");
 });
 
 test("Studio snapshot disk writes are recorded in the local activity log", async () => {
@@ -1715,6 +1823,15 @@ test("destructive session routes block on session health gates", async () => {
       reasonCode: "SYNC_DEGRADED"
     },
     {
+      name: "destructive confirmation pending",
+      mutate(session) {
+        session.destructiveConfirmationPending = true;
+        session.destructiveConfirmationType = "create_instance";
+        session.destructiveConfirmationSinceAt = new Date().toISOString();
+      },
+      reasonCode: "DESTRUCTIVE_CONFIRMATION_PENDING"
+    },
+    {
       name: "studio contact stale",
       mutate(session) {
         session.lastStudioSeenAt = new Date(Date.now() - 70000).toISOString();
@@ -1740,6 +1857,27 @@ test("destructive session routes block on session health gates", async () => {
     assert.equal(response.payload.result.blocked, true);
     assert.equal(response.payload.result.reasonCode, testCase.reasonCode);
   }
+});
+
+test("destructive confirmation pending is surfaced in health", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+  app.updateDestructiveConfirmationState(session, {
+    destructiveConfirmationPending: true,
+    destructiveConfirmationType: "delete_instance",
+    destructiveConfirmationSinceAt: new Date(Date.now() - 5000).toISOString()
+  });
+
+  const health = await invoke(app, "GET", "/health");
+  const summary = health.payload.sessions[0];
+  assert.equal(summary.destructiveConfirmationPending, true);
+  assert.equal(summary.destructiveConfirmationType, "delete_instance");
+  assert.equal(summary.destructiveActionReasonCode, "DESTRUCTIVE_CONFIRMATION_PENDING");
+  assert.equal(summary.destructiveActionsAllowed, false);
+  assert.ok(summary.destructiveConfirmationAgeMs >= 0);
 });
 
 test("blocked destructive MCP calls are recorded in the MCP audit log and surfaced by Doctor", async () => {

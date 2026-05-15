@@ -128,6 +128,7 @@ function logSync(event, details: Record<string, unknown> = {}) {
 }
 
 const SCRIPT_PATCH_DEBOUNCE_MS = 75;
+const SCRIPT_PATCH_BURST_LIMIT = 25;
 const PROJECT_TREE_DEBOUNCE_MS = 250;
 const COMMAND_RESULT_TIMEOUT_MS = 120000;
 const SYNC_COMMAND_TIMEOUT_MS = 30000;
@@ -159,6 +160,13 @@ function isSyncCommandType(type) {
 
 function isDestructiveActionType(type) {
   return DESTRUCTIVE_ACTION_TYPES.has(type);
+}
+
+function coerceQueryBoolean(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  return ["true", "1", "yes", "on"].includes(value.trim().toLowerCase());
 }
 
 function normalizeFsPath(filePath) {
@@ -840,6 +848,15 @@ class PluginRobloxApp {
         message: `${action} blocked: ${sync.degradedReason || sync.lastFailure?.message || "Sync verification failed."}`
       };
     }
+    if (session.destructiveConfirmationPending === true) {
+      const actionType = session.destructiveConfirmationType || "destructive action";
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "DESTRUCTIVE_CONFIRMATION_PENDING",
+        message: `${action} blocked: Roblox Studio is already waiting for confirmation for ${actionType}. Approve or decline it in Studio before sending another destructive action.`
+      };
+    }
     const contact = this.studioContactStatus(session);
     if (contact.state === "critical") {
       return {
@@ -1121,6 +1138,40 @@ class PluginRobloxApp {
     session.lastStudioContactAt = new Date().toISOString();
   }
 
+  updateDestructiveConfirmationState(session, payload: any = {}) {
+    if (!session || !payload) {
+      return;
+    }
+    const rawPending = payload.destructiveConfirmationPending;
+    const pending = typeof rawPending === "boolean"
+      ? rawPending
+      : coerceQueryBoolean(String(rawPending ?? ""));
+    if (!pending) {
+      session.destructiveConfirmationPending = false;
+      session.destructiveConfirmationType = null;
+      session.destructiveConfirmationSinceAt = null;
+      return;
+    }
+    session.destructiveConfirmationPending = true;
+    session.destructiveConfirmationType = typeof payload.destructiveConfirmationType === "string"
+      ? payload.destructiveConfirmationType
+      : null;
+    session.destructiveConfirmationSinceAt = typeof payload.destructiveConfirmationSinceAt === "string"
+      ? payload.destructiveConfirmationSinceAt
+      : null;
+  }
+
+  clearWorkspacePatchBatch(session) {
+    if (!session) {
+      return;
+    }
+    if (session.filePatchBatchTimer) {
+      clearTimeout(session.filePatchBatchTimer);
+      session.filePatchBatchTimer = null;
+    }
+    session.filePatchBatch.clear();
+  }
+
   clearSessionRuntimeState(session) {
     if (!session) {
       return;
@@ -1133,6 +1184,7 @@ class PluginRobloxApp {
       clearTimeout(timer);
     }
     session.filePatchTimers.clear();
+    this.clearWorkspacePatchBatch(session);
     for (const command of session.pendingCommands) {
       this.clearCommandSyncGuard(command);
     }
@@ -1167,6 +1219,9 @@ class PluginRobloxApp {
       ? new Date().toISOString()
       : null;
     session.lastCommandError = null;
+    session.destructiveConfirmationPending = false;
+    session.destructiveConfirmationType = null;
+    session.destructiveConfirmationSinceAt = null;
     session.sync = createSyncState();
     session.projectSelectionReason = selection.reason;
     session.projectSelectionMessage = selection.message;
@@ -1271,6 +1326,7 @@ class PluginRobloxApp {
       path: changedPath,
       debounceMs
     });
+    this.clearWorkspacePatchBatch(session);
     if (session.fileChangeTimer) {
       clearTimeout(session.fileChangeTimer);
     }
@@ -1313,13 +1369,19 @@ class PluginRobloxApp {
 
   scheduleScriptFilePatch(session, project, filePath, instanceSegments) {
     const patchKey = instanceSegments.join(".");
-    const existingTimer = session.filePatchTimers.get(patchKey);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
+    session.filePatchBatch.set(patchKey, {
+      project,
+      filePath,
+      instanceSegments
+    });
+    if (session.filePatchBatchTimer) {
+      clearTimeout(session.filePatchBatchTimer);
     }
 
-    const timer = setTimeout(() => {
-      session.filePatchTimers.delete(patchKey);
+    session.filePatchBatchTimer = setTimeout(() => {
+      session.filePatchBatchTimer = null;
+      const batch: Array<{ project: RuntimeProject; filePath: string; instanceSegments: string[] }> = Array.from(session.filePatchBatch.values());
+      session.filePatchBatch.clear();
       if (!this.sessions.has(session.id)) {
         return;
       }
@@ -1333,28 +1395,41 @@ class PluginRobloxApp {
         return;
       }
 
-      try {
-        const source = fs.readFileSync(filePath, "utf8");
-        logSync("enqueue_apply_file_patch", {
+      if (batch.length >= SCRIPT_PATCH_BURST_LIMIT) {
+        logSync("apply_file_patch_burst_fallback_tree", {
           sessionId: session.id,
-          path: patchKey,
-          sourceSize: source.length
+          patchCount: batch.length,
+          threshold: SCRIPT_PATCH_BURST_LIMIT
         });
-        this.enqueueCommand(session.id, "apply_file_patch", {
-          path: instanceSegments,
-          source
-        });
-      } catch (error) {
-        logSync("apply_file_patch_fallback_tree", {
-          sessionId: session.id,
-          path: patchKey,
-          error: error.message
-        });
-        this.scheduleProjectTreeApply(session, project, "workspace_changed", filePath);
+        const first = batch[0];
+        this.scheduleProjectTreeApply(session, first.project, "workspace_patch_burst", first.filePath, 0);
+        return;
+      }
+
+      for (const item of batch) {
+        const itemKey = item.instanceSegments.join(".");
+        try {
+          const source = fs.readFileSync(item.filePath, "utf8");
+          logSync("enqueue_apply_file_patch", {
+            sessionId: session.id,
+            path: itemKey,
+            sourceSize: source.length
+          });
+          this.enqueueCommand(session.id, "apply_file_patch", {
+            path: item.instanceSegments,
+            source
+          });
+        } catch (error) {
+          logSync("apply_file_patch_fallback_tree", {
+            sessionId: session.id,
+            path: itemKey,
+            error: error.message
+          });
+          this.scheduleProjectTreeApply(session, item.project, "workspace_changed", item.filePath);
+          return;
+        }
       }
     }, SCRIPT_PATCH_DEBOUNCE_MS);
-
-    session.filePatchTimers.set(patchKey, timer);
   }
 
   snapshotHasScriptInstance(session, instanceSegments) {
@@ -1678,6 +1753,9 @@ class PluginRobloxApp {
           this.clearSessionRuntimeState(existing);
           existing.createdAt = new Date().toISOString();
           existing.lastCommandError = null;
+          existing.destructiveConfirmationPending = false;
+          existing.destructiveConfirmationType = null;
+          existing.destructiveConfirmationSinceAt = null;
           existing.sync = createSyncState();
         }
         existing.projectSelectionReason = selection.reason;
@@ -1719,6 +1797,8 @@ class PluginRobloxApp {
       inFlightCommands: new Map(),
       fileChangeTimer: null,
       filePatchTimers: new Map(),
+      filePatchBatchTimer: null,
+      filePatchBatch: new Map(),
       lastAppliedAt: null,
       sync: createSyncState(),
       connectionState: options.connectionState || "ready",
@@ -1729,6 +1809,9 @@ class PluginRobloxApp {
       pluginProtocolVersion: normalizeProtocolVersion(options.pluginProtocolVersion),
       lastPluginVersionSeenAt: null,
       lastCommandError: null,
+      destructiveConfirmationPending: false,
+      destructiveConfirmationType: null,
+      destructiveConfirmationSinceAt: null,
       projectSelectionReason: selection.reason,
       projectSelectionMessage: selection.message,
       _pollWaiter: null
@@ -1748,7 +1831,9 @@ class PluginRobloxApp {
       return;
     }
     session.connectionState = "ready";
-    session.lastCommandError = null;
+    if (this.ensureSessionSyncState(session).state !== "degraded") {
+      session.lastCommandError = null;
+    }
     if (this.connectionOffer && this.connectionOffer.sessionId === session.id) {
       this.resolveConnectionOffer("ready", {
         studioInstanceId: session.studioInstanceId,
@@ -2167,7 +2252,18 @@ class PluginRobloxApp {
       if (command.type === "apply_project_tree" && command.payload?.project) {
         if (payload?.snapshot) {
           this.updateStudioSnapshot(sessionId, payload.snapshot, "apply_project_tree_corrected");
-          this.markSyncVerified(session, session.lastStudioHash);
+          const observedHash = session.lastStudioHash;
+          if (command.expectedHash && observedHash === command.expectedHash) {
+            this.markSyncVerified(session, observedHash);
+          } else {
+            this.markSyncDegraded(session, "Studio snapshot hash did not match the applied project tree.", {
+              code: "SYNC-HASH-MISMATCH",
+              commandId,
+              commandType: command.type,
+              expectedHash: command.expectedHash || null,
+              observedHash: observedHash || null
+            });
+          }
         } else {
           this.recordAppliedProjectSnapshot(session, command.payload.project, command.payload?.reason);
           this.markSyncDegraded(session, "Studio confirmed apply_project_tree without a verification snapshot.", {
@@ -2182,11 +2278,23 @@ class PluginRobloxApp {
       if (command.type === "apply_file_patch") {
         if (payload?.snapshot) {
           const observedHash = this.cacheStudioSnapshot(session, payload.snapshot, "apply_file_patch_verified");
-          this.markSyncVerified(session, observedHash);
-        } else if (payload?.appliedHash) {
-          this.markSyncVerified(session, String(payload.appliedHash));
+          const instanceSegments = normalizeStudioInstancePathSegments(command.payload?.path);
+          const node = findSnapshotNode(payload.snapshot, instanceSegments);
+          const expectedSource = String(command.payload?.source ?? "");
+          const observedSource = String(node?.source ?? "");
+          if (isScriptSnapshotNode(node) && observedSource === expectedSource) {
+            this.markSyncVerified(session, observedHash);
+          } else {
+            this.markSyncDegraded(session, "Studio snapshot did not contain the applied file patch source.", {
+              code: "SYNC-PATCH-MISMATCH",
+              commandId,
+              commandType: command.type,
+              observedHash,
+              path: instanceSegments.join(".")
+            });
+          }
         } else {
-          this.markSyncDegraded(session, "Studio confirmed apply_file_patch without a verification snapshot or hash.", {
+          this.markSyncDegraded(session, "Studio confirmed apply_file_patch without a verification snapshot.", {
             code: "SYNC-UNVERIFIED",
             commandId,
             commandType: command.type
@@ -2448,7 +2556,9 @@ class PluginRobloxApp {
     if (!result.ok) {
       throw new Error(result.error || "Luau execution failed.");
     }
-    return result;
+    const sanitized = { ...result };
+    delete sanitized.error;
+    return sanitized;
   }
 
   normalizeDestructiveCommandResult(session, result: DestructiveCommandResult = {}) {
@@ -2502,6 +2612,22 @@ class PluginRobloxApp {
     return project;
   }
 
+  activeLastCommandError(session) {
+    if (!session?.lastCommandError) {
+      return null;
+    }
+    const sync = this.ensureSessionSyncState(session);
+    if (
+      sync.state === "degraded"
+      || (session.connectionState || "ready") === "error"
+      || session.pendingCommands.length > 0
+      || session.inFlightCommands.size > 0
+    ) {
+      return session.lastCommandError;
+    }
+    return null;
+  }
+
   sessionSummary(session, options: { includeSessionToken?: boolean } = {}) {
     const project = this.getProjectById(session.projectId);
     const sync = this.ensureSessionSyncState(session);
@@ -2509,6 +2635,10 @@ class PluginRobloxApp {
     const syncBlockedReason = this.syncBlockedReason(session);
     const contact = this.studioContactStatus(session);
     const destructive = this.destructiveActionPolicy(session);
+    const destructiveSinceAtMs = parseTimestampMs(session.destructiveConfirmationSinceAt);
+    const destructiveConfirmationAgeMs = session.destructiveConfirmationPending && destructiveSinceAtMs !== null
+      ? Math.max(0, Date.now() - destructiveSinceAtMs)
+      : null;
     return {
       id: session.id,
       ...(options.includeSessionToken ? { sessionToken: session.sessionToken || null } : {}),
@@ -2542,10 +2672,14 @@ class PluginRobloxApp {
       lastVerifiedAt: sync.lastVerifiedAt,
       lastSyncError: sync.state === "degraded" ? (sync.degradedReason || sync.lastFailure?.message || null) : null,
       requiresManualResync: sync.state === "degraded",
-      lastCommandError: session.lastCommandError || null,
+      lastCommandError: this.activeLastCommandError(session),
       destructiveActionsAllowed: destructive.allowed,
       destructiveActionReasonCode: destructive.reasonCode,
-      destructiveActionMessage: destructive.allowed ? null : destructive.message
+      destructiveActionMessage: destructive.allowed ? null : destructive.message,
+      destructiveConfirmationPending: session.destructiveConfirmationPending === true,
+      destructiveConfirmationType: session.destructiveConfirmationType || null,
+      destructiveConfirmationSinceAt: session.destructiveConfirmationSinceAt || null,
+      destructiveConfirmationAgeMs
     };
   }
 
