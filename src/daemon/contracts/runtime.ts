@@ -191,6 +191,7 @@ export interface ConnectionOfferResolutionDetails {
 export interface ActivityFileInfo {
   size?: number;
   hash?: string;
+  text?: string | null;
   [key: string]: unknown;
 }
 
@@ -202,6 +203,8 @@ export interface ActivityChangeInput {
   mountId?: string | null;
   size?: number;
   hash?: string;
+  oldInfo?: ActivityFileInfo | null;
+  newInfo?: ActivityFileInfo | null;
   [key: string]: unknown;
 }
 
@@ -227,6 +230,8 @@ export interface ActivitySummary extends Record<string, unknown> {
 
 export interface ActivityLogLike {
   add(entry: Record<string, unknown>): Record<string, unknown>;
+  get?(id: string, options?: Record<string, unknown>): Record<string, unknown> | null;
+  query?(options?: Record<string, unknown>): TimestampedRecord[];
   summary(): ActivitySummary;
 }
 

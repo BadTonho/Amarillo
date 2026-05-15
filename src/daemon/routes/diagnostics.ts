@@ -81,6 +81,12 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     return true;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/settings/auto-sync-to-studio") {
+    const body = await readJsonBody(request);
+    jsonResponse(response, 200, app.setAutoSyncToStudio(body.enabled === true));
+    return true;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/workspace/files-changed") {
     const body = await readJsonBody(request);
     const result = app.handleWorkspaceFileEvents(body.events || [body]);
@@ -142,6 +148,32 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     return true;
   }
 
+  const activityRevertMatch = requestUrl.pathname.match(/^\/activity\/([^/]+)\/revert$/);
+  if (request.method === "POST" && activityRevertMatch) {
+    try {
+      const result = app.revertActivityEntry(decodeURIComponent(activityRevertMatch[1]));
+      jsonResponse(response, 200, result);
+    } catch (error) {
+      jsonResponse(response, error.statusCode || 500, {
+        ok: false,
+        code: error.code || "ACTIVITY_REVERT_FAILED",
+        error: error.message
+      });
+    }
+    return true;
+  }
+
+  const activityEntryMatch = requestUrl.pathname.match(/^\/activity\/([^/]+)$/);
+  if (request.method === "GET" && activityEntryMatch && activityEntryMatch[1] !== "summary") {
+    const entry = app.activityLog.get(decodeURIComponent(activityEntryMatch[1]), { includeDetails: true });
+    if (!entry) {
+      jsonResponse(response, 404, { ok: false, error: "Activity entry not found." });
+      return true;
+    }
+    jsonResponse(response, 200, { ok: true, entry });
+    return true;
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/activity") {
     jsonResponse(response, 200, {
       ok: true,
@@ -149,7 +181,8 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
         limit: Number(requestUrl.searchParams.get("limit") || 100),
         action: requestUrl.searchParams.get("action") || null,
         direction: requestUrl.searchParams.get("direction") || null,
-        projectId: requestUrl.searchParams.get("projectId") || null
+        projectId: requestUrl.searchParams.get("projectId") || null,
+        includeDetails: requestUrl.searchParams.get("includeDetails") === "true"
       })
     });
     return true;

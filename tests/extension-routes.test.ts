@@ -116,6 +116,29 @@ test("sidebar renders loading and error fallbacks instead of a blank webview", (
   assert.match(extensionSource, /handleSidebarVisible\(this\.context, runtimeState\)/);
 });
 
+test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+  const packageJson = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "package.json"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /amarillo\.toggleAutoSyncToStudio/);
+  assert.match(extensionSource, /\/settings\/auto-sync-to-studio/);
+  assert.match(extensionSource, /Auto Sync: On/);
+  assert.match(extensionSource, /Auto Sync: Off/);
+  assert.match(extensionSource, /Sync History/);
+  assert.match(extensionSource, /\/activity\?limit=\$\{encodeURIComponent\(String\(limit\)\)\}&includeDetails=true/);
+  assert.match(extensionSource, /data-activity-action="openDiff"/);
+  assert.match(extensionSource, /data-activity-action="revert"/);
+  assert.match(extensionSource, /amarillo-activity/);
+  assert.match(extensionSource, /vscode\.diff/);
+  assert.match(packageJson, /amarillo\.toggleAutoSyncToStudio/);
+});
+
 test("activation sourcemap check is delayed and respects autoGenerateSourcemap", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),

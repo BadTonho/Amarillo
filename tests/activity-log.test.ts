@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { ActivityLog } = require("../src/daemon/lib/activity-log");
+const { ActivityLog, getFileInfo } = require("../src/daemon/lib/activity-log");
 
 function createTempWorkspace() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-activity-"));
@@ -70,4 +70,44 @@ test("ActivityLog separates entries by day and queries across days", () => {
   assert.equal(fs.existsSync(path.join(workspace, ".amarillo", "activity", "2026-05-04", "activity.jsonl")), true);
   assert.equal(fs.existsSync(path.join(workspace, ".amarillo", "activity", "2026-05-05", "activity.jsonl")), true);
   assert.deepEqual(log.query({ limit: 2 }).map((entry) => entry.action), ["delete", "create"]);
+});
+
+test("ActivityLog stores small text snapshots in per-entry details", () => {
+  const workspace = createTempWorkspace();
+  const log = new ActivityLog({ workspaceRoot: workspace });
+  const filePath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+
+  const record = log.add({
+    timestamp: "2026-05-06T10:00:00.000Z",
+    action: "modify",
+    path: filePath,
+    projectId: "Game.project.json",
+    mountId: "ServerScriptService",
+    oldHash: "old-hash",
+    newHash: "new-hash",
+    oldSize: 13,
+    newSize: 13,
+    oldText: "print('old')",
+    newText: "print('new')"
+  });
+
+  assert.equal(record.hasTextSnapshot, true);
+  assert.equal(record.canRevert, true);
+  assert.match(record.detailPath, /\.amarillo\/activity\/2026-05-06\/details\/.+\.json/);
+
+  const detailed = log.get(record.id, { includeDetails: true });
+  assert.equal(detailed.detail.oldText, "print('old')");
+  assert.equal(detailed.detail.newText, "print('new')");
+  assert.equal(log.query({ limit: 1, includeDetails: true })[0].detail.newHash, "new-hash");
+});
+
+test("getFileInfo skips text snapshots for large files", () => {
+  const workspace = createTempWorkspace();
+  const filePath = path.join(workspace, "large.txt");
+  fs.writeFileSync(filePath, "x".repeat((128 * 1024) + 1), "utf8");
+
+  const info = getFileInfo(filePath, { includeText: true });
+  assert.equal(typeof info.hash, "string");
+  assert.equal(info.size, (128 * 1024) + 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(info, "text"), false);
 });

@@ -33,6 +33,7 @@ let sidebarRefreshTimer = null;
 let sidebarRefreshInFlight = null;
 let lastDegradedNotifiedSessionId = null;
 const projectFileCache = new Map();
+const activityDiffDocuments = new Map<string, string>();
 const AMARILLO_PROTOCOL_VERSION = 1;
 const SIDEBAR_HEALTH_TIMEOUT_MS = 1200;
 const SIDEBAR_STATE_TIMEOUT_MS = 4500;
@@ -129,6 +130,39 @@ interface WorkspaceFilesChangedResponse extends ExtensionJsonObject {
   accepted?: number;
 }
 
+interface ActivityDetailPayload extends ExtensionJsonObject {
+  oldText?: string | null;
+  newText?: string | null;
+  oldTextAvailable?: boolean;
+  newTextAvailable?: boolean;
+}
+
+interface ActivityEntryPayload extends ExtensionJsonObject {
+  id?: string;
+  timestamp?: string;
+  action?: string;
+  path?: string | null;
+  relativePath?: string | null;
+  direction?: string | null;
+  reason?: string | null;
+  source?: string | null;
+  oldHash?: string | null;
+  newHash?: string | null;
+  oldSize?: number | null;
+  newSize?: number | null;
+  hasTextSnapshot?: boolean;
+  canRevert?: boolean;
+  detail?: ActivityDetailPayload | null;
+}
+
+interface ActivityListResponse extends ExtensionJsonObject {
+  entries?: ActivityEntryPayload[];
+}
+
+interface ActivityEntryResponse extends ExtensionJsonObject {
+  entry?: ActivityEntryPayload;
+}
+
 interface SessionCommandResponse extends ExtensionJsonObject {
   ok?: boolean;
   error?: string;
@@ -161,6 +195,8 @@ interface SidebarRuntimeState {
   health?: BridgeHealthPayload | null;
   healthError?: string | null;
   healthDurationMs?: number;
+  activity?: ActivityEntryPayload[];
+  activityError?: string | null;
 }
 
 // ===== Logger with notification levels (Argon pattern) =====
@@ -1024,7 +1060,9 @@ async function readSidebarRuntimeState(): Promise<SidebarRuntimeState> {
     settingsError: null,
     health: null,
     healthError: null,
-    healthDurationMs: 0
+    healthDurationMs: 0,
+    activity: [],
+    activityError: null
   };
 
   let settings;
@@ -1045,6 +1083,15 @@ async function readSidebarRuntimeState(): Promise<SidebarRuntimeState> {
     runtimeState.healthDurationMs = Date.now() - healthStartedAt;
     runtimeState.healthError = sidebarErrorMessage(error);
     log(`Sidebar health check failed after ${runtimeState.healthDurationMs}ms: ${runtimeState.healthError}`);
+  }
+
+  if (runtimeState.health?.ok && daemonMatchesWorkspace(settings, runtimeState.health)) {
+    try {
+      runtimeState.activity = await fetchRecentActivity(10);
+    } catch (error) {
+      runtimeState.activityError = sidebarErrorMessage(error);
+      log(`Sidebar activity history failed: ${runtimeState.activityError}`);
+    }
   }
 
   return runtimeState;
@@ -1083,6 +1130,10 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   if (healthError) {
     workspaceNotes.push(`Bridge health check failed: ${healthError}`);
   }
+  if (sidebarRuntime.activityError) {
+    workspaceNotes.push(`Sync history failed: ${sidebarRuntime.activityError}`);
+  }
+  const activityEntries = Array.isArray(sidebarRuntime.activity) ? sidebarRuntime.activity : [];
 
   let statusTone = "neutral";
   if (running && activeSession && workspaceMatches) {
@@ -1263,6 +1314,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
         title: "Sync",
         description: "Send and receive files for the active session.",
         actions: [
+          createSidebarAction(autoSyncToStudio ? "Auto Sync: On" : "Auto Sync: Off", "amarillo.toggleAutoSyncToStudio", autoSyncToStudio ? "primary" : "secondary"),
           createSidebarAction("Send Files to Studio", "amarillo.sendFilesToStudio", "primary"),
           createSidebarAction("Receive Files from Studio", "amarillo.receiveFilesFromStudio", "primary"),
           createSidebarAction("Select Session", "amarillo.selectSession")
@@ -1288,7 +1340,11 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
           createSidebarAction("MCP Healthcheck", "amarillo.mcpHealthcheck")
         ]
       }
-    ]
+    ],
+    history: {
+      entries: activityEntries,
+      error: sidebarRuntime.activityError || null
+    }
   };
 }
 
@@ -1336,6 +1392,103 @@ function renderSidebarSection(section) {
   `;
 }
 
+function activityActionLabel(action) {
+  switch (action) {
+    case "create": return "Created";
+    case "delete": return "Deleted";
+    case "modify": return "Modified";
+    default: return action || "Changed";
+  }
+}
+
+function activityDirectionLabel(direction) {
+  switch (direction) {
+    case "pc_to_studio": return "VS Code -> Studio";
+    case "studio_to_pc": return "Studio -> VS Code";
+    default: return direction || "local";
+  }
+}
+
+function formatActivityTime(timestamp) {
+  const parsed = timestamp ? new Date(timestamp) : null;
+  if (!parsed || !Number.isFinite(parsed.getTime())) {
+    return "unknown time";
+  }
+  return parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+function compactActivityPreview(value) {
+  if (typeof value !== "string") {
+    return "snapshot unavailable";
+  }
+  const compact = value.replace(/\r?\n/g, " ").replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "(empty)";
+  }
+  return compact.length > 140 ? `${compact.slice(0, 137)}...` : compact;
+}
+
+function renderActivityEntry(entry) {
+  const id = typeof entry?.id === "string" ? entry.id : "";
+  const detail = entry?.detail || {};
+  const canDiff = typeof detail.oldText === "string" || typeof detail.newText === "string";
+  const canRevert = entry?.canRevert === true;
+  const pathLabel = entry?.relativePath || entry?.path || "unknown file";
+  const snapshotLabel = entry?.hasTextSnapshot
+    ? "text snapshot"
+    : (entry?.oldHash || entry?.newHash ? "metadata only" : "no snapshot");
+  const oldPreview = compactActivityPreview(detail.oldText);
+  const newPreview = compactActivityPreview(detail.newText);
+  const buttons = [];
+  if (canDiff && id) {
+    buttons.push(`<button class="mini-action" type="button" data-activity-action="openDiff" data-activity-id="${escapeHtml(id)}">Open Diff</button>`);
+  }
+  if (canRevert && id) {
+    buttons.push(`<button class="mini-action" type="button" data-activity-action="revert" data-activity-id="${escapeHtml(id)}">Revert</button>`);
+  }
+
+  return `
+    <article class="history-item">
+      <div class="history-head">
+        <strong>${escapeHtml(activityActionLabel(entry?.action))}</strong>
+        <span>${escapeHtml(formatActivityTime(entry?.timestamp))}</span>
+      </div>
+      <div class="history-path">${escapeHtml(pathLabel)}</div>
+      <div class="history-meta">
+        <span>${escapeHtml(activityDirectionLabel(entry?.direction))}</span>
+        <span>${escapeHtml(snapshotLabel)}</span>
+      </div>
+      <div class="preview-grid">
+        <div>
+          <span>Before</span>
+          <pre>${escapeHtml(oldPreview)}</pre>
+        </div>
+        <div>
+          <span>After</span>
+          <pre>${escapeHtml(newPreview)}</pre>
+        </div>
+      </div>
+      ${buttons.length > 0 ? `<div class="mini-actions">${buttons.join("")}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderSyncHistorySection(history) {
+  const entries = Array.isArray(history?.entries) ? history.entries : [];
+  const body = entries.length > 0
+    ? `<div class="history-list">${entries.map(renderActivityEntry).join("")}</div>`
+    : `<p class="history-empty">${escapeHtml(history?.error || "No recent file changes recorded yet.")}</p>`;
+  return `
+    <section class="card history-card">
+      <div class="section-heading">
+        <h3>Sync History</h3>
+        <p>Last 10 changes.</p>
+      </div>
+      ${body}
+    </section>
+  `;
+}
+
 function renderSidebarHtml(state) {
   const status = state?.status || {};
   const session = state?.session || {};
@@ -1343,6 +1496,7 @@ function renderSidebarHtml(state) {
   const sessionFacts = Array.isArray(session.facts) ? session.facts : [];
   const sessionActions = Array.isArray(session.actions) ? session.actions : [];
   const sections = Array.isArray(state?.sections) ? state.sections : [];
+  const history = state?.history || {};
   const statusTone = sidebarTone(status.tone);
   const sessionTone = sidebarTone(session.tone);
   const notesMarkup = statusNotes.length > 0
@@ -1697,6 +1851,113 @@ function renderSidebarHtml(state) {
         border-color: var(--tone-info);
       }
 
+      .history-card {
+        text-align: left;
+      }
+
+      .history-card .section-heading {
+        justify-items: start;
+      }
+
+      .history-list {
+        margin-top: 12px;
+        display: grid;
+        gap: 10px;
+      }
+
+      .history-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 10px;
+        background: var(--surface);
+        display: grid;
+        gap: 7px;
+        min-width: 0;
+      }
+
+      .history-head,
+      .history-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .history-head strong {
+        color: var(--foreground);
+        font-size: 12px;
+      }
+
+      .history-path {
+        font-size: 12px;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+
+      .preview-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .preview-grid span {
+        color: var(--muted);
+        display: block;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+        margin-bottom: 4px;
+      }
+
+      .preview-grid pre {
+        margin: 0;
+        min-height: 32px;
+        max-height: 72px;
+        overflow: hidden;
+        padding: 8px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface-strong);
+        color: var(--foreground);
+        font-family: var(--vscode-editor-font-family, monospace);
+        font-size: 11px;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .mini-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .mini-action {
+        appearance: none;
+        border: 1px solid var(--button-border);
+        border-radius: 8px;
+        padding: 7px 9px;
+        color: var(--foreground);
+        background: var(--surface-strong);
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      .mini-action:hover {
+        border-color: var(--tone-info);
+      }
+
+      .history-empty {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+      }
+
       .footer {
         font-size: 11px;
         line-height: 1.4;
@@ -1732,12 +1993,23 @@ function renderSidebarHtml(state) {
 
       ${sections.map(renderSidebarSection).join("")}
 
+      ${renderSyncHistorySection(history)}
+
       <p class="footer">Atalho rapido: Ctrl+Shift+A abre o menu completo do Amarillo.</p>
     </main>
 
     <script>
       const vscode = acquireVsCodeApi();
       document.addEventListener("click", (event) => {
+        const activityButton = event.target.closest("[data-activity-action]");
+        if (activityButton) {
+          vscode.postMessage({
+            type: "activity",
+            action: activityButton.dataset.activityAction,
+            id: activityButton.dataset.activityId
+          });
+          return;
+        }
         const button = event.target.closest("[data-command]");
         if (!button) {
           return;
@@ -2030,6 +2302,16 @@ async function fetchDaemonHealth(options: RequestJsonOptions = {}): Promise<Brid
   return requestJson<BridgeHealthPayload>("GET", "/health", undefined, options);
 }
 
+async function fetchRecentActivity(limit = 10): Promise<ActivityEntryPayload[]> {
+  const response = await requestJson<ActivityListResponse>(
+    "GET",
+    `/activity?limit=${encodeURIComponent(String(limit))}&includeDetails=true`,
+    undefined,
+    { timeout: 1500 }
+  );
+  return Array.isArray(response.entries) ? response.entries : [];
+}
+
 function buildHealthcheckRouteProbes(health) {
   const probes = [
     { label: "Daemon health", method: "GET", route: "/health" },
@@ -2193,6 +2475,112 @@ async function chooseSession(forcePick = false) {
   return picked.session;
 }
 
+async function toggleAutoSyncToStudio() {
+  const settings = getBridgeSettings();
+  let health: BridgeHealthPayload | null = null;
+  try {
+    health = await fetchDaemonHealth({ timeout: 1500 });
+  } catch (_error) {
+    health = null;
+  }
+
+  const current = health?.ok && daemonMatchesWorkspace(settings, health)
+    ? (health.autoSyncToStudio !== false)
+    : (settings.autoSyncToStudio !== false);
+  const next = !current;
+  await vscode.workspace
+    .getConfiguration("amarillo")
+    .update("autoSyncToStudio", next, vscode.ConfigurationTarget.Workspace);
+
+  if (health?.ok && daemonMatchesWorkspace(settings, health)) {
+    await requestJson("POST", "/settings/auto-sync-to-studio", { enabled: next }, { timeout: 3000 });
+  }
+
+  refreshSidebar();
+  vscode.window.showInformationMessage(`Amarillo Auto Sync ${next ? "enabled" : "disabled"}.`);
+}
+
+async function fetchActivityEntry(id): Promise<ActivityEntryPayload> {
+  const response = await requestJson<ActivityEntryResponse>(
+    "GET",
+    `/activity/${encodeURIComponent(id)}`,
+    undefined,
+    { timeout: 3000 }
+  );
+  if (!response.entry) {
+    throw new Error("Activity entry not found.");
+  }
+  return response.entry;
+}
+
+function activityDiffUri(entryId, side, filePathLabel) {
+  const extension = path.extname(String(filePathLabel || "")).replace(/[^A-Za-z0-9.]/g, "") || ".txt";
+  return vscode.Uri.from({
+    scheme: "amarillo-activity",
+    path: `/${encodeURIComponent(entryId)}-${side}${extension}`,
+    query: `side=${encodeURIComponent(side)}`
+  });
+}
+
+async function openActivityDiff(id) {
+  if (!id) {
+    return;
+  }
+  const entry = await fetchActivityEntry(id);
+  const detail = entry.detail || {};
+  const hasOld = typeof detail.oldText === "string";
+  const hasNew = typeof detail.newText === "string";
+  if (!hasOld && !hasNew) {
+    vscode.window.showWarningMessage("This history entry only has metadata, so there is no text diff to open.");
+    return;
+  }
+
+  const label = entry.relativePath || entry.path || id;
+  const oldUri = activityDiffUri(id, "before", label);
+  const newUri = activityDiffUri(id, "after", label);
+  activityDiffDocuments.set(oldUri.toString(), hasOld ? String(detail.oldText) : "");
+  activityDiffDocuments.set(newUri.toString(), hasNew ? String(detail.newText) : "");
+  await vscode.commands.executeCommand(
+    "vscode.diff",
+    oldUri,
+    newUri,
+    `Amarillo Sync: ${label}`
+  );
+}
+
+function errorMessageFromHttp(error) {
+  const message = sidebarErrorMessage(error);
+  const jsonStart = message.indexOf("{");
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(message.slice(jsonStart));
+      if (parsed?.error) {
+        return String(parsed.error);
+      }
+    } catch (_parseError) {
+      return message;
+    }
+  }
+  return message;
+}
+
+async function revertActivity(id) {
+  if (!id) {
+    return;
+  }
+  const choice = await vscode.window.showWarningMessage(
+    "Revert this Amarillo sync history entry?",
+    { modal: true },
+    "Revert"
+  );
+  if (choice !== "Revert") {
+    return;
+  }
+  await requestJson("POST", `/activity/${encodeURIComponent(id)}/revert`, {}, { timeout: 5000 });
+  refreshSidebar();
+  vscode.window.showInformationMessage("Amarillo sync history entry reverted.");
+}
+
 class AmarilloSidebarProvider {
   [key: string]: any;
 
@@ -2297,14 +2685,25 @@ class AmarilloSidebarProvider {
   }
 
   async handleMessage(message) {
-    if (!message || message.type !== "command" || typeof message.command !== "string") {
+    if (!message) {
       return;
     }
 
     try {
+      if (message.type === "activity" && typeof message.action === "string" && typeof message.id === "string") {
+        if (message.action === "openDiff") {
+          await openActivityDiff(message.id);
+        } else if (message.action === "revert") {
+          await revertActivity(message.id);
+        }
+        return;
+      }
+      if (message.type !== "command" || typeof message.command !== "string") {
+        return;
+      }
       await vscode.commands.executeCommand(message.command);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
+      const reason = errorMessageFromHttp(error);
       log(`Failed to execute sidebar command: ${reason}`);
       vscode.window.showErrorMessage(reason);
     } finally {
@@ -3099,6 +3498,11 @@ function activate(context) {
   context.subscriptions.push(
     outputChannel,
     statusBar,
+    vscode.workspace.registerTextDocumentContentProvider("amarillo-activity", {
+      provideTextDocumentContent(uri) {
+        return activityDiffDocuments.get(uri.toString()) || "";
+      }
+    }),
     vscode.window.registerWebviewViewProvider("amarillo.sidebar", sidebarProvider),
     vscode.commands.registerCommand("amarillo.installRobloxPlugin", () => installRobloxPlugin(context)),
     vscode.commands.registerCommand("amarillo.startBridge", () => startBridge(context)),
@@ -3110,6 +3514,15 @@ function activate(context) {
     vscode.commands.registerCommand("amarillo.configureCodexMcp", () => configureMcp(context)),
     vscode.commands.registerCommand("amarillo.openOutput", () => outputChannel.show(true)),
     vscode.commands.registerCommand("amarillo.refreshSidebar", () => refreshSidebar()),
+    vscode.commands.registerCommand("amarillo.toggleAutoSyncToStudio", async () => {
+      try {
+        await toggleAutoSyncToStudio();
+      } catch (error) {
+        const reason = errorMessageFromHttp(error);
+        log(`Failed to toggle Auto Sync: ${reason}`);
+        vscode.window.showErrorMessage(reason);
+      }
+    }),
     vscode.commands.registerCommand("amarillo.sendFilesToStudio", async () => {
       try {
         await sendFilesToStudio();
@@ -3155,6 +3568,7 @@ function activate(context) {
         { label: "$(debug-stop) Stop Bridge", description: "Stop the sync daemon", action: "stopBridge" },
         { label: "$(plug) Select Session", description: "Choose active Studio session", action: "selectSession" },
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Sync" },
+        { label: "$(sync) Toggle Auto Sync", description: "Enable or disable VS Code to Studio autosync", action: "toggleAutoSync" },
         { label: "$(arrow-up) Send Files to Studio", description: "Push local files to Roblox Studio", action: "sendFilesToStudio" },
         { label: "$(arrow-down) Receive Files from Studio", description: "Pull Studio state to local files", action: "receiveFilesFromStudio" },
         { label: "$(run-all) Execute Code", description: "Run selected code or file in Studio", action: "execCode" },
@@ -3183,6 +3597,7 @@ function activate(context) {
           case "startBridge": await startBridge(context); break;
           case "stopBridge": await stopBridge(); break;
           case "selectSession": await selectSession(); break;
+          case "toggleAutoSync": await toggleAutoSyncToStudio(); break;
           case "sendFilesToStudio": await sendFilesToStudio(); break;
           case "receiveFilesFromStudio": await receiveFilesFromStudio(); break;
           case "execCode": await executeCodeInStudio(); break;

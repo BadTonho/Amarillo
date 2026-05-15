@@ -76,6 +76,10 @@
         "title": "Amarillo: Refresh Sidebar"
       },
       {
+        "command": "amarillo.toggleAutoSyncToStudio",
+        "title": "Amarillo: Toggle Auto Sync to Studio"
+      },
+      {
         "command": "amarillo.sendFilesToStudio",
         "title": "Amarillo: Send Files to Studio"
       },

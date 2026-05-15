@@ -985,10 +985,16 @@ class PluginRobloxApp {
 
   refreshActivityKnownFiles() {
     this.activityKnownFiles.clear();
+    this.activityFileState.clear();
     for (const project of this.allProjects) {
       for (const mount of project.mounts || []) {
         for (const filePath of collectFilesRecursive(mount.absolutePath)) {
-          this.activityKnownFiles.add(normalizeFsPath(filePath));
+          const normalized = normalizeFsPath(filePath);
+          this.activityKnownFiles.add(normalized);
+          const info = getFileInfo(normalized, { includeText: true });
+          if (info?.hash) {
+            this.activityFileState.set(normalized, info);
+          }
         }
       }
     }
@@ -1042,9 +1048,14 @@ class PluginRobloxApp {
     if (!projectId || !mountId) {
       return null;
     }
+    const previousInfo = this.activityFileState.get(normalized) || null;
+    const nextInfo = getFileInfo(normalized, { includeText: true });
+    const action = change.action || "modify";
+    const oldInfo = change.oldInfo || (action === "create" ? null : previousInfo);
+    const newInfo = change.newInfo || (action === "delete" ? null : nextInfo);
 
     const record = this.activityLog.add({
-      action: change.action,
+      action,
       path: normalized,
       projectId,
       mountId,
@@ -1052,8 +1063,14 @@ class PluginRobloxApp {
       source: defaults.source,
       reason: defaults.reason,
       sessionId: defaults.sessionId || (context && context.sessionId),
-      size: change.size,
-      hash: change.hash
+      size: change.size ?? newInfo?.size ?? oldInfo?.size ?? null,
+      hash: change.hash ?? newInfo?.hash ?? oldInfo?.hash ?? null,
+      oldSize: oldInfo?.size ?? null,
+      oldHash: oldInfo?.hash ?? null,
+      oldText: typeof oldInfo?.text === "string" ? oldInfo.text : undefined,
+      newSize: newInfo?.size ?? null,
+      newHash: newInfo?.hash ?? null,
+      newText: typeof newInfo?.text === "string" ? newInfo.text : undefined
     });
 
     if (record.action === "delete") {
@@ -1061,12 +1078,12 @@ class PluginRobloxApp {
       this.activityKnownFiles.delete(normalized);
     } else {
       this.activityKnownFiles.add(normalized);
-      const nextInfo = getFileInfo(normalized) || {
+      const nextStateInfo = nextInfo || getFileInfo(normalized, { includeText: true }) || {
         size: record.size,
         hash: record.hash
       };
-      if (nextInfo && nextInfo.hash) {
-        this.activityFileState.set(normalized, nextInfo);
+      if (nextStateInfo && nextStateInfo.hash) {
+        this.activityFileState.set(normalized, nextStateInfo);
       }
     }
     return record;
@@ -1081,7 +1098,7 @@ class PluginRobloxApp {
 
     const previousInfo = this.activityFileState.get(normalized) || null;
     const wasKnown = this.activityKnownFiles.has(normalized);
-    const nextInfo = getFileInfo(normalized);
+    const nextInfo = getFileInfo(normalized, { includeText: true });
     let action = null;
     let info = nextInfo || previousInfo || {};
 
@@ -1103,11 +1120,94 @@ class PluginRobloxApp {
       projectId: context.projectId,
       mountId: context.mountId,
       size: info.size,
-      hash: info.hash
+      hash: info.hash,
+      oldInfo: previousInfo,
+      newInfo: nextInfo
     }, {
       ...defaults,
       sessionId: defaults.sessionId || context.sessionId
     });
+  }
+
+  revertActivityEntry(entryId) {
+    const entry: any = typeof this.activityLog.get === "function"
+      ? this.activityLog.get(entryId, { includeDetails: true })
+      : null;
+    if (!entry) {
+      const error = new Error("Activity entry not found.") as Error & { statusCode?: number };
+      error.statusCode = 404;
+      throw error;
+    }
+    const detail = entry.detail || {};
+    if (!entry.path || !isPathInside(entry.path, this.workspaceRoot)) {
+      const error = new Error("Activity entry path is outside the workspace.") as Error & { statusCode?: number };
+      error.statusCode = 409;
+      throw error;
+    }
+    const currentInfo = getFileInfo(entry.path, { includeText: true });
+    const expectedHash = detail.newHash || entry.newHash || null;
+    if (entry.action === "delete" && currentInfo) {
+      const error = new Error("The deleted file already exists again. Refresh before reverting.") as Error & { statusCode?: number; code?: string };
+      error.statusCode = 409;
+      error.code = "ACTIVITY_REVERT_CONFLICT";
+      throw error;
+    }
+    if (expectedHash && currentInfo?.hash !== expectedHash) {
+      const error = new Error("The file changed after this history entry. Refresh before reverting.") as Error & { statusCode?: number; code?: string };
+      error.statusCode = 409;
+      error.code = "ACTIVITY_REVERT_CONFLICT";
+      throw error;
+    }
+
+    if (entry.action === "create") {
+      if (!currentInfo) {
+        const error = new Error("Created file no longer exists.") as Error & { statusCode?: number };
+        error.statusCode = 409;
+        throw error;
+      }
+      fs.rmSync(entry.path, { force: true });
+    } else if (entry.action === "delete") {
+      if (typeof detail.oldText !== "string") {
+        const error = new Error("This delete entry does not have a text snapshot to restore.") as Error & { statusCode?: number };
+        error.statusCode = 409;
+        throw error;
+      }
+      fs.mkdirSync(path.dirname(entry.path), { recursive: true });
+      fs.writeFileSync(entry.path, detail.oldText, "utf8");
+    } else if (entry.action === "modify") {
+      if (typeof detail.oldText !== "string") {
+        const error = new Error("This modify entry does not have a text snapshot to restore.") as Error & { statusCode?: number };
+        error.statusCode = 409;
+        throw error;
+      }
+      fs.writeFileSync(entry.path, detail.oldText, "utf8");
+    } else {
+      const error = new Error(`Activity action '${entry.action}' cannot be reverted.`) as Error & { statusCode?: number };
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const revertedInfo = getFileInfo(entry.path, { includeText: true });
+    const revertRecord = this.recordActivity({
+      action: entry.action === "create" ? "delete" : (entry.action === "delete" ? "create" : "modify"),
+      filePath: entry.path,
+      projectId: entry.projectId,
+      mountId: entry.mountId,
+      oldInfo: currentInfo,
+      newInfo: revertedInfo,
+      size: revertedInfo?.size ?? currentInfo?.size ?? null,
+      hash: revertedInfo?.hash ?? currentInfo?.hash ?? null
+    }, {
+      direction: entry.direction,
+      source: "activity_revert",
+      reason: "activity_revert",
+      sessionId: entry.sessionId
+    });
+    return {
+      ok: true,
+      reverted: entry,
+      entry: revertRecord
+    };
   }
 
   studioSessionLastContactAt(session) {
@@ -2610,6 +2710,18 @@ class PluginRobloxApp {
     }
     this.defaultProjectId = project.id;
     return project;
+  }
+
+  setAutoSyncToStudio(enabled) {
+    this.autoSyncToStudio = enabled === true;
+    this.autoSyncToStudioExplicit = true;
+    logSync("auto_sync_to_studio_changed", {
+      enabled: this.autoSyncToStudio
+    });
+    return {
+      ok: true,
+      autoSyncToStudio: this.autoSyncToStudio
+    };
   }
 
   activeLastCommandError(session) {

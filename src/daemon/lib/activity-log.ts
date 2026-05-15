@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const DEFAULT_JSONL_FILE = "activity.jsonl";
 const DEFAULT_MARKDOWN_FILE = "activity.md";
 const DEFAULT_LOG_DIRECTORY = "activity";
+const DEFAULT_MAX_SNAPSHOT_BYTES = 128 * 1024;
 
 function normalizeSlashes(value) {
   return String(value || "").replace(/\\/g, "/");
@@ -20,16 +21,44 @@ function fileHash(filePath) {
   return crypto.createHash("sha1").update(fs.readFileSync(filePath)).digest("hex");
 }
 
-function getFileInfo(filePath) {
+function isProbablyText(buffer) {
+  if (!buffer || buffer.length === 0) {
+    return true;
+  }
+  if (buffer.includes(0)) {
+    return false;
+  }
+  const sampleLength = Math.min(buffer.length, 4096);
+  let suspicious = 0;
+  for (let index = 0; index < sampleLength; index++) {
+    const value = buffer[index];
+    const isAllowedControl = value === 9 || value === 10 || value === 13;
+    if (value < 32 && !isAllowedControl) {
+      suspicious++;
+    }
+  }
+  return suspicious / sampleLength < 0.02;
+}
+
+function getFileInfo(filePath, options: any = {}) {
   try {
     const stats = fs.statSync(filePath);
     if (!stats.isFile()) {
       return null;
     }
-    return {
+    const info: any = {
       size: stats.size,
       hash: fileHash(filePath)
     };
+    const maxSnapshotBytes = Number(options.maxSnapshotBytes || DEFAULT_MAX_SNAPSHOT_BYTES);
+    if (options.includeText === true && stats.size <= maxSnapshotBytes) {
+      const buffer = fs.readFileSync(filePath);
+      if (isProbablyText(buffer)) {
+        info.text = buffer.toString("utf8");
+        info.textTruncated = false;
+      }
+    }
+    return info;
   } catch (_error) {
     return null;
   }
@@ -73,6 +102,7 @@ class ActivityLog {
     this.jsonlFileName = options.jsonlFileName || DEFAULT_JSONL_FILE;
     this.markdownFileName = options.markdownFileName || DEFAULT_MARKDOWN_FILE;
     this.logDirectoryName = options.logDirectoryName || DEFAULT_LOG_DIRECTORY;
+    this.maxSnapshotBytes = Number(options.maxSnapshotBytes || DEFAULT_MAX_SNAPSHOT_BYTES);
   }
 
   get directoryPath() {
@@ -111,6 +141,18 @@ class ActivityLog {
     return path.join(this.dailyDirectoryPath(timestamp), this.markdownFileName);
   }
 
+  detailsDirectoryPath(timestamp = new Date().toISOString()) {
+    return path.join(this.dailyDirectoryPath(timestamp), "details");
+  }
+
+  detailPathForRecord(record) {
+    return path.join(this.detailsDirectoryPath(record.timestamp), `${record.id}.json`);
+  }
+
+  detailRelativePathForRecord(record) {
+    return normalizeSlashes(path.relative(this.workspaceRoot, this.detailPathForRecord(record)));
+  }
+
   collectJsonlPaths() {
     const paths = [];
     if (fs.existsSync(this.logRootPath)) {
@@ -130,15 +172,73 @@ class ActivityLog {
     return paths;
   }
 
+  writeDetail(record, entry: any = {}) {
+    const detail: any = {
+      id: record.id,
+      timestamp: record.timestamp,
+      action: record.action,
+      path: record.path,
+      relativePath: record.relativePath,
+      oldHash: entry.oldHash ?? record.oldHash ?? null,
+      newHash: entry.newHash ?? record.newHash ?? (record.action === "delete" ? null : (record.hash ?? null)),
+      oldSize: Number.isFinite(entry.oldSize) ? entry.oldSize : record.oldSize,
+      newSize: Number.isFinite(entry.newSize) ? entry.newSize : record.newSize,
+      oldText: typeof entry.oldText === "string" ? entry.oldText : null,
+      newText: typeof entry.newText === "string" ? entry.newText : null,
+      oldTextAvailable: typeof entry.oldText === "string",
+      newTextAvailable: typeof entry.newText === "string",
+      snapshotLimitBytes: this.maxSnapshotBytes
+    };
+    const hasUsefulDetail = detail.oldHash
+      || detail.newHash
+      || detail.oldTextAvailable
+      || detail.newTextAvailable
+      || record.action === "create";
+    if (!hasUsefulDetail) {
+      return null;
+    }
+    fs.mkdirSync(this.detailsDirectoryPath(record.timestamp), { recursive: true });
+    fs.writeFileSync(this.detailPathForRecord(record), `${JSON.stringify(detail, null, 2)}\n`, "utf8");
+    return detail;
+  }
+
+  withDetail(record) {
+    if (!record?.detailPath) {
+      return record;
+    }
+    const absoluteDetailPath = path.resolve(this.workspaceRoot, record.detailPath);
+    if (!fs.existsSync(absoluteDetailPath)) {
+      return record;
+    }
+    try {
+      return {
+        ...record,
+        detail: JSON.parse(fs.readFileSync(absoluteDetailPath, "utf8"))
+      };
+    } catch (_error) {
+      return record;
+    }
+  }
+
   add(entry: any = {}) {
     const timestamp = entry.timestamp || new Date().toISOString();
+    const action = entry.action || "modify";
     const absolutePath = entry.path ? path.resolve(entry.path) : null;
     const relativePath = entry.relativePath
       || (absolutePath ? path.relative(this.workspaceRoot, absolutePath) : null);
-    const record = {
+    const oldHash = entry.oldHash ?? (action === "delete" ? (entry.hash ?? null) : null);
+    const newHash = action === "delete" ? null : (entry.newHash ?? entry.hash ?? null);
+    const canRevert = entry.canRevert !== undefined
+      ? entry.canRevert === true
+      : (
+        (action === "create" && Boolean(newHash))
+        || (action === "delete" && typeof entry.oldText === "string")
+        || (action === "modify" && typeof entry.oldText === "string" && Boolean(newHash))
+      );
+    const record: any = {
       id: entry.id || `${Date.now().toString(36)}-${hashValue(`${timestamp}:${entry.path}:${Math.random()}`).slice(0, 8)}`,
       timestamp,
-      action: entry.action || "modify",
+      action,
       path: absolutePath ? normalizeSlashes(absolutePath) : null,
       relativePath: relativePath ? normalizeSlashes(relativePath) : null,
       projectId: entry.projectId || null,
@@ -148,10 +248,20 @@ class ActivityLog {
       reason: entry.reason || null,
       sessionId: entry.sessionId || null,
       size: Number.isFinite(entry.size) ? entry.size : null,
-      hash: entry.hash || null
+      hash: entry.hash || newHash || oldHash || null,
+      oldHash,
+      newHash,
+      oldSize: Number.isFinite(entry.oldSize) ? entry.oldSize : (action === "delete" && Number.isFinite(entry.size) ? entry.size : null),
+      newSize: Number.isFinite(entry.newSize) ? entry.newSize : (action === "delete" ? null : (Number.isFinite(entry.size) ? entry.size : null)),
+      hasTextSnapshot: typeof entry.oldText === "string" || typeof entry.newText === "string",
+      canRevert
     };
 
     fs.mkdirSync(this.dailyDirectoryPath(record.timestamp), { recursive: true });
+    const detail = this.writeDetail(record, entry);
+    if (detail) {
+      record.detailPath = this.detailRelativePathForRecord(record);
+    }
     fs.appendFileSync(this.jsonlPathForTimestamp(record.timestamp), `${JSON.stringify(record)}\n`, "utf8");
     this.appendMarkdown(record);
     return record;
@@ -191,12 +301,21 @@ class ActivityLog {
       if (options.projectId && record.projectId !== options.projectId) {
         continue;
       }
-      filtered.push(record);
+      filtered.push(options.includeDetails ? this.withDetail(record) : record);
       if (limit > 0 && filtered.length >= limit) {
         break;
       }
     }
     return filtered;
+  }
+
+  get(id, options: any = {}) {
+    const record = this.query({ includeDetails: options.includeDetails === true })
+      .find((candidate) => candidate.id === id);
+    if (!record) {
+      return null;
+    }
+    return record;
   }
 
   summary() {
