@@ -145,7 +145,7 @@ Este arquivo registra uma revisao geral do estado atual do Amarillo apos os iten
 - Expor resumo em `/doctor` ou `/diagnostics/perf`.
 - Criar `npm run bench:sync` com um workspace sintetico.
 
-### P3 - Plugin Lua precisa de pipeline de modularizacao
+### P3 [concluido] - Plugin Lua precisa de pipeline de modularizacao
 
 **Evidencia:** `src/plugin/Amarillo.lua` segue monolitico e ja contem workaround de escopo para evitar limite de registradores do Studio.
 
@@ -162,7 +162,7 @@ Este arquivo registra uma revisao geral do estado atual do Amarillo apos os iten
 - Criar script `build:plugin` para concatenar em `src/plugin/Amarillo.lua`.
 - Adicionar guardrail que verifica ordem de concatenacao e constantes de versao.
 
-### P3 - `sidebar.ts` ja esta extraido, mas ainda cresceu bastante
+### P3 [concluido] - `sidebar.ts` ja esta extraido, mas ainda cresceu bastante
 
 **Evidencia:** `vscode-extension-src/sidebar.ts` tem ~825 linhas, misturando state builders, HTML renderers, CSS e activity rendering.
 

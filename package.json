@@ -7,9 +7,10 @@
   "scripts": {
     "build:runtime": "tsc -p tsconfig.daemon.json",
     "build:extension": "npm run build:scripts && tsc -p tsconfig.extension.json && node scripts/flatten-extension-build.js",
+    "build:plugin": "npm run build:scripts && node scripts/build-plugin.js",
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "build:tests": "tsc -p tsconfig.tests.json",
-    "build": "npm run build:runtime && npm run build:extension",
+    "build": "npm run build:plugin && npm run build:runtime && npm run build:extension",
     "version:sync": "npm run build:scripts && node scripts/sync-version.js",
     "version:set": "npm run build:scripts && node scripts/sync-version.js",
     "diagnose:mcp": "npm run build:scripts && node scripts/diagnose-mcp.js",

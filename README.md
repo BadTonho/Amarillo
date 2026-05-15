@@ -8,7 +8,8 @@ This repository contains the **source code for the bridge and the VS Code extens
 
 - `src/daemon/` and `src/mcp-proxy/`: canonical TypeScript source for the HTTP daemon and MCP proxy. The generated `.js` files in these folders are build artifacts.
 - `vscode-extension-src/`: canonical TypeScript source for the VS Code extension.
-- `src/plugin/Amarillo.lua`: local Roblox Studio plugin; this remains Luau because Studio runs it directly.
+- `src/plugin-src/`: canonical ordered Luau fragments for the Roblox Studio plugin.
+- `src/plugin/Amarillo.lua`: generated, committed single-file Roblox Studio plugin consumed by Studio, the extension, and VSIX packaging.
 - `src/daemon/**/*.js`, `src/mcp-proxy/**/*.js`, `vscode-extension/*.js`, `tests/*.js`, and `scripts/*.js`: generated JavaScript artifacts created by the TypeScript build.
 - `tests/`: canonical TypeScript tests for project parsing, bootstrap, diagnostics, VSIX packaging, and MCP proxy behavior.
 
@@ -92,11 +93,14 @@ The Node runtime and VS Code extension are authored from TypeScript sources:
 - `scripts/*.ts` compiles to `scripts/*.js`
 - `tests/*.ts` compiles to `tests/*.js`
 
-Run `npm run build` after editing runtime or extension TypeScript. Run `npm run build:scripts` before invoking generated script CLIs directly. Generated JavaScript stays in the existing runtime paths so Roblox Studio, tests, and VS Code packaging keep working, but it should not be edited or committed.
+The Roblox Studio plugin is authored from `src/plugin-src/*.lua` and generated into the committed single-file `src/plugin/Amarillo.lua`. Studio still loads the generated file directly; do not edit it by hand.
+
+Run `npm run build` after editing runtime TypeScript, extension TypeScript, or plugin fragments. Run `npm run build:scripts` before invoking generated script CLIs directly. Generated JavaScript stays in the existing runtime paths so Roblox Studio, tests, and VS Code packaging keep working, but it should not be edited or committed.
 
 Useful commands:
 
 - `npm.cmd run typecheck`: typechecks runtime, extension, contracts, scripts, and tests.
+- `npm.cmd run build:plugin`: regenerates `src/plugin/Amarillo.lua` from `src/plugin-src/manifest.json`.
 - `npm.cmd run check`: builds generated JavaScript and validates it with `node --check`.
 - `npm.cmd run check:sources`: verifies that generated JavaScript with a TypeScript counterpart is classified away from source inventories.
 - `npm.cmd test`: builds all generated JavaScript required by tests, then runs `node --test`.
@@ -161,7 +165,7 @@ The final file will be created in `dist/`. Packaging includes only the generated
 ## Notes
 
 - The project is still `Windows-first`.
-- The Studio plugin remains a single file to make installation and reload simpler.
+- The Studio plugin runtime remains a single generated file to make installation and reload simpler.
 - Property sync is still extensible for new `className`s and serialized types.
 - `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed, inherited, and enforced by the Studio-to-disk writer.
 - Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).

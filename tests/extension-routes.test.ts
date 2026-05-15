@@ -16,6 +16,10 @@ function readGeneratedExtensionBundle() {
   return [
     "extension.js",
     "sidebar.js",
+    "sidebar-state.js",
+    "sidebar-activity.js",
+    "sidebar-styles.js",
+    "sidebar-render.js",
     "bridge-state.js"
   ].map(readGeneratedExtensionFile).join("\n");
 }
