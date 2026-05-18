@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.2"
+local PLUGIN_VERSION = "1.1.4"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -81,6 +81,42 @@ local disconnectWatcher
 local startWatcher
 local resetSessionState
 local widget
+local function isExperienceRunning()
+	local ok, running = pcall(function()
+		return RunService:IsRunning()
+	end)
+	return ok and running == true
+end
+
+local function hidePluginWidget()
+	if widget then
+		widget.Enabled = false
+	end
+end
+
+local function showPluginWidget()
+	if not widget then
+		return false
+	end
+	if isExperienceRunning() then
+		hidePluginWidget()
+		return false
+	end
+	widget.Enabled = true
+	return true
+end
+
+local function togglePluginWidget()
+	if not widget then
+		return
+	end
+	if widget.Enabled then
+		hidePluginWidget()
+	else
+		showPluginWidget()
+	end
+end
+
 local executeModifyProperty
 local executeCreateInstance
 local executeDeleteInstance

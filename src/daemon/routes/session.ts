@@ -83,7 +83,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       jsonResponse(response, 409, { ok: false, error: blockedReason, session: app.sessionSummary(session) });
       return true;
     }
-    const snapshot = await app.requestStudioTree(sessionId);
+    const snapshot = await app.requestStudioTree(sessionId, { writeToDisk: true, reason: "manual" });
     jsonResponse(response, 200, {
       ok: true,
       snapshot,
@@ -103,7 +103,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       ? "studio_to_pc"
       : "pc_to_studio";
     if (direction === "studio_to_pc") {
-      const snapshot = await app.requestStudioTree(sessionId);
+      const snapshot = await app.requestStudioTree(sessionId, { writeToDisk: true, reason: "manual" });
       app.markSyncVerified(session, session.lastStudioHash);
       jsonResponse(response, 200, {
         ok: true,

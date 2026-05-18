@@ -211,7 +211,7 @@ end
 local function handleCommand(command)
 	if command.type == "apply_project_tree" then
 		local isInitialPcSync = state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth"
-		local ok, message, appliedSnapshot = applyProjectSnapshot(command.payload.project, command)
+		local ok, message, appliedSnapshot, correctedDuringApply = applyProjectSnapshot(command.payload.project, command)
 		if ok and isInitialPcSync then
 			state.awaitingInitialSync = false
 			local watcherOk, watcherErr = pcall(startWatcher)
@@ -225,6 +225,7 @@ local function handleCommand(command)
 		postCommandResult(command.id, ok, {
 			result = message,
 			snapshot = appliedSnapshot,
+			corrected = correctedDuringApply == true,
 			error = ok and nil or message
 		})
 		appendLog(ok and "Local snapshot applied in Studio." or ("Apply failed: " .. tostring(message)))

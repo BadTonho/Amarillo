@@ -2489,7 +2489,8 @@ class PluginRobloxApp {
         if (payload?.snapshot) {
           this.updateStudioSnapshot(sessionId, payload.snapshot, "apply_project_tree_corrected");
           const observedHash = session.lastStudioHash;
-          if (command.expectedHash && observedHash === command.expectedHash) {
+          const correctedSnapshotAccepted = payload?.corrected === true;
+          if ((command.expectedHash && observedHash === command.expectedHash) || correctedSnapshotAccepted) {
             this.markSyncVerified(session, observedHash);
           } else {
             this.markSyncDegraded(session, "Studio snapshot hash did not match the applied project tree.", {
@@ -2849,7 +2850,7 @@ class PluginRobloxApp {
     this.scheduleStudioSnapshotWrite(session, reason, writeNow);
   }
 
-  async requestStudioTree(sessionId) {
+  async requestStudioTree(sessionId, options: { writeToDisk?: boolean; reason?: string } = {}) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error("Studio session not found.");
@@ -2859,10 +2860,12 @@ class PluginRobloxApp {
       throw new Error(result.error || "Studio did not return a tree.");
     }
     if (result.snapshot) {
-      if (this.isSessionVersionBlocked(session)) {
-        this.cacheStudioSnapshot(session, result.snapshot, "manual_readonly");
+      const shouldWriteToDisk = options.writeToDisk === true && !this.isSessionVersionBlocked(session);
+      if (shouldWriteToDisk) {
+        this.updateStudioSnapshot(sessionId, result.snapshot, options.reason || "manual");
       } else {
-        this.updateStudioSnapshot(sessionId, result.snapshot, "manual");
+        const observedHash = this.cacheStudioSnapshot(session, result.snapshot, options.reason || "manual_readonly");
+        this.ensureSessionSyncState(session).lastObservedHash = observedHash;
       }
     }
     return result.snapshot;

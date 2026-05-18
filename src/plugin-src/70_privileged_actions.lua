@@ -98,8 +98,14 @@ executeCreateInstance = function(command)
 
 	local className = command.payload.className
 	local instanceName = command.payload.name or className
-	local ok, result = pcall(function()
+	local okStartWaypoint, startWaypointErr = pcall(function()
 		ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
+	end)
+	if not okStartWaypoint then
+		appendLog("create_instance waypoint warning: " .. tostring(startWaypointErr))
+	end
+
+	local ok, result = pcall(function()
 		local okNew, newInstance = pcall(function()
 			return Instance.new(className)
 		end)
@@ -125,13 +131,25 @@ executeCreateInstance = function(command)
 			destroyUnexpectedChild(newInstance, "failed MCP create cleanup")
 			error(parentErr)
 		end
-		ChangeHistoryService:SetWaypoint("MCP create instance done")
-		return newInstance:GetFullName()
+		return newInstance
 	end)
+	local fullName = nil
+	if ok and result then
+		fullName = instanceName
+		pcall(function()
+			fullName = result:GetFullName()
+		end)
+		local okDoneWaypoint, doneWaypointErr = pcall(function()
+			ChangeHistoryService:SetWaypoint("MCP create instance done")
+		end)
+		if not okDoneWaypoint then
+			appendLog("create_instance completion waypoint warning: " .. tostring(doneWaypointErr))
+		end
+	end
 
 	postCommandResult(command.id, ok, {
 		result = ok and "Instance created successfully" or nil,
-		fullName = ok and result or nil,
+		fullName = ok and fullName or nil,
 		error = ok and nil or tostring(result),
 		parentPath = command.payload.parentPath,
 		className = className,
@@ -375,7 +393,7 @@ showDestructiveConfirmation = function(command)
 		state.ui.propertyConfirmOverlay.Visible = true
 		updateStatus("waiting for confirmation")
 	end
-	widget.Enabled = true
+	showPluginWidget()
 	appendLog(destructiveConfirmationContent(command).logMessage)
 end
 

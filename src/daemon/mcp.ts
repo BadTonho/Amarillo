@@ -233,7 +233,7 @@ const TOOL_HANDLERS = {
   },
   run_code: async (app, args) => textContent(await app.runStudioCode(args.sessionId, args.code)),
   push_changes: async (app, args) => {
-    const snapshot = await app.requestStudioTree(args.sessionId);
+    const snapshot = await app.requestStudioTree(args.sessionId, { writeToDisk: true, reason: "manual" });
     return textContent({
       ok: true,
       snapshot,

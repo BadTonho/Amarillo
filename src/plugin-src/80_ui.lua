@@ -15,7 +15,7 @@ local function openConnectionPrompt(context)
 		state.ui.connectionPromptChooseStudio.Visible = false
 		state.ui.connectionPromptOverlay.Visible = true
 	end
-	widget.Enabled = true
+	showPluginWidget()
 	updateStatus("waiting for confirmation")
 	appendLog("Connection request received. Waiting for your confirmation.")
 end
@@ -601,7 +601,7 @@ toolbarButton.ClickableWhenViewportHidden = true
 
 local widgetInfo = DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Right,
-	true,
+	false,
 	true,
 	460,
 	640,
@@ -923,10 +923,18 @@ diffCancelBtn.ZIndex = 42
 end
 
 toolbarButton.Click:Connect(function()
-	widget.Enabled = not widget.Enabled
+	togglePluginWidget()
 end)
 
-widget.Enabled = true
+hidePluginWidget()
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		if isExperienceRunning() and widget and widget.Enabled then
+			hidePluginWidget()
+		end
+	end
+end)
 loadSettings()
 updateEndpointSummary()
 appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))

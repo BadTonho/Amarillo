@@ -69,6 +69,46 @@ test("Roblox plugin gates run_code behind privileged action confirmation", () =>
   assert.match(pluginSource, /run_code, modify_property, create_instance, delete_instance, or insert_model/);
 });
 
+test("Roblox plugin keeps its dock widget hidden during playtest", () => {
+  assert.match(pluginSource, /local function isExperienceRunning\(\)[\s\S]+RunService:IsRunning\(\)/);
+  assert.match(pluginSource, /local function showPluginWidget\(\)[\s\S]+if isExperienceRunning\(\) then\s+hidePluginWidget\(\)\s+return false/);
+  assert.match(pluginSource, /DockWidgetPluginGuiInfo\.new\(\s+Enum\.InitialDockState\.Right,\s+false,\s+true,/);
+  assert.match(pluginSource, /toolbarButton\.Click:Connect\(function\(\)\s+togglePluginWidget\(\)\s+end\)/);
+  assert.match(pluginSource, /if isExperienceRunning\(\) and widget and widget\.Enabled then\s+hidePluginWidget\(\)\s+end/);
+  assert.doesNotMatch(pluginSource, /widget\.Enabled = true\s+loadSettings\(\)/);
+});
+
+test("Roblox plugin keeps the privileged action confirmation toggle in Settings", () => {
+  assert.match(pluginSource, /state\.ui\.confirmPropToggle = makeButton/);
+  assert.match(pluginSource, /confirmPrivilegedActions = state\.confirmPrivilegedActions/);
+  assert.match(pluginSource, /if saved\.confirmPrivilegedActions ~= nil then/);
+  assert.match(pluginSource, /saveSettings\(\)\s+appendLog\("Privileged action confirmation "/);
+});
+
+test("Roblox plugin preflights and safely recovers missing sync mounts", () => {
+  assert.match(pluginSource, /local function preflightProjectMounts\(projectSnapshot\)/);
+  assert.match(pluginSource, /local function validateMountContainerRecovery\(segments\)/);
+  assert.match(pluginSource, /local function ensureRecoverableMountContainer\(segments\)/);
+  assert.match(pluginSource, /return game:GetService\(segment\)/);
+  assert.match(pluginSource, /Instance\.new\("Folder"\)/);
+  assert.match(pluginSource, /Mount integrity found:/);
+  assert.match(pluginSource, /Mount integrity recreated:/);
+  assert.match(pluginSource, /Mount integrity blocked:/);
+  assert.match(pluginSource, /Mount integrity ignored:/);
+  assert.match(pluginSource, /Sync blocked: unsafe or missing mount base\(s\):/);
+  assert.match(pluginSource, /local container = mountContainers\[mount\]/);
+  assert.doesNotMatch(pluginSource, /Mount not found:/);
+});
+
+test("Roblox plugin does not fail create_instance after successful parenting because of waypoints", () => {
+  assert.match(pluginSource, /local okStartWaypoint, startWaypointErr = pcall\(function\(\)\s+ChangeHistoryService:SetWaypoint\("MCP create instance: " \.\. className\)/);
+  assert.match(pluginSource, /return newInstance\s+end\)\s+local fullName = nil/);
+  assert.match(pluginSource, /local okDoneWaypoint, doneWaypointErr = pcall\(function\(\)\s+ChangeHistoryService:SetWaypoint\("MCP create instance done"\)/);
+  assert.match(pluginSource, /create_instance completion waypoint warning/);
+  assert.match(pluginSource, /fullName = ok and fullName or nil/);
+  assert.match(pluginSource, /reasonCode = ok and nil or "CREATE_FAILED"/);
+});
+
 test("Roblox plugin reuses the serialized snapshot body for automatic snapshot cache checks", () => {
   assert.match(pluginSource, /lastSnapshotBodyJson = nil/);
   assert.match(pluginSource, /local bodyJson = HttpService:JSONEncode\(bodyTable\)/);
@@ -78,6 +118,7 @@ test("Roblox plugin reuses the serialized snapshot body for automatic snapshot c
 
 test("Roblox plugin confirms apply commands with verification snapshots", () => {
   assert.match(pluginSource, /postCommandResult\(command\.id, ok, \{\s+result = message,\s+snapshot = appliedSnapshot,/);
+  assert.match(pluginSource, /corrected = correctedDuringApply == true/);
   assert.match(pluginSource, /postCommandResult\(command\.id, ok, \{\s+result = ok and "Patch aplicado" or tostring\(err\),\s+snapshot = appliedSnapshot,/);
 });
 

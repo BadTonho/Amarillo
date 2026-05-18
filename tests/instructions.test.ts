@@ -48,6 +48,8 @@ test("instructions markdown includes plugin commands and MCP tools", () => {
   assert.match(markdown, /### delete_instance/);
   assert.match(markdown, /### insert_model/);
   assert.match(markdown, /Treat `run_code` as privileged arbitrary Luau execution/);
+  assert.match(markdown, /reasonCode: "SYNC_DEGRADED"/);
+  assert.match(markdown, /recover the session with `pull_changes`/);
   assert.match(markdown, /mcp\.jsonl/);
   assert.match(markdown, /reasonCode/);
   assert.match(markdown, /Game\.project\.json/);
