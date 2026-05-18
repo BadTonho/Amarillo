@@ -90,6 +90,7 @@ class StudioSnapshotWriter {
 
     const session = this.app.sessions.get(sessionId);
     const reason = job.reason;
+    let didStartDiskWrite = false;
     try {
       const project = session ? this.app.getProjectById(session.projectId) : null;
       if (!session || !project || !session.lastStudioSnapshot) {
@@ -109,6 +110,7 @@ class StudioSnapshotWriter {
         snapshotHash: session.lastStudioHash
       });
       this.app.lastDiskWriteTime = Date.now();
+      didStartDiskWrite = true;
       let changes = [];
       try {
         changes = await writeStudioProjectStateAsync(project, session.lastStudioSnapshot, {
@@ -159,6 +161,9 @@ class StudioSnapshotWriter {
         this.app.recordPerformance("studio_snapshot.write.duration", performance.now() - perfStartedAt);
       }
     } finally {
+      if (didStartDiskWrite) {
+        this.app.lastDiskWriteTime = Date.now();
+      }
       if (this.pendingWrites.get(sessionId) === job) {
         this.pendingWrites.delete(sessionId);
       }

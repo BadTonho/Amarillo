@@ -201,6 +201,13 @@ test("Roblox plugin aggregates safe-set failures for Doctor diagnostics", () => 
   assert.match(pluginSource, /totalFailures = totalFailures,[\s\S]+uniqueFailures = #failures,[\s\S]+failures = limitedFailures/);
 });
 
+test("Roblox plugin preserves nested exclusive mount containers during sync", () => {
+  assert.match(pluginSource, /local function buildNestedMountChildIndex\(mounts\)/);
+  assert.match(pluginSource, /local function isNestedMountChild\(indexed, parentSegments, childName\)/);
+  assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mountSegments, child\.Name\) and shouldIncludeSnapshotChild/);
+  assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mount\.segments or \{\}, child\.Name\) and not isNonSyncableInstance/);
+});
+
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {
   assert.match(pluginSource, /local function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
   assert.match(pluginSource, /local function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);
@@ -214,9 +221,15 @@ test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => 
   assert.match(pluginSource, /attemptInitialStudioSync\("retry", false\)/);
 });
 
-test("Roblox plugin surfaces sync diagnostics and sends placeId with connection diff", () => {
+test("Roblox plugin surfaces sync diagnostics and sends place identity with connection requests", () => {
   assert.match(pluginSource, /warn\("\[Amarillo\] " \.\. tostring\(message\)\)/);
+  assert.match(pluginSource, /MarketplaceService = game:GetService\("MarketplaceService"\)/);
+  assert.match(pluginSource, /MarketplaceService:GetProductInfo\(placeId\)/);
+  assert.match(pluginSource, /local fallback = tostring\(game\.Name or ""\)/);
   assert.match(pluginSource, /request\("POST", "\/connection\/diff", \{\s+placeId = game\.PlaceId,/);
+  assert.match(pluginSource, /placeName = currentPlaceName\(\)/);
+  assert.match(pluginSource, /request\("POST", "\/connection\/accept", \{\s+offerId = context\.offerId,[\s\S]+placeName = currentPlaceName\(\)/);
+  assert.match(pluginSource, /PLACE_SETUP_REQUIRED/);
 });
 
 test("Roblox plugin UI construction keeps local registers below Studio limits", () => {

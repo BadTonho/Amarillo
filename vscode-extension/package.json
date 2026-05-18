@@ -84,6 +84,14 @@
         "title": "Amarillo: Toggle Privileged Action Confirmation"
       },
       {
+        "command": "amarillo.createPlaceProject",
+        "title": "Amarillo: Create Place Project"
+      },
+      {
+        "command": "amarillo.editPlaceIds",
+        "title": "Amarillo: Edit Place IDs"
+      },
+      {
         "command": "amarillo.sendFilesToStudio",
         "title": "Amarillo: Send Files to Studio"
       },

@@ -169,6 +169,23 @@ local function currentWorkspaceLabel()
 	return "-"
 end
 
+local function currentPlaceName()
+	local fallback = tostring(game.Name or "")
+	local placeId = tonumber(game.PlaceId) or 0
+	if placeId > 0 then
+		local ok, info = pcall(function()
+			return MarketplaceService:GetProductInfo(placeId)
+		end)
+		if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
+			return info.Name
+		end
+	end
+	if fallback ~= "" then
+		return fallback
+	end
+	return "Place " .. tostring(placeId)
+end
+
 local function findProjectById(projectId)
 	for _, project in ipairs(state.availableProjects or {}) do
 		if project.id == projectId then

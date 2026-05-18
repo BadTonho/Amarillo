@@ -89,6 +89,7 @@ local function acceptPendingConnection(truthSource)
 		offerId = context.offerId,
 		studioInstanceId = state.studioInstanceId,
 		placeId = game.PlaceId,
+		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		pluginVersion = PLUGIN_VERSION,
@@ -234,6 +235,7 @@ local function fetchAndShowDiff(truthSource)
 	
 	local ok, response = request("POST", "/connection/diff", {
 		placeId = game.PlaceId,
+		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		studioSnapshot = studioSnapshot
@@ -241,6 +243,9 @@ local function fetchAndShowDiff(truthSource)
 
 	if ok and response and response.changes then
 		showDiffOverlay(truthSource, response.changes)
+	elseif type(response) == "string" and string.find(response, "PLACE_SETUP_REQUIRED", 1, true) then
+		updateStatus("place setup required")
+		appendLog("Create the place project in the VS Code sidebar before syncing this place.")
 	else
 		appendLog("Failed to calculate diff. Proceeding without preview.")
 		acceptPendingConnection(truthSource)

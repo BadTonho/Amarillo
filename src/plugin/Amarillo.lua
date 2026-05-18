@@ -10,6 +10,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local LogService = game:GetService("LogService")
 local Players = game:GetService("Players")
 local InsertService = game:GetService("InsertService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
@@ -304,6 +305,23 @@ local function currentWorkspaceLabel()
 		return state.project.name
 	end
 	return "-"
+end
+
+local function currentPlaceName()
+	local fallback = tostring(game.Name or "")
+	local placeId = tonumber(game.PlaceId) or 0
+	if placeId > 0 then
+		local ok, info = pcall(function()
+			return MarketplaceService:GetProductInfo(placeId)
+		end)
+		if ok and type(info) == "table" and type(info.Name) == "string" and info.Name ~= "" then
+			return info.Name
+		end
+	end
+	if fallback ~= "" then
+		return fallback
+	end
+	return "Place " .. tostring(placeId)
 end
 
 local function findProjectById(projectId)
@@ -1086,6 +1104,37 @@ local function indexDesiredChildren(children)
 	return indexed
 end
 
+local function mountKeyFromSegments(segments)
+	return table.concat(segments or {}, "\0")
+end
+
+local function buildNestedMountChildIndex(mounts)
+	local indexed = {}
+	for _, mount in ipairs(mounts or {}) do
+		local segments = mount.segments
+		if (not segments or #segments == 0) and type(mount.path) == "string" then
+			segments = string.split(mount.path, ".")
+		end
+		if type(segments) == "table" then
+			local parentSegments = {}
+			for index = 1, #segments - 1 do
+				table.insert(parentSegments, segments[index])
+				local key = mountKeyFromSegments(parentSegments)
+				if not indexed[key] then
+					indexed[key] = {}
+				end
+				indexed[key][segments[index + 1]] = true
+			end
+		end
+	end
+	return indexed
+end
+
+local function isNestedMountChild(indexed, parentSegments, childName)
+	local bucket = indexed and indexed[mountKeyFromSegments(parentSegments)]
+	return bucket and bucket[childName] == true
+end
+
 local function findDesiredChildForInstance(instance, desiredChildIndex)
 	local bucket = desiredChildIndex and desiredChildIndex[instance.Name]
 	if not bucket then
@@ -1410,17 +1459,19 @@ local function snapshotCurrentProject()
 	local openDocumentSources = collectOpenDocumentSources()
 	local mounts = {}
 	local cachedMounts = {}
+	local nestedMountChildIndex = buildNestedMountChildIndex(state.project.mounts or {})
 	for _, mount in ipairs(state.treeCache and state.treeCache.mounts or {}) do
 		cachedMounts[mount.id] = mount
 	end
 	for _, mount in ipairs(state.project.mounts or {}) do
-		local container = resolveMountContainer(string.split(mount.path, "."))
+		local mountSegments = string.split(mount.path, ".")
+		local container = resolveMountContainer(mountSegments)
 		if container then
 			local children = {}
 			local desiredMount = cachedMounts[mount.id]
 			local desiredChildIndex = indexDesiredChildren(desiredMount and desiredMount.children or nil)
 			for _, child in ipairs(container:GetChildren()) do
-				if shouldIncludeSnapshotChild(child, desiredChildIndex) then
+				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex) then
 					table.insert(children, snapshotNode(child, openDocumentSources, findDesiredChildForInstance(child, desiredChildIndex)))
 				end
 			end
@@ -1720,6 +1771,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 	local correctedDuringApply = false
 	local appliedSnapshot = nil
 	local safeSetCycle = beginSafeSetFailureAggregation(command)
+	local nestedMountChildIndex = buildNestedMountChildIndex(projectSnapshot.mounts or {})
 
 	local okApply, applyError = xpcall(function()
 		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
@@ -1746,7 +1798,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 							-- Never destroy non-syncable instances (GUIs, Parts,
 							-- Cameras, etc.) during mount cleanup. The daemon
 							-- cannot represent these in the filesystem.
-							if not isNonSyncableInstance(child) then
+							if not isNestedMountChild(nestedMountChildIndex, mount.segments or {}, child.Name) and not isNonSyncableInstance(child) then
 								destroyUnexpectedChild(child, "mount cleanup")
 							end
 						end
@@ -3146,6 +3198,7 @@ local function acceptPendingConnection(truthSource)
 		offerId = context.offerId,
 		studioInstanceId = state.studioInstanceId,
 		placeId = game.PlaceId,
+		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		pluginVersion = PLUGIN_VERSION,
@@ -3291,6 +3344,7 @@ local function fetchAndShowDiff(truthSource)
 	
 	local ok, response = request("POST", "/connection/diff", {
 		placeId = game.PlaceId,
+		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		studioSnapshot = studioSnapshot
@@ -3298,6 +3352,9 @@ local function fetchAndShowDiff(truthSource)
 
 	if ok and response and response.changes then
 		showDiffOverlay(truthSource, response.changes)
+	elseif type(response) == "string" and string.find(response, "PLACE_SETUP_REQUIRED", 1, true) then
+		updateStatus("place setup required")
+		appendLog("Create the place project in the VS Code sidebar before syncing this place.")
 	else
 		appendLog("Failed to calculate diff. Proceeding without preview.")
 		acceptPendingConnection(truthSource)

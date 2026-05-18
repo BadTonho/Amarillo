@@ -245,6 +245,142 @@ test("connection diff auto-resolves the project when Studio has not selected one
   assert.ok(Array.isArray(response.payload.changes));
 });
 
+test("published places without a project mapping require place setup before sync", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const diff = await invoke(app, "POST", "/connection/diff", {
+    placeId: 987654,
+    placeName: "Namek Prime",
+    truthSource: "pc",
+    studioSnapshot: { mounts: [] }
+  });
+  assert.equal(diff.statusCode, 409);
+  assert.equal(diff.payload.code, "PLACE_SETUP_REQUIRED");
+  assert.equal(diff.payload.pendingPlaceSetup.placeId, 987654);
+  assert.equal(diff.payload.pendingPlaceSetup.placeName, "Namek Prime");
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.payload.pendingPlaceSetup.placeId, 987654);
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-new-place",
+    placeId: 987654,
+    placeName: "Namek Prime",
+    truthSource: "pc",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
+  });
+  assert.equal(accept.statusCode, 409);
+  assert.equal(accept.payload.code, "PLACE_SETUP_REQUIRED");
+  assert.equal(app.sessions.size, 0);
+});
+
+test("place setup creates a place project and all base and exclusive folders", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  app.rememberPendingPlaceSetup(987654, "Namek Prime");
+
+  const response = await invoke(app, "POST", "/projects/place-setup", {
+    placeId: 987654,
+    placeName: "Namek Prime"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.projectId, "NamekPrime.project.json");
+  const projectPath = path.join(workspace, "NamekPrime.project.json");
+  const projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
+  assert.deepEqual(projectJson.place_ids, [987654]);
+  assert.equal(projectJson.tree.Workspace.ExclusivoNamekPrime.$path, "NamekPrime/exclusive/Workspace");
+  assert.equal(projectJson.tree.StarterPlayer.StarterPlayerScripts.ExclusivoNamekPrime.$path, "NamekPrime/exclusive/StarterPlayer/StarterPlayerScripts");
+
+  for (const relativePath of [
+    "sync/Workspace",
+    "sync/ReplicatedStorage",
+    "sync/ServerScriptService",
+    "sync/ServerStorage",
+    "sync/StarterGui",
+    "sync/StarterPlayer/StarterCharacterScripts",
+    "sync/StarterPlayer/StarterPlayerScripts",
+    "NamekPrime/exclusive/Workspace",
+    "NamekPrime/exclusive/ReplicatedStorage",
+    "NamekPrime/exclusive/ServerScriptService",
+    "NamekPrime/exclusive/ServerStorage",
+    "NamekPrime/exclusive/StarterGui",
+    "NamekPrime/exclusive/StarterPlayer/StarterCharacterScripts",
+    "NamekPrime/exclusive/StarterPlayer/StarterPlayerScripts"
+  ]) {
+    assert.equal(fs.existsSync(path.join(workspace, relativePath)), true, relativePath);
+  }
+  assert.equal(app.pendingPlaceSetup, null);
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-namek-prime",
+    placeId: 987654,
+    placeName: "Namek Prime",
+    truthSource: "pc",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
+  });
+  assert.equal(accept.statusCode, 200);
+  assert.equal(accept.payload.session.projectId, "NamekPrime.project.json");
+  assert.equal(accept.payload.session.placeName, "Namek Prime");
+});
+
+test("place IDs can be edited from the projects route", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const update = await invoke(app, "PATCH", `/projects/${encodeURIComponent("Game.project.json")}/place-ids`, {
+    placeIds: [444, "555"]
+  });
+  assert.equal(update.statusCode, 200);
+  assert.deepEqual(update.payload.placeIds, [444, 555]);
+
+  const diff = await invoke(app, "POST", "/connection/diff", {
+    placeId: 444,
+    truthSource: "pc",
+    studioSnapshot: { mounts: [] }
+  });
+  assert.equal(diff.statusCode, 200);
+  assert.equal(app.getProjectById("Game.project.json").placeIds.includes(444), true);
+});
+
+test("workspace refresh materializes missing mount folders", () => {
+  const workspace = createTempWorkspace();
+  fs.writeFileSync(path.join(workspace, "Namek.project.json"), JSON.stringify({
+    name: "Namek",
+    place_ids: [123],
+    tree: {
+      "$className": "DataModel",
+      Workspace: {
+        "$path": "sync/Workspace",
+        ExclusivoNamek: {
+          "$path": "Namek/exclusive/Workspace"
+        }
+      },
+      StarterPlayer: {
+        StarterPlayerScripts: {
+          "$path": "sync/StarterPlayer/StarterPlayerScripts",
+          ExclusivoNamek: {
+            "$path": "Namek/exclusive/StarterPlayer/StarterPlayerScripts"
+          }
+        }
+      }
+    }
+  }, null, 2));
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  assert.equal(fs.existsSync(path.join(workspace, "sync/Workspace")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "sync/StarterPlayer/StarterPlayerScripts")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/Workspace")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/StarterPlayer/StarterPlayerScripts")), true);
+});
+
 test("HTTP connection accept blocks old plugins that do not report a version", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });

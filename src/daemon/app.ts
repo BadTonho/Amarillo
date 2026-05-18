@@ -124,6 +124,7 @@ const SCRIPT_PATCH_DEBOUNCE_MS = 75;
 const SCRIPT_PATCH_BURST_LIMIT = 25;
 const PROJECT_TREE_DEBOUNCE_MS = 250;
 const WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS = 50;
+const STUDIO_DISK_WRITE_EVENT_SUPPRESSION_MS = 1500;
 const COMMAND_RESULT_TIMEOUT_MS = 120000;
 const SYNC_COMMAND_TIMEOUT_MS = 30000;
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
@@ -136,6 +137,107 @@ const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
 const DEFAULT_PRIVILEGED_ACTION_CONFIRMATION = true;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
+const DEFAULT_PLACE_PROJECT_TREE = {
+  "$className": "DataModel",
+  Workspace: { "$path": "sync/Workspace" },
+  ReplicatedStorage: { "$path": "sync/ReplicatedStorage" },
+  ServerScriptService: { "$path": "sync/ServerScriptService" },
+  ServerStorage: { "$path": "sync/ServerStorage" },
+  StarterGui: { "$path": "sync/StarterGui" },
+  StarterPlayer: {
+    StarterCharacterScripts: { "$path": "sync/StarterPlayer/StarterCharacterScripts" },
+    StarterPlayerScripts: { "$path": "sync/StarterPlayer/StarterPlayerScripts" }
+  }
+};
+const STANDARD_PLACE_EXCLUSIVE_MOUNTS = [
+  { segments: ["Workspace"], sharedPath: "sync/Workspace", exclusivePath: "Workspace" },
+  { segments: ["ReplicatedStorage"], sharedPath: "sync/ReplicatedStorage", exclusivePath: "ReplicatedStorage" },
+  { segments: ["ServerScriptService"], sharedPath: "sync/ServerScriptService", exclusivePath: "ServerScriptService" },
+  { segments: ["ServerStorage"], sharedPath: "sync/ServerStorage", exclusivePath: "ServerStorage" },
+  { segments: ["StarterGui"], sharedPath: "sync/StarterGui", exclusivePath: "StarterGui" },
+  { segments: ["StarterPlayer", "StarterCharacterScripts"], sharedPath: "sync/StarterPlayer/StarterCharacterScripts", exclusivePath: "StarterPlayer/StarterCharacterScripts" },
+  { segments: ["StarterPlayer", "StarterPlayerScripts"], sharedPath: "sync/StarterPlayer/StarterPlayerScripts", exclusivePath: "StarterPlayer/StarterPlayerScripts" }
+];
+
+function cloneJson(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJson(item));
+  }
+  if (value && typeof value === "object") {
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = cloneJson(item);
+    }
+    return output;
+  }
+  return value;
+}
+
+function normalizePlaceName(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length > 0 ? text : null;
+}
+
+function placeSlugFromName(value, fallback = "Place") {
+  const normalized = String(value || fallback)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, " ")
+    .trim();
+  const slug = normalized
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("");
+  return slug || fallback;
+}
+
+function normalizePlaceIds(value) {
+  const source = Array.isArray(value) ? value : [value];
+  const ids = [];
+  const seen = new Set();
+  for (const item of source) {
+    const id = Number(item);
+    if (!Number.isFinite(id) || id <= 0) {
+      continue;
+    }
+    const normalized = Math.trunc(id);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      ids.push(normalized);
+    }
+  }
+  return ids;
+}
+
+function ensureTreeNode(root, segments, sharedPath) {
+  let node = root;
+  for (let index = 0; index < segments.length; index++) {
+    const segment = segments[index];
+    if (!node[segment] || typeof node[segment] !== "object" || Array.isArray(node[segment])) {
+      node[segment] = {};
+    }
+    node = node[segment];
+    if (index === segments.length - 1 && typeof node.$path !== "string") {
+      node.$path = sharedPath;
+    }
+  }
+  return node;
+}
+
+function addExclusivePlaceMounts(tree, placeSlug) {
+  const exclusiveNodeName = `Exclusivo${placeSlug}`;
+  if (!tree.$className) {
+    tree.$className = "DataModel";
+  }
+  for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
+    const leaf = ensureTreeNode(tree, mount.segments, mount.sharedPath);
+    leaf[exclusiveNodeName] = {
+      "$path": `${placeSlug}/exclusive/${mount.exclusivePath}`
+    };
+  }
+  return tree;
+}
 
 function createSyncState() {
   return {
@@ -323,6 +425,7 @@ class PluginRobloxApp {
   defaultProjectId: string | null;
   sessions: Map<string, RuntimeSession>;
   connectionOffer: ConnectionOfferRuntime | null;
+  pendingPlaceSetup: Record<string, unknown> | null;
   fileWatchers: FSWatcher[];
   pendingStudioWrites: Map<string, PendingStudioWrite>;
   lastWorkspaceRefresh: string | null;
@@ -372,6 +475,7 @@ class PluginRobloxApp {
     this.defaultProjectId = null;
     this.sessions = new Map<string, RuntimeSession>();
     this.connectionOffer = null;
+    this.pendingPlaceSetup = null;
     this.fileWatchers = [];
     this.pendingStudioWrites = new Map<string, PendingStudioWrite>();
     this.lastWorkspaceRefresh = null;
@@ -653,6 +757,7 @@ class PluginRobloxApp {
   readLocalProjectStateWithPerf(project, options = {}) {
     const startedAt = performance.now();
     try {
+      this.ensureProjectMountDirectories(project);
       return readLocalProjectState(project, options);
     } finally {
       this.recordPerformance("project.read.duration", performance.now() - startedAt);
@@ -662,9 +767,21 @@ class PluginRobloxApp {
   async readLocalProjectStateAsyncWithPerf(project, options = {}) {
     const startedAt = performance.now();
     try {
+      this.ensureProjectMountDirectories(project);
       return await readLocalProjectStateAsync(project, options);
     } finally {
       this.recordPerformance("project.read.duration", performance.now() - startedAt);
+    }
+  }
+
+  ensureProjectMountDirectories(project = null) {
+    const projects = project ? [project] : this.allProjects;
+    for (const candidate of projects || []) {
+      for (const mount of candidate?.mounts || []) {
+        if (mount?.absolutePath) {
+          fs.mkdirSync(mount.absolutePath, { recursive: true });
+        }
+      }
     }
   }
 
@@ -1048,7 +1165,11 @@ class PluginRobloxApp {
       ...(config.issues || []),
       ...(projectCatalog.issues || [])
     ];
+    this.ensureProjectMountDirectories();
     this.defaultProjectId = this.resolveDefaultProjectId(previousDefaultProjectId);
+    if (this.pendingPlaceSetup && this.hasProjectForPlace(this.pendingPlaceSetup.placeId)) {
+      this.pendingPlaceSetup = null;
+    }
     this.reportProjectCatalogIssues();
     this.refreshActivityKnownFiles();
     this.ensureInstructionsFile();
@@ -1429,6 +1550,7 @@ class PluginRobloxApp {
   reclaimStudioSession(session: RuntimeSession, selection: ProjectSelection, placeId, options: SessionOpenOptions = {}) {
     this.clearSessionRuntimeState(session);
     session.placeId = Number(placeId || 0);
+    session.placeName = normalizePlaceName(options.placeName);
     session.createdAt = new Date().toISOString();
     session.lastStudioHash = null;
     session.lastStudioSnapshot = null;
@@ -1793,10 +1915,20 @@ class PluginRobloxApp {
   }
 
   onWorkspaceFileChanged(changedPath, eventType = "change") {
-    if (this.lastDiskWriteTime && Date.now() - this.lastDiskWriteTime < 1000) {
+    const pendingStudioWriteCount = this.pendingStudioWrites?.size || 0;
+    if (pendingStudioWriteCount > 0) {
       logSync("file_change_ignored", {
-        reason: "within_1s_of_last_write",
+        reason: "studio_snapshot_write_pending",
+        pendingStudioWriteCount,
+        now: Date.now()
+      });
+      return;
+    }
+    if (this.lastDiskWriteTime && Date.now() - this.lastDiskWriteTime < STUDIO_DISK_WRITE_EVENT_SUPPRESSION_MS) {
+      logSync("file_change_ignored", {
+        reason: "recent_studio_snapshot_write",
         lastDiskWriteTime: this.lastDiskWriteTime,
+        suppressionMs: STUDIO_DISK_WRITE_EVENT_SUPPRESSION_MS,
         now: Date.now()
       });
       return;
@@ -1918,6 +2050,9 @@ class PluginRobloxApp {
   }
 
   projectPayload(project) {
+    if (!project) {
+      return null;
+    }
     return {
       id: project.id,
       name: project.name,
@@ -1932,6 +2067,156 @@ class PluginRobloxApp {
         relativePath: mount.relativePath,
         keepUnknowns: mount.keepUnknowns
       }))
+    };
+  }
+
+  hasProjectForPlace(placeId) {
+    const numericPlaceId = Number(placeId || 0);
+    return numericPlaceId > 0 && this.projects.some((project) => (project.placeIds || []).includes(numericPlaceId));
+  }
+
+  requiresPlaceSetup(placeId, projectId = null) {
+    return !projectId && Number(placeId || 0) > 0 && !this.hasProjectForPlace(placeId);
+  }
+
+  buildPendingPlaceSetup(placeId, placeName = null) {
+    const numericPlaceId = Number(placeId || 0);
+    if (numericPlaceId <= 0) {
+      return null;
+    }
+    const normalizedPlaceName = normalizePlaceName(placeName) || `Place ${numericPlaceId}`;
+    const placeSlug = placeSlugFromName(normalizedPlaceName, `Place${numericPlaceId}`);
+    return {
+      placeId: numericPlaceId,
+      placeName: normalizedPlaceName,
+      suggestedName: normalizedPlaceName,
+      suggestedSlug: placeSlug,
+      suggestedProjectId: `${placeSlug}.project.json`,
+      suggestedExclusiveFolder: `${placeSlug}/exclusive`,
+      action: "create_place_project",
+      message: `Place ${numericPlaceId} is not mapped to any Amarillo project yet. Create a place project before syncing.`
+    };
+  }
+
+  rememberPendingPlaceSetup(placeId, placeName = null) {
+    const pending = this.buildPendingPlaceSetup(placeId, placeName);
+    this.pendingPlaceSetup = pending;
+    return pending;
+  }
+
+  clearPendingPlaceSetupForPlace(placeId) {
+    if (this.pendingPlaceSetup && Number(this.pendingPlaceSetup.placeId || 0) === Number(placeId || 0)) {
+      this.pendingPlaceSetup = null;
+    }
+  }
+
+  sourceProjectForPlaceSetup() {
+    const configured = this.defaultProjectId ? this.getProjectById(this.defaultProjectId) : null;
+    if (configured && (configured.placeIds || []).length === 0) {
+      return configured;
+    }
+    return this.projects.find((project) => (project.placeIds || []).length === 0) || configured || null;
+  }
+
+  readRawProjectTree(project) {
+    if (!project?.projectPath || !fs.existsSync(project.projectPath)) {
+      return null;
+    }
+    try {
+      const raw = JSON.parse(fs.readFileSync(project.projectPath, "utf8"));
+      return raw && typeof raw === "object" && raw.tree && typeof raw.tree === "object"
+        ? cloneJson(raw.tree)
+        : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  uniquePlaceProjectSlug(baseSlug) {
+    const cleanBase = placeSlugFromName(baseSlug, "Place");
+    let candidate = cleanBase;
+    let suffix = 2;
+    while (fs.existsSync(path.join(this.workspaceRoot, `${candidate}.project.json`))) {
+      candidate = `${cleanBase}${suffix}`;
+      suffix += 1;
+    }
+    return candidate;
+  }
+
+  createPlaceProject(options: Record<string, unknown> = {}) {
+    const placeId = Number(options.placeId || this.pendingPlaceSetup?.placeId || 0);
+    const placeIds = normalizePlaceIds(placeId);
+    if (placeIds.length === 0) {
+      const error = new Error("A published placeId is required to create a place project.") as Error & { statusCode?: number; code?: string };
+      error.statusCode = 400;
+      error.code = "PLACE_ID_REQUIRED";
+      throw error;
+    }
+    if (this.hasProjectForPlace(placeIds[0])) {
+      const error = new Error(`Place ${placeIds[0]} is already mapped to a project.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 409;
+      error.code = "PLACE_ALREADY_MAPPED";
+      throw error;
+    }
+
+    const placeName = normalizePlaceName(options.placeName) || normalizePlaceName(this.pendingPlaceSetup?.placeName) || `Place ${placeIds[0]}`;
+    const placeSlug = this.uniquePlaceProjectSlug(placeSlugFromName(placeName, `Place${placeIds[0]}`));
+    const sourceProject = this.sourceProjectForPlaceSetup();
+    const baseTree = this.readRawProjectTree(sourceProject) || cloneJson(DEFAULT_PLACE_PROJECT_TREE);
+    const projectFile = path.join(this.workspaceRoot, `${placeSlug}.project.json`);
+    const projectJson = {
+      name: placeName,
+      place_ids: placeIds,
+      tree: addExclusivePlaceMounts(baseTree, placeSlug)
+    };
+
+    fs.writeFileSync(projectFile, `${JSON.stringify(projectJson, null, 2)}\n`, "utf8");
+    this.refreshWorkspace();
+    const projectId = path.relative(this.workspaceRoot, projectFile).replace(/\\/g, "/");
+    const project = this.getProjectById(projectId);
+    this.ensureProjectMountDirectories(project);
+    this.clearPendingPlaceSetupForPlace(placeIds[0]);
+    return {
+      ok: true,
+      project: this.projectPayload(project),
+      projectId,
+      projectPath: projectId,
+      placeId: placeIds[0],
+      placeName,
+      sourceProjectId: sourceProject?.id || null
+    };
+  }
+
+  updateProjectPlaceIds(projectId, placeIdsInput) {
+    const project = this.getProjectById(projectId);
+    if (!project) {
+      const error = new Error(`Project '${projectId}' not found.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 404;
+      error.code = "PROJECT_NOT_FOUND";
+      throw error;
+    }
+    const placeIds = normalizePlaceIds(placeIdsInput);
+    const duplicate = this.projects.find((candidate) => candidate.id !== projectId && (candidate.placeIds || []).some((id) => placeIds.includes(id)));
+    if (duplicate) {
+      const error = new Error(`One or more place IDs are already mapped by '${duplicate.id}'.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 409;
+      error.code = "PLACE_ALREADY_MAPPED";
+      throw error;
+    }
+
+    const raw = JSON.parse(fs.readFileSync(project.projectPath, "utf8"));
+    raw.place_ids = placeIds;
+    delete raw.placeIds;
+    delete raw.placeId;
+    fs.writeFileSync(project.projectPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    this.refreshWorkspace();
+    for (const id of placeIds) {
+      this.clearPendingPlaceSetupForPlace(id);
+    }
+    return {
+      ok: true,
+      project: this.projectPayload(this.getProjectById(projectId)),
+      placeIds
     };
   }
 
@@ -2056,6 +2341,9 @@ class PluginRobloxApp {
         if (options.truthSource) {
           existing.truthSource = options.truthSource;
         }
+        if (Object.prototype.hasOwnProperty.call(options, "placeName")) {
+          existing.placeName = normalizePlaceName(options.placeName);
+        }
         if (options.studioInstanceId) {
           existing.studioInstanceId = options.studioInstanceId;
         }
@@ -2077,6 +2365,7 @@ class PluginRobloxApp {
       id: crypto.randomUUID(),
       sessionToken: this.createSessionToken(),
       placeId: Number(placeId || 0),
+      placeName: normalizePlaceName(options.placeName),
       projectId: project.id,
       createdAt: new Date().toISOString(),
       lastStudioHash: null,
@@ -2170,6 +2459,7 @@ class PluginRobloxApp {
     offerId = null,
     studioInstanceId = null,
     placeId = 0,
+    placeName = null,
     projectId = null,
     truthSource = "pc",
     pluginVersion = null,
@@ -2195,6 +2485,16 @@ class PluginRobloxApp {
     }
 
     const normalizedTruthSource = truthSource === "studio" ? "studio" : "pc";
+    if (this.requiresPlaceSetup(placeId, projectId)) {
+      const pendingPlaceSetup = this.rememberPendingPlaceSetup(placeId, placeName);
+      return {
+        ok: false,
+        code: "PLACE_SETUP_REQUIRED",
+        error: pendingPlaceSetup?.message || "Create a place project before syncing this Roblox place.",
+        offer: this.connectionOfferSummary(),
+        pendingPlaceSetup
+      };
+    }
     const initialConnectionState = "accepted";
     let sessionResult;
     try {
@@ -2202,6 +2502,7 @@ class PluginRobloxApp {
         connectionState: initialConnectionState,
         truthSource: normalizedTruthSource,
         studioInstanceId,
+        placeName,
         pluginVersion,
         pluginProtocolVersion,
         privilegedActionConfirmationEnabled,
@@ -2215,6 +2516,7 @@ class PluginRobloxApp {
       };
     }
     const { session, project } = sessionResult;
+    this.clearPendingPlaceSetupForPlace(placeId);
 
     if (offerId) {
       this.resolveConnectionOffer("accepted", {
@@ -2520,6 +2822,7 @@ class PluginRobloxApp {
       session: {
         id: session.id,
         placeId: session.placeId,
+        placeName: session.placeName || null,
         projectId: session.projectId,
         lastStudioSeenAt: session.lastStudioSeenAt,
         lastAppliedAt: session.lastAppliedAt,
@@ -3102,6 +3405,7 @@ class PluginRobloxApp {
       projectSelectionReason: session.projectSelectionReason || null,
       projectSelectionMessage: session.projectSelectionMessage || null,
       placeId: session.placeId,
+      placeName: session.placeName || null,
       lastStudioContactAt: session.lastStudioContactAt,
       lastStudioSeenAt: session.lastStudioSeenAt,
       studioContactState: contact.state,

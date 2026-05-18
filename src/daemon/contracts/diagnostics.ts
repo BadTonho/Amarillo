@@ -54,6 +54,7 @@ export interface DoctorSessionSummary {
   projectName: string;
   connectionState: string;
   truthSource: TruthSource | null;
+  placeName?: string | null;
   versionState: string;
   versionMessage: string;
   requiresPluginUpdate: boolean;
@@ -92,6 +93,7 @@ export interface HealthPayload {
   projectCount: number;
   defaultProjectId: string | null;
   defaultProjectPath: string | null;
+  pendingPlaceSetup?: Record<string, unknown> | null;
   connectionOffer: ConnectionOfferSummary | null;
   sessions: DoctorSessionSummary[];
   mcpShield: Record<string, unknown>;

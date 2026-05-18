@@ -21,6 +21,7 @@ export interface ConnectionAcceptBody {
   offerId?: unknown;
   studioInstanceId?: unknown;
   placeId?: unknown;
+  placeName?: unknown;
   projectId?: unknown;
   truthSource?: unknown;
   pluginVersion?: unknown;
@@ -30,6 +31,7 @@ export interface ConnectionAcceptBody {
 
 export interface ConnectionDiffBody {
   placeId?: unknown;
+  placeName?: unknown;
   projectId?: unknown;
   studioSnapshot?: unknown;
   truthSource?: unknown;
@@ -48,6 +50,7 @@ export interface NormalizedConnectionAccept {
   offerId: string | null;
   studioInstanceId: string | null;
   placeId: number;
+  placeName: string | null;
   projectId: string | null;
   truthSource: TruthSource;
   pluginVersion: string | null;
@@ -57,6 +60,7 @@ export interface NormalizedConnectionAccept {
 
 export interface NormalizedConnectionDiff {
   placeId: number;
+  placeName: string | null;
   projectId: string | null;
   studioSnapshot: StudioSnapshot;
   truthSource: TruthSource;
@@ -164,6 +168,7 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
     offerId: optionalString(body.offerId),
     studioInstanceId: optionalString(body.studioInstanceId),
     placeId: normalizePlaceId(body.placeId),
+    placeName: optionalString(body.placeName),
     projectId: optionalString(body.projectId),
     truthSource: normalizeTruthSource(body.truthSource),
     pluginVersion: optionalString(body.pluginVersion),
@@ -175,6 +180,7 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
 export function normalizeConnectionDiffBody(body: ConnectionDiffBody): NormalizedConnectionDiff {
   return {
     placeId: normalizePlaceId(body.placeId),
+    placeName: optionalString(body.placeName),
     projectId: optionalString(body.projectId),
     studioSnapshot: normalizeStudioSnapshot(body.studioSnapshot),
     truthSource: normalizeTruthSource(body.truthSource)

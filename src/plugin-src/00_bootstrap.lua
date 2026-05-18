@@ -7,6 +7,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local LogService = game:GetService("LogService")
 local Players = game:GetService("Players")
 local InsertService = game:GetService("InsertService")
+local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
