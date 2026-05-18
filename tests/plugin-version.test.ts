@@ -233,11 +233,13 @@ test("Roblox plugin surfaces sync diagnostics and sends place identity with conn
 });
 
 test("Roblox plugin UI construction keeps local registers below Studio limits", () => {
-  assert.match(pluginSource, /-- Keep UI construction in a short-lived scope/);
-  assert.match(pluginSource, /do\s+local homeHero = makeCard/);
-  assert.match(pluginSource, /do\s+local settingsHeader = makeCard/);
-  assert.match(pluginSource, /do\s+local advancedHeader = makeCard/);
-  assert.match(pluginSource, /-- ===== Diff Confirmation Overlay =====\s+do\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
+  assert.match(pluginSource, /local function buildPluginShell\(\)/);
+  assert.match(pluginSource, /local function buildHomePage\(\)\s+local homeHero = makeCard/);
+  assert.match(pluginSource, /local function buildSettingsPage\(\)\s+local settingsHeader = makeCard/);
+  assert.match(pluginSource, /local function buildAdvancedPage\(\)\s+local advancedHeader = makeCard/);
+  assert.match(pluginSource, /local function buildDiffOverlay\(root\)\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
+  assert.match(pluginSource, /local function createPluginUi\(\)/);
+  assert.match(pluginSource, /createPluginUi\(\)/);
 });
 
 test("Amarillo component versions stay synchronized from amarillo-version.json", () => {
