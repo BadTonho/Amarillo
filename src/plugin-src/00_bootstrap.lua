@@ -10,7 +10,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.4"
+local PLUGIN_VERSION = "1.1.5"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -127,3 +127,5 @@ local showDestructiveConfirmation
 local hideDestructiveConfirmation
 local acceptDestructiveAction
 local declineDestructiveAction
+local setPrivilegedActionConfirmation
+local updatePrivilegedActionConfirmationUi

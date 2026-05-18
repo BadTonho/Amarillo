@@ -192,6 +192,7 @@ if (fs.existsSync(path.join(repoRoot, "package-lock.json"))) {
 
 replaceInFile("src/daemon/version.ts", [
   [/const DAEMON_VERSION = "[^"]+";/, `const DAEMON_VERSION = "${version.daemonVersion}";`],
+  [/const CURRENT_PLUGIN_VERSION = "[^"]+";/, `const CURRENT_PLUGIN_VERSION = "${version.pluginVersion}";`],
   [/const AMARILLO_PROTOCOL_VERSION = \d+;/, `const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion};`]
 ]);
 

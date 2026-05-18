@@ -47,6 +47,9 @@ class DoctorService {
       if (session.requiresPluginUpdate) {
         blockedReasons.push(`${session.projectName}: ${session.versionMessage}`);
       }
+      if (session.pluginUpdateAvailable) {
+        warnings.push(`${session.projectName}: ${session.versionMessage}`);
+      }
       if (session.requiresManualResync) {
         blockedReasons.push(`${session.projectName}: ${session.lastSyncError || "Sync degraded."}`);
       }
@@ -75,6 +78,9 @@ class DoctorService {
     if (sessions.some((session) => session.requiresPluginUpdate)) {
       recommendations.push("Run Amarillo: Install Roblox Studio Plugin, then reload the plugin in Roblox Studio.");
     }
+    if (sessions.some((session) => session.pluginUpdateAvailable && !session.requiresPluginUpdate)) {
+      recommendations.push("Reload or reopen Roblox Studio so it runs the Amarillo plugin version already installed by VS Code.");
+    }
     if (sessions.some((session) => session.requiresManualResync)) {
       recommendations.push("Run a manual resync after checking the sync paused message.");
     }
@@ -88,7 +94,7 @@ class DoctorService {
       recommendations.push("Open Roblox Studio and connect the Amarillo plugin.");
     }
     if (sessions.some((session) => session.privilegedActionConfirmationEnabled === false)) {
-      recommendations.push("Enable privileged action confirmation in the Amarillo plugin settings.");
+      recommendations.push("Enable privileged action confirmation from the VS Code Amarillo sidebar or the Roblox Studio plugin settings.");
     }
     if (recommendations.length === 0) {
       recommendations.push("No action required.");

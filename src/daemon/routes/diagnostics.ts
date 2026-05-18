@@ -43,6 +43,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
       port: app.port,
       versions: app.versionPayload(),
       autoSyncToStudio: app.autoSyncToStudio,
+      privilegedActionConfirmation: app.privilegedActionConfirmation,
       projectCount: app.projects.length,
       defaultProjectId: app.defaultProjectId,
       defaultProjectPath: app.defaultProjectId
@@ -89,6 +90,12 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
   if (request.method === "POST" && requestUrl.pathname === "/settings/auto-sync-to-studio") {
     const body = await readJsonBody(request);
     jsonResponse(response, 200, app.setAutoSyncToStudio(body.enabled === true));
+    return true;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/settings/privileged-action-confirmation") {
+    const body = await readJsonBody(request);
+    jsonResponse(response, 200, app.setPrivilegedActionConfirmation(body.enabled === true));
     return true;
   }
 

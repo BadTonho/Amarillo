@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { readLocalProjectState } = require("../src/daemon/project");
-const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
+const { AMARILLO_PROTOCOL_VERSION, CURRENT_PLUGIN_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
   createTempWorkspace,
   createWorkspaceWithProject,
@@ -84,7 +84,7 @@ test("Studio snapshot disk writes are recorded in the local activity log", async
       }
     ]
   }, "manual");
-  await wait(50);
+  await wait(120);
 
   const entries = app.activityLog.query({ limit: 10 });
   const byPath = new Map(entries.map((entry) => [`${entry.action}:${entry.relativePath}`, entry]));
@@ -126,6 +126,52 @@ test("autoSyncToStudio can be toggled live while activity history still records 
 
   const health = await invoke(app, "GET", "/health");
   assert.equal(health.payload.autoSyncToStudio, false);
+});
+
+test("privileged action confirmation preference is stored and queued for current Studio sessions", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null, {
+    studioInstanceId: "studio-current",
+    pluginVersion: CURRENT_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
+    requirePluginVersion: true,
+    privilegedActionConfirmationEnabled: true
+  });
+
+  const toggle = await invoke(app, "POST", "/settings/privileged-action-confirmation", { enabled: false });
+  assert.equal(toggle.statusCode, 200);
+  assert.equal(toggle.payload.privilegedActionConfirmation, false);
+  assert.deepEqual(toggle.payload.queuedSessionIds, [session.id]);
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "set_privileged_action_confirmation");
+  assert.equal(session.pendingCommands[0].payload.enabled, false);
+
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.payload.privilegedActionConfirmation, false);
+});
+
+test("privileged action confirmation preference is queued when Studio connects later", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const toggle = await invoke(app, "POST", "/settings/privileged-action-confirmation", { enabled: false });
+  assert.equal(toggle.statusCode, 200);
+  assert.deepEqual(toggle.payload.queuedSessionIds, []);
+
+  const { session } = app.openSession(0, null, {
+    studioInstanceId: "studio-current",
+    pluginVersion: CURRENT_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
+    requirePluginVersion: true,
+    privilegedActionConfirmationEnabled: true
+  });
+
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].type, "set_privileged_action_confirmation");
+  assert.equal(session.pendingCommands[0].payload.enabled, false);
 });
 
 test("activity entries can revert create, modify, and delete changes with conflict protection", async () => {

@@ -11,6 +11,7 @@ function parseArgs(argv) {
     port: null,
     mcp: true,
     autoSyncToStudio: undefined,
+    privilegedActionConfirmation: true,
     extensionVersion: null,
     extensionProtocolVersion: null,
     bridgeToken: null,
@@ -63,6 +64,14 @@ function parseArgs(argv) {
     }
     if (arg === "--no-auto-sync-to-studio") {
       options.autoSyncToStudio = false;
+      continue;
+    }
+    if (arg === "--privileged-action-confirmation") {
+      options.privilegedActionConfirmation = true;
+      continue;
+    }
+    if (arg === "--no-privileged-action-confirmation") {
+      options.privilegedActionConfirmation = false;
     }
   }
 

@@ -1,8 +1,9 @@
 "use strict";
 
-const DAEMON_VERSION = "1.1.4";
+const DAEMON_VERSION = "1.1.5";
 const AMARILLO_PROTOCOL_VERSION = 2;
 const MIN_PLUGIN_VERSION = "1.1.2";
+const CURRENT_PLUGIN_VERSION = "1.1.5";
 
 function normalizeVersion(value) {
   if (typeof value === "string" && value.trim()) {
@@ -59,6 +60,7 @@ function isVersionAtLeast(version, minimumVersion) {
 
 module.exports = {
   AMARILLO_PROTOCOL_VERSION,
+  CURRENT_PLUGIN_VERSION,
   DAEMON_VERSION,
   MIN_PLUGIN_VERSION,
   compareVersions,

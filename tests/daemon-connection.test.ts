@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { readLocalProjectState } = require("../src/daemon/project");
-const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
+const { AMARILLO_PROTOCOL_VERSION, CURRENT_PLUGIN_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
   createTempWorkspace,
   createWorkspaceWithProject,
@@ -288,6 +288,30 @@ test("HTTP connection accept blocks plugins below the minimum verified-sync vers
   assert.equal(response.payload.session.requiresPluginUpdate, true);
   assert.match(response.payload.session.versionMessage, /older than/);
   assert.equal((Array.from(app.sessions.values())[0] as any).pendingCommands.length, 0);
+});
+
+test("HTTP connection accept warns for compatible plugins older than the current bundled version", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const offer = app.beginConnectionOffer("test");
+  const response = await invoke(app, "POST", "/connection/accept", {
+    offerId: offer.offerId,
+    studioInstanceId: "studio-outdated",
+    placeId: 0,
+    truthSource: "pc",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
+    privilegedActionConfirmationEnabled: true
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.session.versionState, "outdated");
+  assert.equal(response.payload.session.requiresPluginUpdate, false);
+  assert.equal(response.payload.session.pluginUpdateAvailable, true);
+  assert.equal(response.payload.session.currentPluginVersion, CURRENT_PLUGIN_VERSION);
+  assert.match(response.payload.session.versionMessage, /Plugin update available/);
 });
 
 test("HTTP connection accept blocks incompatible plugin protocol versions", async () => {

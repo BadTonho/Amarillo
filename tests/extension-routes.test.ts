@@ -107,6 +107,7 @@ test("sidebar source models fallback-only, plugin stale, version mismatch, and s
   assert.match(extensionSource, /Plugin stale/);
   assert.match(extensionSource, /Contact delayed/);
   assert.match(extensionSource, /Plugin update required/);
+  assert.match(extensionSource, /Plugin update available/);
   assert.match(extensionSource, /sync paused/);
   assert.match(extensionSource, /Destructive MCP actions are blocked/);
 });
@@ -140,9 +141,13 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
   );
 
   assert.match(extensionSource, /amarillo\.toggleAutoSyncToStudio/);
+  assert.match(extensionSource, /amarillo\.togglePrivilegedActionConfirmation/);
   assert.match(extensionSource, /\/settings\/auto-sync-to-studio/);
+  assert.match(extensionSource, /\/settings\/privileged-action-confirmation/);
   assert.match(extensionSource, /Auto Sync: On/);
   assert.match(extensionSource, /Auto Sync: Off/);
+  assert.match(extensionSource, /Confirm Actions: On/);
+  assert.match(extensionSource, /Confirm Actions: Off/);
   assert.match(extensionSource, /Sync History/);
   assert.match(extensionSource, /\/activity\?limit=\$\{encodeURIComponent\(String\(limit\)\)\}&includeDetails=true/);
   assert.match(extensionSource, /data-activity-action="openDiff"/);
@@ -150,6 +155,8 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
   assert.match(extensionSource, /amarillo-activity/);
   assert.match(extensionSource, /vscode\.diff/);
   assert.match(packageJson, /amarillo\.toggleAutoSyncToStudio/);
+  assert.match(packageJson, /amarillo\.togglePrivilegedActionConfirmation/);
+  assert.match(packageJson, /amarillo\.privilegedActionConfirmation/);
 });
 
 test("activation sourcemap check is delayed and respects autoGenerateSourcemap", () => {
