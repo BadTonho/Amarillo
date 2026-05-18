@@ -76,6 +76,7 @@ export interface AppOptions {
   port?: number | string;
   strictPort?: boolean;
   autoSyncToStudio?: unknown;
+  privilegedActionConfirmation?: unknown;
   bridgeToken?: string | null;
   extensionVersion?: string | null;
   extensionProtocolVersion?: string | number | null;

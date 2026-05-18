@@ -76,6 +76,8 @@ export interface BridgeSessionPayload {
   versionState?: string;
   versionMessage?: string;
   requiresPluginUpdate?: boolean;
+  currentPluginVersion?: string | null;
+  pluginUpdateAvailable?: boolean;
   syncBlockedReason?: string | null;
   projectSelectionReason?: string | null;
   projectSelectionMessage?: string | null;
@@ -125,6 +127,7 @@ export interface BridgeHealthPayload {
   port?: number;
   versions?: Record<string, unknown>;
   autoSyncToStudio?: boolean;
+  privilegedActionConfirmation?: boolean;
   projectCount?: number;
   defaultProjectId?: string | null;
   defaultProjectPath?: string | null;

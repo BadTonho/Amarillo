@@ -13,7 +13,7 @@ local InsertService = game:GetService("InsertService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.4"
+local PLUGIN_VERSION = "1.1.5"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -130,6 +130,8 @@ local showDestructiveConfirmation
 local hideDestructiveConfirmation
 local acceptDestructiveAction
 local declineDestructiveAction
+local setPrivilegedActionConfirmation
+local updatePrivilegedActionConfirmationUi
 -- <<< src/plugin-src/00_bootstrap.lua
 
 -- >>> src/plugin-src/10_settings_status.lua
@@ -2399,6 +2401,22 @@ local function handleCommand(command)
 		return
 	end
 
+	if command.type == "set_privileged_action_confirmation" then
+		local enabled = command.payload and command.payload.enabled == true
+		if setPrivilegedActionConfirmation then
+			setPrivilegedActionConfirmation(enabled, "VS Code")
+		else
+			state.confirmPrivilegedActions = enabled
+			saveSettings()
+		end
+		postCommandResult(command.id, true, {
+			result = enabled and "Privileged action confirmation enabled." or "Privileged action confirmation disabled.",
+			enabled = enabled
+		})
+		appendLog("Privileged action confirmation set from VS Code: " .. (enabled and "enabled" or "disabled") .. ".")
+		return
+	end
+
 	postCommandResult(command.id, false, {
 		error = "Comando desconhecido: " .. tostring(command.type)
 	})
@@ -3486,6 +3504,31 @@ local function setButtonStyle(button, styleName)
 	end
 end
 
+updatePrivilegedActionConfirmationUi = function()
+	local label = state.confirmPrivilegedActions and "Enabled" or "Disabled"
+	for _, button in ipairs({ state.ui.homeConfirmPropToggle, state.ui.confirmPropToggle }) do
+		if button then
+			button.Text = label
+			setButtonStyle(button, state.confirmPrivilegedActions and "primary" or "secondary")
+		end
+	end
+end
+
+setPrivilegedActionConfirmation = function(enabled, source)
+	state.confirmPrivilegedActions = enabled == true
+	updatePrivilegedActionConfirmationUi()
+	saveSettings()
+	if source then
+		appendLog("Privileged action confirmation " .. (state.confirmPrivilegedActions and "enabled" or "disabled") .. " by " .. tostring(source) .. ".")
+	else
+		appendLog("Privileged action confirmation " .. (state.confirmPrivilegedActions and "enabled" or "disabled") .. ".")
+	end
+end
+
+local function togglePrivilegedActionConfirmation()
+	setPrivilegedActionConfirmation(not state.confirmPrivilegedActions, "Studio")
+end
+
 local function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
@@ -3704,6 +3747,13 @@ local receiveButton = makeButton(homeActions, "Send to PC", UDim2.fromOffset(200
 setButtonStyle(receiveButton, "secondary")
 local homeHint = makeTextLabel(homeActions, "Use Advanced for tree, selection, playtest, and Luau.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 118), 12)
 homeHint.TextColor3 = Color3.fromRGB(152, 158, 168)
+
+local homeSafety = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 74), UDim2.fromOffset(10, 456), Color3.fromRGB(24, 27, 33))
+local homeConfirmTitle = makeTextLabel(homeSafety, "Privileged action confirmation", UDim2.new(1, -170, 0, 18), UDim2.fromOffset(16, 12), 14)
+homeConfirmTitle.Font = Enum.Font.GothamSemibold
+local homeConfirmHint = makeTextLabel(homeSafety, "Prompts before run_code and destructive API actions.", UDim2.new(1, -170, 0, 32), UDim2.fromOffset(16, 36), 12)
+homeConfirmHint.TextColor3 = Color3.fromRGB(152, 158, 168)
+state.ui.homeConfirmPropToggle = makeButton(homeSafety, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(132, 32), UDim2.new(1, -148, 0, 20), togglePrivilegedActionConfirmation)
 end
 
 do
@@ -3766,22 +3816,7 @@ confirmPropTitle.Font = Enum.Font.GothamSemibold
 local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before run_code, modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), function()
-	state.confirmPrivilegedActions = not state.confirmPrivilegedActions
-	state.ui.confirmPropToggle.Text = state.confirmPrivilegedActions and "Enabled" or "Disabled"
-	if state.confirmPrivilegedActions then
-		setButtonStyle(state.ui.confirmPropToggle, "primary")
-	else
-		setButtonStyle(state.ui.confirmPropToggle, "secondary")
-	end
-	saveSettings()
-	appendLog("Privileged action confirmation " .. (state.confirmPrivilegedActions and "enabled" or "disabled") .. ".")
-end)
-if state.confirmPrivilegedActions then
-	setButtonStyle(state.ui.confirmPropToggle, "primary")
-else
-	setButtonStyle(state.ui.confirmPropToggle, "secondary")
-end
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), togglePrivilegedActionConfirmation)
 
 local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 648), 12)
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
@@ -3975,6 +4010,7 @@ task.spawn(function()
 	end
 end)
 loadSettings()
+updatePrivilegedActionConfirmationUi()
 updateEndpointSummary()
 appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
 pcall(fetchDaemonHealth)

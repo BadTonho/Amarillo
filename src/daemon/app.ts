@@ -87,6 +87,7 @@ const {
 } = require("./mcp-shield");
 const {
   AMARILLO_PROTOCOL_VERSION,
+  CURRENT_PLUGIN_VERSION,
   DAEMON_VERSION,
   MIN_PLUGIN_VERSION,
   isVersionAtLeast,
@@ -132,6 +133,7 @@ const STUDIO_SESSION_STALE_MS = 30000;
 const STUDIO_CONTACT_STALE_WARNING_MS = 35000;
 const STUDIO_CONTACT_CRITICAL_MS = 65000;
 const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
+const DEFAULT_PRIVILEGED_ACTION_CONFIRMATION = true;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
 
@@ -307,6 +309,7 @@ class PluginRobloxApp {
   strictPort: boolean;
   autoSyncToStudioExplicit: boolean;
   autoSyncToStudio: boolean;
+  privilegedActionConfirmation: boolean;
   bridgeToken: string | null;
   extensionVersion: string | null;
   extensionProtocolVersion: number | null;
@@ -348,6 +351,7 @@ class PluginRobloxApp {
     this.strictPort = options.strictPort === true;
     this.autoSyncToStudioExplicit = options.autoSyncToStudio !== undefined;
     this.autoSyncToStudio = coerceBoolean(options.autoSyncToStudio, DEFAULT_AUTO_SYNC_TO_STUDIO);
+    this.privilegedActionConfirmation = coerceBoolean(options.privilegedActionConfirmation, DEFAULT_PRIVILEGED_ACTION_CONFIRMATION);
     this.bridgeToken = normalizeToken(options.bridgeToken || process.env.AMARILLO_BRIDGE_TOKEN || null);
     this.extensionVersion = normalizeVersion(options.extensionVersion);
     this.extensionProtocolVersion = normalizeProtocolVersion(options.extensionProtocolVersion);
@@ -741,7 +745,8 @@ class PluginRobloxApp {
       daemon: {
         version: DAEMON_VERSION,
         protocolVersion: AMARILLO_PROTOCOL_VERSION,
-        minimumPluginVersion: MIN_PLUGIN_VERSION
+        minimumPluginVersion: MIN_PLUGIN_VERSION,
+        currentPluginVersion: CURRENT_PLUGIN_VERSION
       },
       extension: {
         version: this.extensionVersion,
@@ -774,6 +779,7 @@ class PluginRobloxApp {
         (metadata as Record<string, unknown>).privilegedActionConfirmationEnabled,
         session.privilegedActionConfirmationEnabled ?? null
       );
+      this.queuePrivilegedActionConfirmationPreference(session, "plugin_report");
     }
   }
 
@@ -787,39 +793,92 @@ class PluginRobloxApp {
         message: pluginVersion
           ? "Plugin protocol is compatible."
           : "Plugin version is not required for this internal session.",
-        requiresPluginUpdate: false
+        requiresPluginUpdate: false,
+        pluginUpdateAvailable: false
       };
     }
     if (!pluginVersion || pluginProtocolVersion === null) {
       return {
         state: "blocked",
         message: "Plugin update required: this Studio plugin did not report its Amarillo version/protocol.",
-        requiresPluginUpdate: true
+        requiresPluginUpdate: true,
+        pluginUpdateAvailable: true
       };
     }
     if (pluginProtocolVersion !== AMARILLO_PROTOCOL_VERSION) {
       return {
         state: "blocked",
         message: `Plugin update required: plugin protocol ${pluginProtocolVersion} is incompatible with daemon protocol ${AMARILLO_PROTOCOL_VERSION}.`,
-        requiresPluginUpdate: true
+        requiresPluginUpdate: true,
+        pluginUpdateAvailable: true
       };
     }
     if (!isVersionAtLeast(pluginVersion, MIN_PLUGIN_VERSION)) {
       return {
         state: "blocked",
         message: `Plugin update required: plugin version ${pluginVersion} is older than ${MIN_PLUGIN_VERSION}. Reinstall the Amarillo plugin and reload Roblox Studio.`,
-        requiresPluginUpdate: true
+        requiresPluginUpdate: true,
+        pluginUpdateAvailable: true
+      };
+    }
+    if (!isVersionAtLeast(pluginVersion, CURRENT_PLUGIN_VERSION)) {
+      return {
+        state: "outdated",
+        message: `Plugin update available: Roblox Studio is running Amarillo plugin ${pluginVersion}; current plugin is ${CURRENT_PLUGIN_VERSION}. Amarillo installs the local plugin file automatically, but Studio must be reloaded or reopened to run it.`,
+        requiresPluginUpdate: false,
+        pluginUpdateAvailable: true
       };
     }
     return {
       state: "compatible",
       message: "Plugin protocol is compatible.",
-      requiresPluginUpdate: false
+      requiresPluginUpdate: false,
+      pluginUpdateAvailable: false
     };
   }
 
   isSessionVersionBlocked(session) {
     return this.sessionVersionStatus(session).state === "blocked";
+  }
+
+  hasPendingPrivilegedActionConfirmationCommand(session, enabled) {
+    if (!session) {
+      return false;
+    }
+    const matches = (command) => command
+      && command.type === "set_privileged_action_confirmation"
+      && command.payload
+      && command.payload.enabled === enabled;
+    return session.pendingCommands.some(matches)
+      || Array.from(session.inFlightCommands.values()).some(matches);
+  }
+
+  queuePrivilegedActionConfirmationPreference(session, reason = "settings") {
+    if (!session || session.requirePluginVersion !== true || !session.studioInstanceId || session.privilegedActionConfirmationEnabled === this.privilegedActionConfirmation) {
+      return false;
+    }
+    const version = this.sessionVersionStatus(session);
+    if (version.state === "blocked" || version.pluginUpdateAvailable === true) {
+      return false;
+    }
+    if (this.hasPendingPrivilegedActionConfirmationCommand(session, this.privilegedActionConfirmation)) {
+      return false;
+    }
+    this.enqueueCommand(session.id, "set_privileged_action_confirmation", {
+      enabled: this.privilegedActionConfirmation,
+      reason
+    });
+    return true;
+  }
+
+  queuePrivilegedActionConfirmationPreferenceForSessions(reason = "settings") {
+    const queuedSessionIds = [];
+    for (const session of this.sessions.values()) {
+      if (this.queuePrivilegedActionConfirmationPreference(session, reason)) {
+        queuedSessionIds.push(session.id);
+      }
+    }
+    return queuedSessionIds;
   }
 
   studioContactStatus(session) {
@@ -2007,6 +2066,7 @@ class PluginRobloxApp {
           existing.requirePluginVersion = true;
         }
         this.updateSessionPluginVersion(existing, options);
+        this.queuePrivilegedActionConfirmationPreference(existing, "session_open");
       }
       return {
         session: existing,
@@ -2055,6 +2115,7 @@ class PluginRobloxApp {
       session.lastPluginVersionSeenAt = new Date().toISOString();
     }
     this.sessions.set(session.id, session);
+    this.queuePrivilegedActionConfirmationPreference(session, "session_open");
     return {
       session,
       project
@@ -2468,6 +2529,8 @@ class PluginRobloxApp {
         versionState: this.sessionVersionStatus(session).state,
         versionMessage: this.sessionVersionStatus(session).message,
         requiresPluginUpdate: this.sessionVersionStatus(session).requiresPluginUpdate,
+        currentPluginVersion: CURRENT_PLUGIN_VERSION,
+        pluginUpdateAvailable: this.sessionVersionStatus(session).pluginUpdateAvailable === true,
         syncBlockedReason: this.syncBlockedReason(session)
       }
     };
@@ -2976,6 +3039,20 @@ class PluginRobloxApp {
     };
   }
 
+  setPrivilegedActionConfirmation(enabled) {
+    this.privilegedActionConfirmation = enabled === true;
+    const queuedSessionIds = this.queuePrivilegedActionConfirmationPreferenceForSessions("vscode_setting");
+    logSync("privileged_action_confirmation_changed", {
+      enabled: this.privilegedActionConfirmation,
+      queuedSessionIds
+    });
+    return {
+      ok: true,
+      privilegedActionConfirmation: this.privilegedActionConfirmation,
+      queuedSessionIds
+    };
+  }
+
   activeLastCommandError(session) {
     if (!session?.lastCommandError) {
       return null;
@@ -3019,6 +3096,8 @@ class PluginRobloxApp {
       versionState: version.state,
       versionMessage: version.message,
       requiresPluginUpdate: version.requiresPluginUpdate,
+      currentPluginVersion: CURRENT_PLUGIN_VERSION,
+      pluginUpdateAvailable: version.pluginUpdateAvailable === true,
       syncBlockedReason,
       projectSelectionReason: session.projectSelectionReason || null,
       projectSelectionMessage: session.projectSelectionMessage || null,

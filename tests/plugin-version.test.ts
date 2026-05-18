@@ -80,9 +80,14 @@ test("Roblox plugin keeps its dock widget hidden during playtest", () => {
 
 test("Roblox plugin keeps the privileged action confirmation toggle in Settings", () => {
   assert.match(pluginSource, /state\.ui\.confirmPropToggle = makeButton/);
+  assert.match(pluginSource, /state\.ui\.homeConfirmPropToggle = makeButton/);
+  assert.match(pluginSource, /setPrivilegedActionConfirmation = function\(enabled, source\)/);
+  assert.match(pluginSource, /updatePrivilegedActionConfirmationUi = function\(\)/);
   assert.match(pluginSource, /confirmPrivilegedActions = state\.confirmPrivilegedActions/);
   assert.match(pluginSource, /if saved\.confirmPrivilegedActions ~= nil then/);
-  assert.match(pluginSource, /saveSettings\(\)\s+appendLog\("Privileged action confirmation "/);
+  assert.match(pluginSource, /set_privileged_action_confirmation/);
+  assert.match(pluginSource, /postCommandResult\(command\.id, true, \{\s+result = enabled and "Privileged action confirmation enabled\."/);
+  assert.match(pluginSource, /updatePrivilegedActionConfirmationUi\(\)\s+saveSettings\(\)/);
 });
 
 test("Roblox plugin preflights and safely recovers missing sync mounts", () => {
@@ -243,6 +248,7 @@ test("Amarillo component versions stay synchronized from amarillo-version.json",
   assert.equal(extensionManifest.version, version.extensionVersion);
   assert.equal(rootPackage.version, version.extensionVersion);
   assert.match(daemonVersionSource, new RegExp(`const DAEMON_VERSION = "${version.daemonVersion}"`));
+  assert.match(daemonVersionSource, new RegExp(`const CURRENT_PLUGIN_VERSION = "${version.pluginVersion}"`));
   assert.match(daemonVersionSource, new RegExp(`const AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion}`));
   assert.match(pluginSource, new RegExp(`local PLUGIN_VERSION = "${version.pluginVersion}"`));
   assert.match(pluginSource, new RegExp(`local AMARILLO_PROTOCOL_VERSION = ${version.protocolVersion}`));

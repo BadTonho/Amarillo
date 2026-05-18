@@ -619,6 +619,22 @@ local function handleCommand(command)
 		return
 	end
 
+	if command.type == "set_privileged_action_confirmation" then
+		local enabled = command.payload and command.payload.enabled == true
+		if setPrivilegedActionConfirmation then
+			setPrivilegedActionConfirmation(enabled, "VS Code")
+		else
+			state.confirmPrivilegedActions = enabled
+			saveSettings()
+		end
+		postCommandResult(command.id, true, {
+			result = enabled and "Privileged action confirmation enabled." or "Privileged action confirmation disabled.",
+			enabled = enabled
+		})
+		appendLog("Privileged action confirmation set from VS Code: " .. (enabled and "enabled" or "disabled") .. ".")
+		return
+	end
+
 	postCommandResult(command.id, false, {
 		error = "Comando desconhecido: " .. tostring(command.type)
 	})

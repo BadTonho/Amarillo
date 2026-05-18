@@ -274,6 +274,11 @@ function resolveAutoSyncToStudio(config, workspaceRoot) {
   return workspaceConfig.autoSyncToStudio !== false;
 }
 
+function resolvePrivilegedActionConfirmation(config) {
+  const configuredConfirmation = getExplicitConfigValue(config, "privilegedActionConfirmation");
+  return configuredConfirmation !== false;
+}
+
 function workspaceDisplayName(workspaceRoot) {
   if (!workspaceRoot) {
     return "";
@@ -408,7 +413,8 @@ function getBridgeSettings() {
     host: String(config.get("host", "127.0.0.1") || "127.0.0.1"),
     port: resolveBridgePort(config, workspaceRoot),
     nodePath: String(config.get("nodePath", "node") || "node"),
-    autoSyncToStudio: resolveAutoSyncToStudio(config, workspaceRoot)
+    autoSyncToStudio: resolveAutoSyncToStudio(config, workspaceRoot),
+    privilegedActionConfirmation: resolvePrivilegedActionConfirmation(config)
   };
 }
 
@@ -648,6 +654,17 @@ function describePluginHealth(health) {
       message: `Plugin: connected to ${projectName}, but the Studio plugin must be updated.`,
       details: [
         activeSession.versionMessage || "Plugin update required before sync can continue.",
+        ...details
+      ]
+    };
+  }
+  if (activeSession.pluginUpdateAvailable) {
+    return {
+      tone: "warning",
+      headline: "Plugin: update available",
+      message: `Plugin: connected to ${projectName}, but Roblox Studio is running an older Amarillo plugin.`,
+      details: [
+        activeSession.versionMessage || "Reload or reopen Roblox Studio so it runs the latest local plugin file.",
         ...details
       ]
     };
@@ -912,6 +929,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   const autoSyncToStudio = workspaceMatches
     ? (health?.autoSyncToStudio ?? settings?.autoSyncToStudio ?? true)
     : (settings?.autoSyncToStudio ?? true);
+  const privilegedActionConfirmation = settings?.privilegedActionConfirmation ?? health?.privilegedActionConfirmation ?? true;
   const mcpShield = workspaceMatches ? (health?.mcpShield || null) : null;
   const workspaceTooltip = buildWorkspaceTooltip(settings, health);
   const workspaceNotes = workspaceTooltip
@@ -933,7 +951,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   if (running && activeSession && workspaceMatches) {
     statusTone = activeSession.requiresPluginUpdate
       ? "danger"
-      : (activeSession.requiresManualResync
+      : (activeSession.pluginUpdateAvailable || activeSession.requiresManualResync
         ? "warning"
         : (activeSession.studioContactState === "critical"
           ? "danger"
@@ -957,24 +975,30 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
     const sessionReady = (activeSession.connectionState || "ready") === "ready";
     sessionTone = activeSession.requiresPluginUpdate
       ? "danger"
-      : (activeSession.requiresManualResync
+      : (activeSession.pluginUpdateAvailable
+        ? "warning"
+        : (activeSession.requiresManualResync
         ? "warning"
         : (activeSession.studioContactState === "critical"
           ? "danger"
           : (activeSession.studioContactState === "stale"
             ? "warning"
-            : (sessionReady ? "success" : "warning"))));
+            : (sessionReady ? "success" : "warning")))));
     sessionBadge = activeSession.requiresPluginUpdate
       ? "Plugin update required"
-      : (activeSession.requiresManualResync
+      : (activeSession.pluginUpdateAvailable
+        ? "Plugin update available"
+        : (activeSession.requiresManualResync
         ? "sync paused"
         : (activeSession.studioContactState === "critical"
           ? "Plugin stale"
           : (activeSession.studioContactState === "stale"
             ? "Contact delayed"
-            : (activeSession.connectionState || "ready"))));
+            : (activeSession.connectionState || "ready")))));
     if (activeSession.requiresPluginUpdate) {
       sessionMessage = activeSession.versionMessage || "Plugin update required before sync can continue.";
+    } else if (activeSession.pluginUpdateAvailable) {
+      sessionMessage = activeSession.versionMessage || "A newer Amarillo Studio plugin is installed locally. Reload or reopen Roblox Studio to use it.";
     } else if (activeSession.requiresManualResync) {
       sessionMessage = activeSession.syncMessage || "Sync paused until a manual resync is completed.";
     } else if (activeSession.studioContactState === "critical") {
@@ -995,7 +1019,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
         isFallbackProjectSelection(activeSession) ? "warning" : "success"
       ),
       createSidebarFact("State", activeSession.connectionState || "ready", sessionTone),
-      createSidebarFact("Version", activeSession.versionState || "unknown", activeSession.requiresPluginUpdate ? "danger" : "success"),
+      createSidebarFact("Version", activeSession.versionState || "unknown", activeSession.requiresPluginUpdate ? "danger" : (activeSession.pluginUpdateAvailable ? "warning" : "success")),
       createSidebarFact("Sync", activeSession.syncState || "ready", activeSession.requiresManualResync || activeSession.requiresPluginUpdate ? "warning" : "success"),
       createSidebarFact("Place", String(activeSession.placeId || 0)),
       createSidebarFact("Session", activeSession.id),
@@ -1066,6 +1090,11 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
         "VS Code -> Studio",
         autoSyncToStudio ? "Auto" : "Manual",
         autoSyncToStudio ? "success" : "warning"
+      ),
+      createSidebarFact(
+        "Confirm actions",
+        privilegedActionConfirmation ? "On" : "Off",
+        privilegedActionConfirmation ? "success" : "warning"
       )
     );
   }
@@ -1115,6 +1144,13 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
         ]
       },
       {
+        title: "Safety",
+        description: "Control privileged Studio actions.",
+        actions: [
+          createSidebarAction(privilegedActionConfirmation ? "Confirm Actions: On" : "Confirm Actions: Off", "amarillo.togglePrivilegedActionConfirmation", privilegedActionConfirmation ? "primary" : "secondary")
+        ]
+      },
+      {
         title: "Bridge",
         description: "Daemon control and quick diagnostics.",
         actions: [
@@ -1154,6 +1190,56 @@ async function ensurePathExists(targetPath, label) {
   } catch (error) {
     throw new Error(`${label} not found at: ${targetPath}`);
   }
+}
+
+function resolveRobloxPluginInstallPaths(context) {
+  const localAppData = process.env.LOCALAPPDATA;
+  if (!localAppData) {
+    throw new Error("LOCALAPPDATA is not available on this system.");
+  }
+
+  const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
+  const targetPath = path.join(pluginsDir, "Amarillo.lua");
+
+  let sourcePath = null;
+  try {
+    const workspaceRoot = resolveWorkspaceRoot();
+    const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
+    if (syncFs.existsSync(workspaceSource)) {
+      sourcePath = workspaceSource;
+    }
+  } catch (_error) {
+    // No workspace open, try runtime.
+  }
+
+  if (!sourcePath) {
+    sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
+  }
+
+  return { pluginsDir, sourcePath, targetPath };
+}
+
+async function copyBundledRobloxPlugin(context, options: { force?: boolean } = {}) {
+  const { pluginsDir, sourcePath, targetPath } = resolveRobloxPluginInstallPaths(context);
+  await ensurePathExists(sourcePath, "Plugin Amarillo");
+  const targetExists = syncFs.existsSync(targetPath);
+  if (!options.force && targetExists && await filesMatch(sourcePath, targetPath)) {
+    return {
+      ok: true,
+      status: "up_to_date",
+      sourcePath,
+      targetPath
+    };
+  }
+
+  await fs.mkdir(pluginsDir, { recursive: true });
+  await fs.copyFile(sourcePath, targetPath);
+  return {
+    ok: true,
+    status: targetExists ? "updated" : "installed",
+    sourcePath,
+    targetPath
+  };
 }
 
 function updateStatusBar(sessionCount = null) {
@@ -1560,6 +1646,29 @@ async function toggleAutoSyncToStudio() {
   vscode.window.showInformationMessage(`Amarillo Auto Sync ${next ? "enabled" : "disabled"}.`);
 }
 
+async function togglePrivilegedActionConfirmation() {
+  const settings = getBridgeSettings();
+  let health: BridgeHealthPayload | null = null;
+  try {
+    health = await fetchDaemonHealth({ timeout: 1500 });
+  } catch (_error) {
+    health = null;
+  }
+
+  const current = settings.privilegedActionConfirmation !== false;
+  const next = !current;
+  await vscode.workspace
+    .getConfiguration("amarillo")
+    .update("privilegedActionConfirmation", next, vscode.ConfigurationTarget.Workspace);
+
+  if (health?.ok && daemonMatchesWorkspace(settings, health)) {
+    await requestJson("POST", "/settings/privileged-action-confirmation", { enabled: next }, { timeout: 3000 });
+  }
+
+  refreshSidebar();
+  vscode.window.showInformationMessage(`Amarillo privileged action confirmation ${next ? "enabled" : "disabled"}.`);
+}
+
 async function fetchActivityEntry(id): Promise<ActivityEntryPayload> {
   const response = await requestJson<ActivityEntryResponse>(
     "GET",
@@ -1891,41 +2000,14 @@ function scheduleExistingWorkspaceSourcemapOnActivate(context) {
 }
 
 async function installRobloxPlugin(context) {
-  const localAppData = process.env.LOCALAPPDATA;
-  if (!localAppData) {
-    throw new Error("LOCALAPPDATA is not available on this system.");
-  }
-
-  const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
-  const targetPath = path.join(pluginsDir, "Amarillo.lua");
-
-  // Try workspace source first (for development), then extension runtime
-  let sourcePath = null;
-  try {
-    const workspaceRoot = resolveWorkspaceRoot();
-    const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
-    if (syncFs.existsSync(workspaceSource)) {
-      sourcePath = workspaceSource;
-    }
-  } catch (_error) {
-    // No workspace open
-  }
-
-  if (!sourcePath) {
-    sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
-  }
-
-  await ensurePathExists(sourcePath, "Plugin Amarillo");
-  await fs.mkdir(pluginsDir, { recursive: true });
-  await fs.copyFile(sourcePath, targetPath);
-
-  log(`Plugin copiado para ${targetPath} (source: ${path.basename(path.dirname(sourcePath))})`);
+  const result = await copyBundledRobloxPlugin(context, { force: true });
+  log(`Plugin copiado para ${result.targetPath} (source: ${path.basename(path.dirname(result.sourcePath))})`);
   refreshSidebar();
-  vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${targetPath}`);
+  vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${result.targetPath}. Reload or reopen Roblox Studio if it was already open.`);
 }
 
 async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
-  const { workspaceRoot, host, port, nodePath, autoSyncToStudio } = getBridgeSettings();
+  const { workspaceRoot, host, port, nodePath, autoSyncToStudio, privilegedActionConfirmation } = getBridgeSettings();
   const daemonEntry = runtimePath(context, "daemon", "index.js");
   const token = getOrCreateBridgeToken(context);
 
@@ -1937,6 +2019,7 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
       host,
       port,
       autoSyncToStudio,
+      privilegedActionConfirmation,
       configCreated: false,
       projectState: { created: false, projectFilePath: null }
     };
@@ -1979,7 +2062,8 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
     "--bridge-token", token,
     "--strict-port",
     "--no-mcp",
-    autoSyncToStudio ? "--auto-sync-to-studio" : "--no-auto-sync-to-studio"
+    autoSyncToStudio ? "--auto-sync-to-studio" : "--no-auto-sync-to-studio",
+    privilegedActionConfirmation ? "--privileged-action-confirmation" : "--no-privileged-action-confirmation"
   ];
 
   const daemonProcess = spawn(nodePath, args, {
@@ -2025,6 +2109,7 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
   }
   log(`Starting bridge at http://${host}:${port} for ${workspaceDisplayName(workspaceRoot)}`);
   log(`Auto-sync VS Code -> Studio: ${autoSyncToStudio ? "enabled" : "disabled"}`);
+  log(`Privileged action confirmation: ${privilegedActionConfirmation ? "enabled" : "disabled"}`);
   updateStatusBar();
   refreshSidebar();
   outputChannel.show(true);
@@ -2035,6 +2120,7 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
     host,
     port,
     autoSyncToStudio,
+    privilegedActionConfirmation,
     configCreated,
     projectState,
     sourcemapResult
@@ -2179,6 +2265,7 @@ async function runHealthcheck() {
     ? ` Handshake: ${handshakeStatusLabel(payload.connectionOffer)}.`
     : "";
   const autoSyncInfo = ` Auto-sync VS Code -> Studio: ${payload.autoSyncToStudio === false ? "manual" : "auto"}.`;
+  const confirmationInfo = ` Confirm actions: ${payload.privilegedActionConfirmation === false ? "off" : "on"}.`;
   const mcpInfo = payload.mcpShield
     ? ` MCP: ${mcpStateLabel(payload.mcpShield)}.`
     : "";
@@ -2194,7 +2281,7 @@ async function runHealthcheck() {
   const failedRouteInfo = failedRoutes.length > 0
     ? ` Failed route(s): ${failedRoutes.map((result) => `${result.method} ${result.route}`).join(", ")}.`
     : "";
-  const message = `Amarillo healthcheck. ${pluginHealth.message} Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${routeSummary}${autoSyncInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}${failedRouteInfo}`;
+  const message = `Amarillo healthcheck. ${pluginHealth.message} Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${routeSummary}${autoSyncInfo}${confirmationInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}${failedRouteInfo}`;
   if (pluginHealth.tone === "success" && failedRoutes.length === 0) {
     vscode.window.showInformationMessage(message);
   } else {
@@ -2220,7 +2307,7 @@ function logDoctorSessions(report) {
     log(
       `Doctor session ${doctorValue(session.projectName)} (${doctorValue(session.id)}): ` +
       `state=${doctorValue(session.connectionState)} truth=${doctorValue(session.truthSource)} ` +
-      `version=${doctorValue(session.versionState)} requiresPluginUpdate=${session.requiresPluginUpdate === true ? "yes" : "no"} ` +
+      `version=${doctorValue(session.versionState)} requiresPluginUpdate=${session.requiresPluginUpdate === true ? "yes" : "no"} pluginUpdateAvailable=${session.pluginUpdateAvailable === true ? "yes" : "no"} ` +
       `sync=${doctorValue(session.syncState)} studio=${doctorValue(session.studioContactState)}`
     );
     log(
@@ -2432,48 +2519,20 @@ async function executeCodeInStudio() {
 // ===== Silent plugin install on activation =====
 async function silentPluginInstall(context) {
   try {
-    const localAppData = process.env.LOCALAPPDATA;
-    if (!localAppData) {
-      return;
+    const result = await copyBundledRobloxPlugin(context);
+    if (result.status === "up_to_date") {
+      log(`Plugin Amarillo auto-install: up_to_date at ${result.targetPath}`);
+      return result;
     }
-
-    const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
-    const targetPath = path.join(pluginsDir, "Amarillo.lua");
-
-    // Try workspace source first (for development), then extension runtime
-    let sourcePath = null;
-    try {
-      const workspaceRoot = resolveWorkspaceRoot();
-      const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
-      if (syncFs.existsSync(workspaceSource)) {
-        sourcePath = workspaceSource;
-      }
-    } catch (_error) {
-      // No workspace open, try runtime
-    }
-
-    if (!sourcePath) {
-      sourcePath = runtimePath(context, "plugin", "Amarillo.lua");
-    }
-
-    // Check if source exists
-    try {
-      await fs.access(sourcePath);
-    } catch (_error) {
-      return;
-    }
-
-    // VSIX extraction/copy timestamps are not reliable for updates, so compare
-    // content to avoid skipping a newly packaged plugin.
-    if (await filesMatch(sourcePath, targetPath)) {
-      return;
-    }
-
-    await fs.mkdir(pluginsDir, { recursive: true });
-    await fs.copyFile(sourcePath, targetPath);
-    log(`Plugin Amarillo auto-instalado/atualizado em ${targetPath} (source: ${path.basename(path.dirname(sourcePath))})`);
+    log(`Plugin Amarillo auto-install: ${result.status} at ${result.targetPath} (source: ${path.basename(path.dirname(result.sourcePath))})`);
+    return result;
   } catch (error) {
     log(`Plugin auto-install failed: ${error.message}`);
+    return {
+      ok: false,
+      status: "failed",
+      error: error.message
+    };
   }
 }
 
@@ -2588,6 +2647,15 @@ function activate(context) {
         vscode.window.showErrorMessage(reason);
       }
     }),
+    vscode.commands.registerCommand("amarillo.togglePrivilegedActionConfirmation", async () => {
+      try {
+        await togglePrivilegedActionConfirmation();
+      } catch (error) {
+        const reason = errorMessageFromHttp(error);
+        log(`Failed to toggle privileged action confirmation: ${reason}`);
+        vscode.window.showErrorMessage(reason);
+      }
+    }),
     vscode.commands.registerCommand("amarillo.sendFilesToStudio", async () => {
       try {
         await sendFilesToStudio();
@@ -2631,6 +2699,7 @@ function activate(context) {
         { label: "$(plug) Select Session", description: "Choose active Studio session", action: "selectSession" },
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Sync" },
         { label: "$(sync) Toggle Auto Sync", description: "Enable or disable VS Code to Studio autosync", action: "toggleAutoSync" },
+        { label: "$(shield) Toggle Action Confirmation", description: "Enable or disable Studio prompts for privileged actions", action: "togglePrivilegedActionConfirmation" },
         { label: "$(arrow-up) Send Files to Studio", description: "Push local files to Roblox Studio", action: "sendFilesToStudio" },
         { label: "$(arrow-down) Receive Files from Studio", description: "Pull Studio state to local files", action: "receiveFilesFromStudio" },
         { label: "$(run-all) Execute Code", description: "Run selected code or file in Studio", action: "execCode" },
@@ -2660,6 +2729,7 @@ function activate(context) {
           case "stopBridge": await stopBridge(); break;
           case "selectSession": await selectSession(); break;
           case "toggleAutoSync": await toggleAutoSyncToStudio(); break;
+          case "togglePrivilegedActionConfirmation": await togglePrivilegedActionConfirmation(); break;
           case "sendFilesToStudio": await sendFilesToStudio(); break;
           case "receiveFilesFromStudio": await receiveFilesFromStudio(); break;
           case "execCode": await executeCodeInStudio(); break;

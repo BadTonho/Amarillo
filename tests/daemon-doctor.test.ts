@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { readLocalProjectState } = require("../src/daemon/project");
-const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
+const { AMARILLO_PROTOCOL_VERSION, CURRENT_PLUGIN_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
   createTempWorkspace,
   createWorkspaceWithProject,
@@ -311,14 +311,14 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
     studioInstanceId: "studio-a",
     placeId: 0,
     truthSource: "studio",
-    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginVersion: CURRENT_PLUGIN_VERSION,
     pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
   });
   const sessionId = accept.payload.session.id;
   await invoke(app, "POST", "/studio/snapshot", {
     sessionId,
     reason: "initial_accept",
-    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginVersion: CURRENT_PLUGIN_VERSION,
     pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
     snapshot: readLocalProjectState(app.getProjectById(accept.payload.session.projectId))
   }, {
@@ -365,6 +365,29 @@ test("Doctor warns when privileged action confirmation is disabled", async () =>
   assert.match(warnings, /privileged action confirmation is disabled/);
   assert.equal(doctor.payload.sessions[0].privilegedActionConfirmationEnabled, false);
   assert.equal(doctor.payload.sessions[0].privilegedActionsAllowed, true);
+});
+
+test("Doctor warns when a compatible Studio plugin is older than the bundled plugin", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  app.openSession(0, null, {
+    connectionState: "ready",
+    truthSource: "pc",
+    studioInstanceId: "studio-outdated",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION,
+    requirePluginVersion: true,
+    privilegedActionConfirmationEnabled: true
+  });
+
+  const doctor = await invoke(app, "GET", "/doctor");
+  const warnings = doctor.payload.summary.warnings.join("\n");
+  assert.equal(doctor.payload.status, "warning");
+  assert.match(warnings, /Plugin update available/);
+  assert.equal(doctor.payload.sessions[0].requiresPluginUpdate, false);
+  assert.equal(doctor.payload.sessions[0].pluginUpdateAvailable, true);
+  assert.equal(doctor.payload.sessions[0].currentPluginVersion, CURRENT_PLUGIN_VERSION);
 });
 
 test("Doctor reports blocked when sync is degraded", async () => {

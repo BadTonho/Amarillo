@@ -57,6 +57,8 @@ export interface DoctorSessionSummary {
   versionState: string;
   versionMessage: string;
   requiresPluginUpdate: boolean;
+  currentPluginVersion?: string | null;
+  pluginUpdateAvailable?: boolean;
   studioContactState: string;
   studioContactMessage: string;
   lastStudioContactAt: string | null;
@@ -86,6 +88,7 @@ export interface HealthPayload {
   port: number;
   versions: Record<string, unknown>;
   autoSyncToStudio: boolean;
+  privilegedActionConfirmation: boolean;
   projectCount: number;
   defaultProjectId: string | null;
   defaultProjectPath: string | null;

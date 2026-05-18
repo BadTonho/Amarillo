@@ -2,7 +2,7 @@
   "name": "amarillo-vscode",
   "displayName": "Amarillo Bridge",
   "description": "Installs the Amarillo plugin in Roblox Studio and controls the local bridge from VS Code.",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "publisher": "amarillo",
   "engines": {
     "vscode": "^1.90.0"
@@ -78,6 +78,10 @@
       {
         "command": "amarillo.toggleAutoSyncToStudio",
         "title": "Amarillo: Toggle Auto Sync to Studio"
+      },
+      {
+        "command": "amarillo.togglePrivilegedActionConfirmation",
+        "title": "Amarillo: Toggle Privileged Action Confirmation"
       },
       {
         "command": "amarillo.sendFilesToStudio",
@@ -195,17 +199,23 @@
           "description": "Automatically send VS Code workspace changes to Roblox Studio after the initial truth-source sync.",
           "order": 7
         },
+        "amarillo.privilegedActionConfirmation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask Roblox Studio to confirm run_code and destructive Studio actions before applying them.",
+          "order": 8
+        },
         "amarillo.verbose": {
           "type": "boolean",
           "default": false,
           "description": "Log verbose daemon output to the Amarillo output panel.",
-          "order": 8
+          "order": 9
         },
         "amarillo.workspaceRoot": {
           "type": "string",
           "default": "",
           "description": "Kept for compatibility. Amarillo uses the folder open in VS Code as the target workspace.",
-          "order": 9
+          "order": 10
         }
       }
     },
