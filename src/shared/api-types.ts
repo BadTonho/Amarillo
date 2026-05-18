@@ -67,6 +67,7 @@ export interface BridgeSessionPayload {
   projectName?: string;
   projectPath?: string | null;
   placeId?: number;
+  placeName?: string | null;
   connectionState?: string;
   truthSource?: TruthSource | null;
   studioInstanceId?: string | null;
@@ -131,6 +132,7 @@ export interface BridgeHealthPayload {
   projectCount?: number;
   defaultProjectId?: string | null;
   defaultProjectPath?: string | null;
+  pendingPlaceSetup?: Record<string, unknown> | null;
   connectionOffer?: ConnectionOfferPayload | null;
   sessions?: BridgeSessionPayload[];
   mcpShield?: McpShieldPayload | null;

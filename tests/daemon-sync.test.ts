@@ -226,6 +226,44 @@ test("shared and exclusive files target only the derived sessions that include t
   assert.equal(dungeonSession.pendingCommands.length, 0);
 });
 
+test("workspace watcher ignores Studio snapshot disk writes instead of echoing them back", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  fs.writeFileSync(scriptPath, "return 20", "utf8");
+
+  app.pendingStudioWrites.set(session.id, {
+    sessionId: session.id,
+    reason: "apply_project_tree_corrected",
+    snapshotHash: null,
+    queuedAt: Date.now(),
+    updatedAt: Date.now(),
+    timer: null,
+    running: true,
+    promise: Promise.resolve(),
+    resolve: () => {}
+  });
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+  assert.equal(session.pendingCommands.length, 0);
+
+  app.pendingStudioWrites.clear();
+  app.lastDiskWriteTime = Date.now();
+  fs.writeFileSync(scriptPath, "return 21", "utf8");
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+  assert.equal(session.pendingCommands.length, 0);
+
+  app.lastDiskWriteTime = Date.now() - 2000;
+  app.onWorkspaceFileChanged(scriptPath);
+  await wait(320);
+  assert.equal(session.pendingCommands.length, 1);
+});
+
 test("new VS Code script files enqueue a project tree apply instead of a file patch", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });

@@ -142,12 +142,19 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
 
   assert.match(extensionSource, /amarillo\.toggleAutoSyncToStudio/);
   assert.match(extensionSource, /amarillo\.togglePrivilegedActionConfirmation/);
+  assert.match(extensionSource, /amarillo\.createPlaceProject/);
+  assert.match(extensionSource, /amarillo\.editPlaceIds/);
   assert.match(extensionSource, /\/settings\/auto-sync-to-studio/);
   assert.match(extensionSource, /\/settings\/privileged-action-confirmation/);
+  assert.match(extensionSource, /\/projects\/place-setup/);
+  assert.match(extensionSource, /\/projects\/\$\{encodeURIComponent\(picked\.project\.id\)\}\/place-ids/);
   assert.match(extensionSource, /Auto Sync: On/);
   assert.match(extensionSource, /Auto Sync: Off/);
   assert.match(extensionSource, /Confirm Actions: On/);
   assert.match(extensionSource, /Confirm Actions: Off/);
+  assert.match(extensionSource, /title: "Places"/);
+  assert.match(extensionSource, /Create Place Project/);
+  assert.match(extensionSource, /Edit Place IDs/);
   assert.match(extensionSource, /Sync History/);
   assert.match(extensionSource, /\/activity\?limit=\$\{encodeURIComponent\(String\(limit\)\)\}&includeDetails=true/);
   assert.match(extensionSource, /data-activity-action="openDiff"/);
@@ -156,6 +163,8 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
   assert.match(extensionSource, /vscode\.diff/);
   assert.match(packageJson, /amarillo\.toggleAutoSyncToStudio/);
   assert.match(packageJson, /amarillo\.togglePrivilegedActionConfirmation/);
+  assert.match(packageJson, /amarillo\.createPlaceProject/);
+  assert.match(packageJson, /amarillo\.editPlaceIds/);
   assert.match(packageJson, /amarillo\.privilegedActionConfirmation/);
 });
 

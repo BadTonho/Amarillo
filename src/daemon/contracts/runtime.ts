@@ -132,6 +132,7 @@ export interface RuntimeSession {
   id: string;
   sessionToken: string;
   placeId: number;
+  placeName: string | null;
   projectId: string;
   createdAt: string;
   lastStudioHash: string | null;
@@ -172,6 +173,7 @@ export interface RuntimeSession {
 export interface SessionOpenOptions {
   connectionState?: string;
   truthSource?: TruthSource | null;
+  placeName?: string | null;
   studioInstanceId?: string | null;
   requirePluginVersion?: boolean;
   pluginVersion?: string | number | null;

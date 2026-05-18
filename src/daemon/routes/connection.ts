@@ -31,8 +31,10 @@ interface ConnectionProject {
 
 interface ConnectionAcceptResult {
   ok: boolean;
+  code?: string;
   error?: string;
   offer: ConnectionOfferSummary | null;
+  pendingPlaceSetup?: unknown;
   session?: unknown;
   project?: ConnectionProject;
 }
@@ -45,6 +47,8 @@ interface ConnectionApp {
   projectPayload(project: ConnectionProject | undefined): ProjectPayloadForConnection | null;
   getProjectById(projectId: string | null): ConnectionProject | null;
   resolveProject(placeId: number, preferredProjectId?: string | null): ConnectionProject | null;
+  requiresPlaceSetup?(placeId: number, projectId?: string | null): boolean;
+  rememberPendingPlaceSetup?(placeId: number, placeName?: string | null): unknown;
   calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource): string[];
   readLocalProjectStateAsyncWithPerf?(project: ConnectionProject): Promise<StudioSnapshot>;
 }
@@ -92,6 +96,18 @@ async function handleConnectionRoutes(
 
   if (request.method === "POST" && requestUrl.pathname === "/connection/diff") {
     const body = normalizeConnectionDiffBody(await readJsonBody<ConnectionDiffBody>(request, { maxBytes: STUDIO_SYNC_MAX_JSON_BODY_BYTES }));
+    if (app.requiresPlaceSetup && app.requiresPlaceSetup(body.placeId, body.projectId)) {
+      const pendingPlaceSetup = app.rememberPendingPlaceSetup
+        ? app.rememberPendingPlaceSetup(body.placeId, body.placeName)
+        : null;
+      jsonResponse(response, 409, {
+        ok: false,
+        code: "PLACE_SETUP_REQUIRED",
+        error: "Create a place project before syncing this Roblox place.",
+        pendingPlaceSetup
+      });
+      return true;
+    }
     let project = body.projectId
       ? app.getProjectById(body.projectId)
       : null;

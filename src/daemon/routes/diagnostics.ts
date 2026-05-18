@@ -49,6 +49,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
       defaultProjectPath: app.defaultProjectId
         ? (app.getProjectById(app.defaultProjectId)?.id || null)
         : null,
+      pendingPlaceSetup: app.pendingPlaceSetup || null,
       connectionOffer: app.connectionOfferSummary(),
       sessions: Array.from(app.sessions.values()).map((session) => app.sessionSummary(session)),
       mcpShield: mcpShieldSummary(app),
@@ -72,8 +73,39 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     jsonResponse(response, 200, {
       ok: true,
       projects: app.listProjects(),
-      defaultProjectId: app.defaultProjectId
+      defaultProjectId: app.defaultProjectId,
+      pendingPlaceSetup: app.pendingPlaceSetup || null
     });
+    return true;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/projects/place-setup") {
+    try {
+      const body = await readJsonBody(request);
+      jsonResponse(response, 200, app.createPlaceProject(body));
+    } catch (error) {
+      jsonResponse(response, error.statusCode || 500, {
+        ok: false,
+        code: error.code || "PLACE_SETUP_FAILED",
+        error: error.message
+      });
+    }
+    return true;
+  }
+
+  const placeIdsMatch = requestUrl.pathname.match(/^\/projects\/(.+)\/place-ids$/);
+  if (request.method === "PATCH" && placeIdsMatch) {
+    try {
+      const projectId = decodeURIComponent(placeIdsMatch[1]);
+      const body = await readJsonBody(request);
+      jsonResponse(response, 200, app.updateProjectPlaceIds(projectId, body.placeIds || body.place_ids || body.placeId));
+    } catch (error) {
+      jsonResponse(response, error.statusCode || 500, {
+        ok: false,
+        code: error.code || "PLACE_IDS_UPDATE_FAILED",
+        error: error.message
+      });
+    }
     return true;
   }
 

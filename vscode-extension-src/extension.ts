@@ -922,6 +922,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   const activeSession = resolveActiveSessionFromHealth({ sessions })
     || sessions[0]
     || null;
+  const pendingPlaceSetup: any = workspaceMatches ? (health?.pendingPlaceSetup || null) : null;
   const connectionOffer = workspaceMatches ? (health?.connectionOffer || null) : null;
   const visibleWorkspaceRoot = workspaceMatches
     ? (health?.workspaceRoot || settings?.workspaceRoot || null)
@@ -1054,6 +1055,15 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
     if (visibleWorkspaceRoot) {
       sessionFacts.push(createSidebarFact("Current workspace", workspaceDisplayName(visibleWorkspaceRoot)));
     }
+  } else if (pendingPlaceSetup) {
+    sessionTone = "warning";
+    sessionBadge = "Place setup";
+    sessionMessage = String(pendingPlaceSetup.message || "Create a place project before syncing this Roblox place.");
+    sessionFacts.push(
+      createSidebarFact("Place", `${pendingPlaceSetup.placeName || "Unknown"} (${pendingPlaceSetup.placeId || 0})`, "warning"),
+      createSidebarFact("Project", String(pendingPlaceSetup.suggestedProjectId || "-"), "warning")
+    );
+    sessionActions.unshift(createSidebarAction("Create Place Project", "amarillo.createPlaceProject", "primary"));
   } else if (connectionOffer) {
     sessionTone = connectionOffer.status === "declined" ? "warning" : "info";
     sessionBadge = handshakeStatusLabel(connectionOffer);
@@ -1133,6 +1143,18 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
       actions: sessionActions
     },
     sections: [
+      {
+        title: "Places",
+        description: pendingPlaceSetup
+          ? `Setup required for ${pendingPlaceSetup.placeName || "this place"} (${pendingPlaceSetup.placeId || 0}).`
+          : (activeSession
+            ? `Current place ${activeSession.placeName || activeSession.projectName || "Studio"} (${activeSession.placeId || 0}).`
+            : "Create and edit place project mappings."),
+        actions: [
+          createSidebarAction("Create Place Project", "amarillo.createPlaceProject", pendingPlaceSetup ? "primary" : "secondary"),
+          createSidebarAction("Edit Place IDs", "amarillo.editPlaceIds")
+        ]
+      },
       {
         title: "Sync",
         description: "Send and receive files for the active session.",
@@ -2483,6 +2505,83 @@ async function selectSession() {
   vscode.window.showInformationMessage(`Active session: ${session.projectName} / Place ${session.placeId || 0}`);
 }
 
+async function createPlaceProjectFromSidebar() {
+  const settings = getBridgeSettings();
+  const health = await fetchDaemonHealth({ timeout: 2000 });
+  if (!daemonMatchesWorkspace(settings, health)) {
+    throw new Error("The active daemon on this port belongs to another workspace.");
+  }
+  const pending = health.pendingPlaceSetup as any;
+  if (!pending || !pending.placeId) {
+    vscode.window.showInformationMessage("No new published place is waiting for setup.");
+    return;
+  }
+  const response = await requestJson<Record<string, any>>("POST", "/projects/place-setup", {
+    placeId: pending.placeId,
+    placeName: pending.placeName
+  }, { timeout: 10000 });
+  log(`Created place project ${response.projectId || response.projectPath || "unknown"} for place ${pending.placeId}.`);
+  refreshSidebar();
+  vscode.window.showInformationMessage(`Created Amarillo place project for ${pending.placeName || `Place ${pending.placeId}`}. Reconnect the Roblox Studio plugin to sync.`);
+}
+
+function parsePlaceIdsInput(input) {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) {
+    return [];
+  }
+  const parts = trimmed.split(/[,\s]+/).map((part) => part.trim()).filter(Boolean);
+  const ids = parts.map((part) => Number(part));
+  if (ids.some((id) => !Number.isFinite(id) || id <= 0)) {
+    throw new Error("Place IDs must be positive numbers separated by commas.");
+  }
+  return Array.from(new Set(ids.map((id) => Math.trunc(id))));
+}
+
+async function editPlaceIdsFromSidebar() {
+  const payload = await requestJson<Record<string, any>>("GET", "/projects", undefined, { timeout: 5000 });
+  const projects = Array.isArray(payload.projects) ? payload.projects : [];
+  if (projects.length === 0) {
+    vscode.window.showWarningMessage("No Amarillo projects were found in this workspace.");
+    return;
+  }
+  const picked = await vscode.window.showQuickPick(
+    projects.map((project) => ({
+      label: project.name || project.id,
+      description: project.id,
+      detail: `Place IDs: ${(project.placeIds || []).join(", ") || "none"}`,
+      project
+    })),
+    { placeHolder: "Choose the project whose Roblox place IDs should change" }
+  );
+  if (!picked) {
+    return;
+  }
+  const current = Array.isArray(picked.project.placeIds) ? picked.project.placeIds.join(", ") : "";
+  const input = await vscode.window.showInputBox({
+    title: "Edit Place IDs",
+    prompt: "Enter Roblox place IDs separated by commas.",
+    value: current,
+    validateInput(value) {
+      try {
+        parsePlaceIdsInput(value);
+        return null;
+      } catch (error) {
+        return error.message;
+      }
+    }
+  });
+  if (input === undefined) {
+    return;
+  }
+  const placeIds = parsePlaceIdsInput(input);
+  const route = `/projects/${encodeURIComponent(picked.project.id)}/place-ids`;
+  await requestJson("PATCH", route, { placeIds }, { timeout: 10000 });
+  log(`Updated place IDs for ${picked.project.id}: ${placeIds.join(", ") || "none"}.`);
+  refreshSidebar();
+  vscode.window.showInformationMessage(`Updated place IDs for ${picked.project.name || picked.project.id}.`);
+}
+
 // ===== Execute Code in Studio (Argon exec pattern) =====
 async function executeCodeInStudio() {
   const editor = vscode.window.activeTextEditor;
@@ -2638,6 +2737,20 @@ function activate(context) {
     vscode.commands.registerCommand("amarillo.configureCodexMcp", () => configureMcp(context)),
     vscode.commands.registerCommand("amarillo.openOutput", () => outputChannel.show(true)),
     vscode.commands.registerCommand("amarillo.refreshSidebar", () => refreshSidebar()),
+    vscode.commands.registerCommand("amarillo.createPlaceProject", async () => {
+      try {
+        await createPlaceProjectFromSidebar();
+      } catch (error) {
+        vscode.window.showErrorMessage(error.message);
+      }
+    }),
+    vscode.commands.registerCommand("amarillo.editPlaceIds", async () => {
+      try {
+        await editPlaceIdsFromSidebar();
+      } catch (error) {
+        vscode.window.showErrorMessage(error.message);
+      }
+    }),
     vscode.commands.registerCommand("amarillo.toggleAutoSyncToStudio", async () => {
       try {
         await toggleAutoSyncToStudio();
@@ -2697,6 +2810,8 @@ function activate(context) {
         { label: "$(radio-tower) Start Bridge", description: "Start sync daemon and request connection", action: "startBridge" },
         { label: "$(debug-stop) Stop Bridge", description: "Stop the sync daemon", action: "stopBridge" },
         { label: "$(plug) Select Session", description: "Choose active Studio session", action: "selectSession" },
+        { label: "$(folder-library) Create Place Project", description: "Create a project for the pending Roblox place", action: "createPlaceProject" },
+        { label: "$(list-ordered) Edit Place IDs", description: "Change place IDs mapped to a project", action: "editPlaceIds" },
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Sync" },
         { label: "$(sync) Toggle Auto Sync", description: "Enable or disable VS Code to Studio autosync", action: "toggleAutoSync" },
         { label: "$(shield) Toggle Action Confirmation", description: "Enable or disable Studio prompts for privileged actions", action: "togglePrivilegedActionConfirmation" },
@@ -2728,6 +2843,8 @@ function activate(context) {
           case "startBridge": await startBridge(context); break;
           case "stopBridge": await stopBridge(); break;
           case "selectSession": await selectSession(); break;
+          case "createPlaceProject": await createPlaceProjectFromSidebar(); break;
+          case "editPlaceIds": await editPlaceIdsFromSidebar(); break;
           case "toggleAutoSync": await toggleAutoSyncToStudio(); break;
           case "togglePrivilegedActionConfirmation": await togglePrivilegedActionConfirmation(); break;
           case "sendFilesToStudio": await sendFilesToStudio(); break;
