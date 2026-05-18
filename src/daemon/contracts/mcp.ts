@@ -70,7 +70,7 @@ export interface McpAppLike {
     session: RuntimeSession;
     project: RuntimeProject;
   };
-  requestStudioTree(sessionId?: string): Promise<Record<string, unknown>>;
+  requestStudioTree(sessionId?: string, options?: Record<string, unknown>): Promise<Record<string, unknown>>;
   requestStudioSelection(sessionId?: string): Promise<unknown>;
   runStudioCode(sessionId?: string, code?: string): Promise<unknown>;
   getProjectById(projectId: string): RuntimeProject | null;

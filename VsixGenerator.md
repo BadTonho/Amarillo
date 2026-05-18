@@ -11,7 +11,7 @@ cd .\amarillo
 Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version. Legacy direct-runtime `.vscode/mcp.json` files are updated best-effort, but the current MCP flow uses a portable bootstrap instead:
 
 ```powershell
-npm.cmd run version:set -- 1.1.2
+npm.cmd run version:set -- 1.1.4
 ```
 
 Generate the VSIX:

@@ -5,6 +5,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { PluginRobloxApp } = require("../src/daemon/app");
+const { handleTool } = require("../src/daemon/mcp");
+const { hashSnapshot } = require("../src/daemon/lib/snapshot-hash");
 const { readLocalProjectState } = require("../src/daemon/project");
 const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
@@ -479,6 +481,118 @@ test("verified apply snapshot clears degraded sync state", async () => {
   assert.equal(session.sync.state, "ready");
   assert.equal(session.sync.degradedReason, null);
   assert.ok(session.sync.lastVerifiedAt);
+});
+
+test("MCP pull_changes can recover a degraded session with a verified apply", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const snapshot = readLocalProjectState(project);
+
+  app.markSyncDegraded(session, "test degradation");
+  const resultPromise = handleTool(app, "pull_changes", { sessionId: session.id });
+  await wait(25);
+
+  const command = app.dequeueCommands(session.id).commands[0];
+  assert.equal(command.type, "apply_project_tree");
+  assert.equal(command.payload.reason, "mcp_pull");
+
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot
+  });
+  const toolResult = await resultPromise;
+  const parsed = JSON.parse(toolResult.content[0].text);
+
+  assert.equal(parsed.ok, true);
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+});
+
+test("MCP get_tree caches Studio snapshots without writing them to disk", async () => {
+  const workspace = createWorkspaceWithProject();
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const studioSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  studioSnapshot.mounts[0].children[0].source = "return 99";
+
+  const resultPromise = handleTool(app, "get_tree", { sessionId: session.id });
+  await wait(25);
+
+  const command = app.dequeueCommands(session.id).commands[0];
+  assert.equal(command.type, "get_tree");
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: studioSnapshot
+  });
+
+  const toolResult = await resultPromise;
+  const parsed = JSON.parse(toolResult.content[0].text);
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(parsed.mounts[0].children[0].source, "return 99");
+  assert.equal(session.lastStudioHash, hashSnapshot(studioSnapshot));
+  assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 1");
+  assert.equal(app.pendingStudioWrites.size, 0);
+});
+
+test("MCP push_changes explicitly persists Studio snapshots to disk", async () => {
+  const workspace = createWorkspaceWithProject();
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const studioSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  studioSnapshot.mounts[0].children[0].source = "return 99";
+
+  const resultPromise = handleTool(app, "push_changes", { sessionId: session.id });
+  await wait(25);
+
+  const command = app.dequeueCommands(session.id).commands[0];
+  assert.equal(command.type, "get_tree");
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: studioSnapshot
+  });
+
+  const toolResult = await resultPromise;
+  const parsed = JSON.parse(toolResult.content[0].text);
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.snapshotHash, hashSnapshot(studioSnapshot));
+  assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 99");
+});
+
+test("corrected apply snapshots are accepted after Studio preserves classes", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const expectedSnapshot = readLocalProjectState(project);
+  const correctedSnapshot = readLocalProjectState(project);
+  correctedSnapshot.mounts[0].children[0].classNameSource = "studio";
+
+  app.markSyncDegraded(session, "test degradation");
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: correctedSnapshot,
+    corrected: true
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+  assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
 });
 
 test("apply project tree with a mismatched Studio snapshot marks sync degraded", async () => {

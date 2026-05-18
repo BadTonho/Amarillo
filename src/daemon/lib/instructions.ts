@@ -186,6 +186,7 @@ function buildInstructionsMarkdown(context: any = {}) {
     "- Safe default flow: `health` -> `list_projects` -> `get_tree` or `get_selection` -> inspection tools -> `pull_changes` or privileged tools only when needed.",
     "- Treat `run_code` as privileged arbitrary Luau execution; use it only when inspection tools cannot answer the question or the user has approved Studio-side changes.",
     "- If `health.sessions[].destructiveConfirmationPending` is true, approve or decline that prompt in Roblox Studio before sending another privileged tool call.",
+    "- If a privileged or destructive tool returns `reasonCode: \"SYNC_DEGRADED\"`, recover the session with `pull_changes` while the local workspace is the source of truth, then retry the privileged action after `health` reports the sync is ready.",
     "- Use `pull_changes` when the local workspace is the source of truth and you want to apply it in Studio. Use `push_changes` when Studio has changes you want to save back to disk.",
     "",
     "## MCP Shield Fallback",

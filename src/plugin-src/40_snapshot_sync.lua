@@ -239,6 +239,169 @@ local function resolveMountContainer(segments)
 	return current
 end
 
+local function mountPathLabel(segments)
+	if type(segments) ~= "table" or #segments == 0 then
+		return "<empty>"
+	end
+	return table.concat(segments, ".")
+end
+
+local function resolveMountRoot(segment)
+	local ok, service = pcall(function()
+		return game:GetService(segment)
+	end)
+	if ok and service then
+		return service, "service"
+	end
+
+	local child = game:FindFirstChild(segment)
+	if child then
+		return child, "child"
+	end
+
+	return nil, "missing"
+end
+
+local function validateMountContainerRecovery(segments)
+	if type(segments) ~= "table" or #segments == 0 then
+		return {
+			ok = true,
+			ignored = true,
+			reason = "empty mount path"
+		}
+	end
+
+	for index, segment in ipairs(segments) do
+		if type(segment) ~= "string" or segment == "" then
+			return {
+				ok = false,
+				reason = "invalid empty segment at index " .. tostring(index)
+			}
+		end
+	end
+
+	local root = resolveMountRoot(segments[1])
+	if not root then
+		return {
+			ok = false,
+			reason = "missing Roblox service/root '" .. tostring(segments[1]) .. "'"
+		}
+	end
+
+	local current = root
+	for index = 2, #segments do
+		local child = current:FindFirstChild(segments[index])
+		if child then
+			current = child
+		else
+			if isProtectedSyncInstance(current) then
+				return {
+					ok = false,
+					reason = "cannot recreate below protected instance " .. describeInstanceForLog(current)
+				}
+			end
+			return {
+				ok = true,
+				needsRecovery = true,
+				missingStartIndex = index
+			}
+		end
+	end
+
+	return {
+		ok = true,
+		needsRecovery = false
+	}
+end
+
+local function ensureRecoverableMountContainer(segments)
+	if type(segments) ~= "table" or #segments == 0 then
+		appendLog("Mount integrity ignored: <empty> (empty mount path)")
+		return nil, true, "ignored"
+	end
+
+	local current, rootKind = resolveMountRoot(segments[1])
+	if not current then
+		return nil, false, "missing Roblox service/root '" .. tostring(segments[1]) .. "'"
+	end
+	appendLog("Mount integrity found: " .. tostring(segments[1]) .. " (" .. tostring(rootKind) .. ")")
+
+	local currentPath = tostring(segments[1])
+	for index = 2, #segments do
+		local segment = segments[index]
+		local child = current:FindFirstChild(segment)
+		currentPath = currentPath .. "." .. tostring(segment)
+		if child then
+			appendLog("Mount integrity found: " .. currentPath)
+			current = child
+		else
+			if isProtectedSyncInstance(current) then
+				return nil, false, "cannot recreate " .. currentPath .. " below protected instance " .. describeInstanceForLog(current)
+			end
+
+			local folder = Instance.new("Folder")
+			local okName, nameErr = safeSetProperty(folder, "Name", segment, "mount recovery name")
+			local okParent, parentErr = false, nil
+			if okName then
+				okParent, parentErr = safeSetParent(folder, current, "mount recovery parent")
+			end
+			if not okName or not okParent then
+				destroyUnexpectedChild(folder, "failed mount recovery cleanup")
+				return nil, false, "failed to recreate " .. currentPath .. ": " .. tostring(nameErr or parentErr)
+			end
+
+			appendLog("Mount integrity recreated: " .. currentPath .. " (Folder)")
+			current = folder
+		end
+	end
+
+	return current, true, nil
+end
+
+local function preflightProjectMounts(projectSnapshot)
+	local checks = {}
+	local blocked = {}
+
+	for _, mount in ipairs(projectSnapshot.mounts or {}) do
+		local segments = mount.segments or {}
+		local pathLabel = mountPathLabel(segments)
+		local check = validateMountContainerRecovery(segments)
+		table.insert(checks, {
+			mount = mount,
+			segments = segments,
+			pathLabel = pathLabel,
+			check = check
+		})
+
+		if not check.ok then
+			local detail = pathLabel .. " (" .. tostring(check.reason) .. ")"
+			table.insert(blocked, detail)
+			appendLog("Mount integrity blocked: " .. detail)
+		elseif check.ignored then
+			appendLog("Mount integrity ignored: " .. pathLabel .. " (" .. tostring(check.reason) .. ")")
+		end
+	end
+
+	if #blocked > 0 then
+		return false, "Sync blocked: unsafe or missing mount base(s): " .. table.concat(blocked, "; "), nil
+	end
+
+	local containers = {}
+	for _, entry in ipairs(checks) do
+		if not entry.check.ignored then
+			local container, ok, err = ensureRecoverableMountContainer(entry.segments)
+			if not ok then
+				local detail = entry.pathLabel .. " (" .. tostring(err) .. ")"
+				appendLog("Mount integrity blocked: " .. detail)
+				return false, "Sync blocked: unsafe or missing mount base(s): " .. detail, nil
+			end
+			containers[entry.mount] = container
+		end
+	end
+
+	return true, nil, containers
+end
+
 local function snapshotCurrentProject()
 	if not state.project then
 		return nil
@@ -559,10 +722,15 @@ local function applyProjectSnapshot(projectSnapshot, command)
 
 	local okApply, applyError = xpcall(function()
 		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
+		local preflightOk, preflightError, mountContainers = preflightProjectMounts(projectSnapshot)
+		if not preflightOk then
+			error(preflightError)
+		end
+
 		local openDocumentSources = collectOpenDocumentSources()
 
 		for _, mount in ipairs(projectSnapshot.mounts or {}) do
-			local container = resolveMountContainer(mount.segments or {})
+			local container = mountContainers[mount]
 			if container then
 				local desiredChildren = {}
 				for _, child in ipairs(mount.children or {}) do
@@ -583,8 +751,6 @@ local function applyProjectSnapshot(projectSnapshot, command)
 						end
 					end
 				end
-			else
-				appendLog("Mount not found: " .. table.concat(mount.segments or {}, "."))
 			end
 		end
 
@@ -608,5 +774,5 @@ local function applyProjectSnapshot(projectSnapshot, command)
 		return false, tostring(applyError)
 	end
 
-	return true, "Snapshot aplicado", appliedSnapshot
+	return true, "Snapshot aplicado", appliedSnapshot, correctedDuringApply
 end
