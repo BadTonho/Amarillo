@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.5"
+local PLUGIN_VERSION = "1.1.7"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -3731,49 +3731,52 @@ local function saveSettingsFromView()
 	openHomeView()
 end
 
--- Keep UI construction in a short-lived scope so Luau releases these locals
--- before the watcher loop below. Studio errors once a script chunk exceeds 200.
-do
-local toolbar = plugin:CreateToolbar("Amarillo")
-local toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxasset://textures/DeveloperFramework/PluginLogo.png")
-toolbarButton.ClickableWhenViewportHidden = true
+local toolbarButton = nil
 
-local widgetInfo = DockWidgetPluginGuiInfo.new(
-	Enum.InitialDockState.Right,
-	false,
-	true,
-	460,
-	640,
-	360,
-	480
-)
-widget = plugin:CreateDockWidgetPluginGui("AmarilloDock", widgetInfo)
-widget.Title = "Amarillo Bridge"
+local function buildPluginShell()
+	local toolbar = plugin:CreateToolbar("Amarillo")
+	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxasset://textures/DeveloperFramework/PluginLogo.png")
+	toolbarButton.ClickableWhenViewportHidden = true
 
-local root = Instance.new("Frame")
-root.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
-root.BorderSizePixel = 0
-root.Size = UDim2.fromScale(1, 1)
-safeSetParent(root, widget, "UI root parent")
+	local widgetInfo = DockWidgetPluginGuiInfo.new(
+		Enum.InitialDockState.Right,
+		false,
+		true,
+		460,
+		640,
+		360,
+		480
+	)
+	widget = plugin:CreateDockWidgetPluginGui("AmarilloDock", widgetInfo)
+	widget.Title = "Amarillo Bridge"
 
-state.ui.homePage = Instance.new("Frame")
-state.ui.homePage.BackgroundTransparency = 1
-state.ui.homePage.Size = UDim2.fromScale(1, 1)
-safeSetParent(state.ui.homePage, root, "UI home page parent")
+	local root = Instance.new("Frame")
+	root.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
+	root.BorderSizePixel = 0
+	root.Size = UDim2.fromScale(1, 1)
+	safeSetParent(root, widget, "UI root parent")
 
-state.ui.settingsPage = Instance.new("Frame")
-state.ui.settingsPage.BackgroundTransparency = 1
-state.ui.settingsPage.Size = UDim2.fromScale(1, 1)
-state.ui.settingsPage.Visible = false
-safeSetParent(state.ui.settingsPage, root, "UI settings page parent")
+	state.ui.homePage = Instance.new("Frame")
+	state.ui.homePage.BackgroundTransparency = 1
+	state.ui.homePage.Size = UDim2.fromScale(1, 1)
+	safeSetParent(state.ui.homePage, root, "UI home page parent")
 
-state.ui.advancedPage = Instance.new("Frame")
-state.ui.advancedPage.BackgroundTransparency = 1
-state.ui.advancedPage.Size = UDim2.fromScale(1, 1)
-state.ui.advancedPage.Visible = false
-safeSetParent(state.ui.advancedPage, root, "UI advanced page parent")
+	state.ui.settingsPage = Instance.new("Frame")
+	state.ui.settingsPage.BackgroundTransparency = 1
+	state.ui.settingsPage.Size = UDim2.fromScale(1, 1)
+	state.ui.settingsPage.Visible = false
+	safeSetParent(state.ui.settingsPage, root, "UI settings page parent")
 
-do
+	state.ui.advancedPage = Instance.new("Frame")
+	state.ui.advancedPage.BackgroundTransparency = 1
+	state.ui.advancedPage.Size = UDim2.fromScale(1, 1)
+	state.ui.advancedPage.Visible = false
+	safeSetParent(state.ui.advancedPage, root, "UI advanced page parent")
+
+	return root
+end
+
+local function buildHomePage()
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local homeTitle = makeTextLabel(homeHero, "Amarillo", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
@@ -3813,7 +3816,7 @@ homeConfirmHint.TextColor3 = Color3.fromRGB(152, 158, 168)
 state.ui.homeConfirmPropToggle = makeButton(homeSafety, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(132, 32), UDim2.new(1, -148, 0, 20), togglePrivilegedActionConfirmation)
 end
 
-do
+local function buildSettingsPage()
 local settingsHeader = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local settingsBackButton = makeButton(settingsHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 18), openHomeView)
 setButtonStyle(settingsBackButton, "secondary")
@@ -3879,7 +3882,7 @@ local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 end
 
-do
+local function buildAdvancedPage()
 local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
 local advancedBackButton = makeButton(advancedHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 20), openHomeView)
 setButtonStyle(advancedBackButton, "secondary")
@@ -3920,7 +3923,7 @@ state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(
 state.ui.logBox.TextEditable = false
 end
 
-do
+local function buildConnectionPromptOverlay(root)
 state.ui.connectionPromptOverlay = Instance.new("Frame")
 state.ui.connectionPromptOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.connectionPromptOverlay.BackgroundTransparency = 0.28
@@ -3956,7 +3959,7 @@ state.ui.connectionPromptChooseStudio.ZIndex = 22
 end
 
 -- ===== Privileged Action Confirmation Overlay =====
-do
+local function buildPrivilegedActionConfirmationOverlay(root)
 state.ui.propertyConfirmOverlay = Instance.new("Frame")
 state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.propertyConfirmOverlay.BackgroundTransparency = 0.28
@@ -3999,7 +4002,7 @@ propertyDeclineBtn.ZIndex = 32
 end
 
 -- ===== Diff Confirmation Overlay =====
-do
+local function buildDiffOverlay(root)
 state.ui.diffOverlay = Instance.new("Frame")
 state.ui.diffOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.diffOverlay.BackgroundTransparency = 0.28
@@ -4053,31 +4056,46 @@ setButtonStyle(diffCancelBtn, "secondary")
 diffCancelBtn.ZIndex = 42
 end
 
-toolbarButton.Click:Connect(function()
-	togglePluginWidget()
-end)
-
-hidePluginWidget()
-task.spawn(function()
-	while true do
-		task.wait(0.25)
-		if isExperienceRunning() and widget and widget.Enabled then
-			hidePluginWidget()
+local function startWidgetAutoHide()
+	task.spawn(function()
+		while true do
+			task.wait(0.25)
+			if isExperienceRunning() and widget and widget.Enabled then
+				hidePluginWidget()
+			end
 		end
-	end
-end)
-loadSettings()
-updatePrivilegedActionConfirmationUi()
-updateEndpointSummary()
-appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
-pcall(fetchDaemonHealth)
-updateStatus("waiting for daemon")
-updateProject(currentWorkspaceLabel())
-updateSession("-")
-updateQueue("-")
-updateConflict("0")
-openHomeView()
+	end)
 end
+
+local function createPluginUi()
+	local root = buildPluginShell()
+	buildHomePage()
+	buildSettingsPage()
+	buildAdvancedPage()
+	buildConnectionPromptOverlay(root)
+	buildPrivilegedActionConfirmationOverlay(root)
+	buildDiffOverlay(root)
+
+	toolbarButton.Click:Connect(function()
+		togglePluginWidget()
+	end)
+
+	hidePluginWidget()
+	startWidgetAutoHide()
+	loadSettings()
+	updatePrivilegedActionConfirmationUi()
+	updateEndpointSummary()
+	appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
+	pcall(fetchDaemonHealth)
+	updateStatus("waiting for daemon")
+	updateProject(currentWorkspaceLabel())
+	updateSession("-")
+	updateQueue("-")
+	updateConflict("0")
+	openHomeView()
+end
+
+createPluginUi()
 -- <<< src/plugin-src/80_ui.lua
 
 -- >>> src/plugin-src/90_watchers_loops.lua
