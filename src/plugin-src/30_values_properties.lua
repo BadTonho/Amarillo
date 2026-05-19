@@ -418,4 +418,4 @@ local function collectProperties(instance)
 	return properties
 end
 
--- OPT-003: Event-driven open document cache instead of polling GetEditorDocuments()
+-- OPT-003: Event-driven open document cache instead of polling script documents.

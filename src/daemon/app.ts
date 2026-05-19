@@ -358,6 +358,20 @@ function isScriptSnapshotNode(node) {
   );
 }
 
+function normalizeScriptSourceForPatchVerification(source) {
+  return String(source ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/\n+$/g, "");
+}
+
+function scriptSourcesMatchForPatchVerification(expected, observed) {
+  const expectedSource = String(expected ?? "");
+  const observedSource = String(observed ?? "");
+  return observedSource === expectedSource ||
+    normalizeScriptSourceForPatchVerification(observedSource) === normalizeScriptSourceForPatchVerification(expectedSource);
+}
+
 function normalizeStudioInstancePathSegments(instancePath) {
   if (Array.isArray(instancePath)) {
     return instancePath.filter((segment) => typeof segment === "string" && segment.length > 0);
@@ -2646,9 +2660,112 @@ class PluginRobloxApp {
         commandId: details.commandId || null,
         commandType: details.commandType || null,
         expectedHash: details.expectedHash || null,
-        observedHash: details.observedHash || null
+        observedHash: details.observedHash || null,
+        path: details.path || null
       }
     });
+  }
+
+  scheduleFilePatchVerificationFallback(session, command, commandId, observedHash, instanceSegments) {
+    const project = this.getProjectById(session.projectId);
+    const pathLabel = instanceSegments.join(".");
+    this.recordError({
+      component: "daemon",
+      severity: "warning",
+      code: "SYNC-PATCH-MISMATCH-FALLBACK",
+      message: "Fast file patch verification failed; falling back to full project sync.",
+      sessionId: session.id,
+      projectId: session.projectId,
+      context: {
+        commandId,
+        commandType: command.type,
+        observedHash,
+        path: pathLabel
+      }
+    });
+    if (!project) {
+      return false;
+    }
+    logSync("apply_file_patch_mismatch_fallback_tree", {
+      sessionId: session.id,
+      commandId,
+      path: pathLabel,
+      observedHash
+    });
+    this.scheduleProjectTreeApply(session, project, "file_patch_mismatch", pathLabel, 50, true);
+    return true;
+  }
+
+  resolveStaleProjectTreeMismatch(session, command, commandId, observedHash) {
+    const project = this.getProjectById(session.projectId);
+    if (!project || !command?.expectedHash) {
+      return false;
+    }
+
+    let currentInfo = null;
+    try {
+      const currentSnapshot = this.readLocalProjectStateWithPerf(project, this.projectReadOptions(session));
+      currentInfo = this.normalizeAndHashSnapshotWithPerf(currentSnapshot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.recordError({
+        component: "daemon",
+        severity: "warning",
+        code: "SYNC-HASH-MISMATCH-STALE-CHECK-FAILED",
+        message: "Could not compare the failed project tree command against the current workspace state.",
+        sessionId: session.id,
+        projectId: session.projectId,
+        context: {
+          commandId,
+          commandType: command.type,
+          expectedHash: command.expectedHash || null,
+          observedHash: observedHash || null,
+          error: message
+        }
+      });
+      return false;
+    }
+
+    if (!currentInfo?.hash || currentInfo.hash === command.expectedHash) {
+      return false;
+    }
+
+    const action = observedHash && observedHash === currentInfo.hash
+      ? "verified_current_workspace"
+      : "queued_latest_project_tree";
+    this.recordError({
+      component: "daemon",
+      severity: "warning",
+      code: "SYNC-HASH-MISMATCH-STALE",
+      message: "Studio snapshot hash did not match the completed command, but the local project changed while that command was in flight.",
+      sessionId: session.id,
+      projectId: session.projectId,
+      context: {
+        commandId,
+        commandType: command.type,
+        reason: command.payload?.reason || null,
+        expectedHash: command.expectedHash || null,
+        observedHash: observedHash || null,
+        currentHash: currentInfo.hash,
+        action
+      }
+    });
+
+    if (observedHash && observedHash === currentInfo.hash) {
+      this.markSyncVerified(session, observedHash);
+      return true;
+    }
+
+    logSync("apply_project_tree_stale_retry", {
+      sessionId: session.id,
+      commandId,
+      reason: command.payload?.reason || null,
+      expectedHash: command.expectedHash || null,
+      observedHash: observedHash || null,
+      currentHash: currentInfo.hash
+    });
+    this.scheduleProjectTreeApply(session, project, "project_tree_changed_during_apply", null, 50, true);
+    return true;
   }
 
   markSyncAck(session, command) {
@@ -2853,11 +2970,40 @@ class PluginRobloxApp {
       }
       if (command.type === "apply_project_tree" && command.payload?.project) {
         if (payload?.snapshot) {
-          this.updateStudioSnapshot(sessionId, payload.snapshot, "apply_project_tree_corrected");
-          const observedHash = session.lastStudioHash;
           const correctedSnapshotAccepted = payload?.corrected === true;
+          const snapshotReason = correctedSnapshotAccepted
+            ? "apply_project_tree_corrected"
+            : "apply_project_tree_verified";
+          const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(payload.snapshot);
+          const previousHash = session.lastStudioHash;
+          const observedHash = snapshotInfo.hash;
+          const hashChanged = observedHash !== previousHash;
+          logSync("studio_snapshot_received", {
+            sessionId,
+            reason: snapshotReason,
+            snapshotSize: snapshotInfo.byteLength,
+            hash: observedHash,
+            hashChanged,
+            previousHash
+          });
+          this.cacheStudioSnapshot(session, payload.snapshot, snapshotReason, snapshotInfo);
+          this.ensureSessionSyncState(session).lastObservedHash = observedHash;
+          const scheduleVerifiedWrite = () => {
+            if (!hashChanged) {
+              logSync("disk_write_skipped", {
+                sessionId,
+                reason: "snapshot_unchanged",
+                snapshotHash: session.lastStudioHash
+              });
+              return;
+            }
+            this.scheduleStudioSnapshotWrite(session, snapshotReason, false);
+          };
           if ((command.expectedHash && observedHash === command.expectedHash) || correctedSnapshotAccepted) {
             this.markSyncVerified(session, observedHash);
+            scheduleVerifiedWrite();
+          } else if (this.resolveStaleProjectTreeMismatch(session, command, commandId, observedHash)) {
+            // The workspace moved on while Studio was applying this command.
           } else {
             this.markSyncDegraded(session, "Studio snapshot hash did not match the applied project tree.", {
               code: "SYNC-HASH-MISMATCH",
@@ -2883,10 +3029,10 @@ class PluginRobloxApp {
           const observedHash = this.cacheStudioSnapshot(session, payload.snapshot, "apply_file_patch_verified");
           const instanceSegments = normalizeStudioInstancePathSegments(command.payload?.path);
           const node = findSnapshotNode(payload.snapshot, instanceSegments);
-          const expectedSource = String(command.payload?.source ?? "");
-          const observedSource = String(node?.source ?? "");
-          if (isScriptSnapshotNode(node) && observedSource === expectedSource) {
+          if (isScriptSnapshotNode(node) && scriptSourcesMatchForPatchVerification(command.payload?.source, node?.source)) {
             this.markSyncVerified(session, observedHash);
+          } else if (this.scheduleFilePatchVerificationFallback(session, command, commandId, observedHash, instanceSegments)) {
+            // Keep the session active while the queued full-tree apply verifies the local state.
           } else {
             this.markSyncDegraded(session, "Studio snapshot did not contain the applied file patch source.", {
               code: "SYNC-PATCH-MISMATCH",

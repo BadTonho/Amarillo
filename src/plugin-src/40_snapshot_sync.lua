@@ -7,7 +7,7 @@ local function refreshOpenDocumentCache()
 	local sources = {}
 	if okScriptEditor and ScriptEditorService then
 		local okEditor, openDocs = pcall(function()
-			return ScriptEditorService:GetEditorDocuments()
+			return ScriptEditorService:GetScriptDocuments()
 		end)
 		if okEditor and openDocs then
 			for _, doc in ipairs(openDocs) do
@@ -38,6 +38,14 @@ local function readScriptSource(instance, openDocumentSources)
 	if openDocumentSources and openDocumentSources[instance] ~= nil then
 		return openDocumentSources[instance]
 	end
+	if okScriptEditor and ScriptEditorService then
+		local okEditorSource, editorSource = pcall(function()
+			return ScriptEditorService:GetEditorSource(instance)
+		end)
+		if okEditorSource and editorSource ~= nil then
+			return editorSource
+		end
+	end
 	local ok, source = pcall(function()
 		return instance.Source
 	end)
@@ -47,29 +55,39 @@ local function readScriptSource(instance, openDocumentSources)
 	return nil
 end
 
-local function updateScriptSourceIfChanged(instance, desiredSource, openDocumentSources)
+local function updateScriptSourceIfChanged(instance, desiredSource, openDocumentSources, force)
+	desiredSource = desiredSource or ""
 	local currentSource = readScriptSource(instance, openDocumentSources)
-	if currentSource == desiredSource then
-		return false
+	if not force and currentSource == desiredSource then
+		return false, true, nil
 	end
 
 	local sourceUpdated = false
+	local updateErr = nil
 	if okScriptEditor and ScriptEditorService then
-		pcall(function()
-			local result = ScriptEditorService:UpdateSourceAsync(instance, function()
+		local okUpdate, result = pcall(function()
+			return ScriptEditorService:UpdateSourceAsync(instance, function()
 				return desiredSource
 			end)
-			if result then
-				sourceUpdated = true
-			end
 		end)
+		if okUpdate and result ~= false then
+			sourceUpdated = true
+		elseif not okUpdate then
+			updateErr = result
+		end
 	end
 
 	if not sourceUpdated then
-		local okSource = safeSetProperty(instance, "Source", desiredSource, "script source update")
+		local okSource, sourceErr = safeSetProperty(instance, "Source", desiredSource, "script source update")
 		sourceUpdated = okSource == true
+		if not okSource then
+			updateErr = sourceErr
+		end
 	end
-	return sourceUpdated
+	if sourceUpdated then
+		return true, true, nil
+	end
+	return false, false, updateErr or "source update failed"
 end
 
 local function indexDesiredChildren(children)

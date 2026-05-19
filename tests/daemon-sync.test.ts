@@ -124,6 +124,7 @@ test("corrected apply snapshot replaces assumed daemon cache and writes metadata
   app.completeCommand(session.id, command.id, {
     ok: true,
     result: "Snapshot aplicado",
+    corrected: true,
     snapshot: {
       mounts: [
         {
@@ -656,6 +657,75 @@ test("apply project tree with a mismatched Studio snapshot marks sync degraded",
   assert.equal(session.sync.state, "degraded");
   assert.match(session.sync.degradedReason, /hash did not match/);
   assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+  assert.equal(app.pendingStudioWrites.size, 0);
+});
+
+test("stale apply project tree mismatch retries the latest workspace instead of pausing sync", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const expectedSnapshot = readLocalProjectState(project);
+  const mismatchedSnapshot = readLocalProjectState(project);
+  mismatchedSnapshot.mounts[0].children[0].source = "return 'studio-stale'";
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "file_patch_mismatch"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  fs.writeFileSync(scriptPath, "return 42", "utf8");
+
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: mismatchedSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+  const warnings = app.errorTracker.query({ code: "SYNC-HASH-MISMATCH-STALE", limit: 1 });
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].context.action, "queued_latest_project_tree");
+
+  await wait(120);
+  const fallback = app.dequeueCommands(session.id).commands[0];
+  assert.equal(fallback.type, "apply_project_tree");
+  assert.equal(fallback.payload.reason, "project_tree_changed_during_apply");
+  assert.notEqual(hashSnapshot(fallback.payload.project), hashSnapshot(expectedSnapshot));
+  const script = findSnapshotNodeByPath(fallback.payload.project, ["ServerScriptService", "Hello"]);
+  assert.equal(script.source, "return 42");
+});
+
+test("stale apply project tree mismatch verifies when Studio already matches the latest workspace", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const scriptPath = path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau");
+  const expectedSnapshot = readLocalProjectState(project);
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "workspace_changed"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  fs.writeFileSync(scriptPath, "return 99", "utf8");
+  const currentSnapshot = readLocalProjectState(project);
+
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: currentSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(session.sync.lastObservedHash, hashSnapshot(currentSnapshot));
+  const warnings = app.errorTracker.query({ code: "SYNC-HASH-MISMATCH-STALE", limit: 1 });
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].context.action, "verified_current_workspace");
 });
 
 test("unverified fast file patch degrades but verified patch updates snapshot", async () => {
@@ -690,7 +760,31 @@ test("unverified fast file patch degrades but verified patch updates snapshot", 
   assert.equal(script.source, "return 11");
 });
 
-test("fast file patch with a stale Studio snapshot marks sync degraded", async () => {
+test("verified fast file patch tolerates Studio final newline normalization", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  seedStudioSnapshotFromLocalProject(app, session);
+
+  app.enqueueCommand(session.id, "apply_file_patch", {
+    path: ["ServerScriptService", "Hello"],
+    source: "return 11"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  const verifiedSnapshot = readLocalProjectState(app.getProjectById(session.projectId));
+  verifiedSnapshot.mounts[0].children[0].source = "return 11\n";
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: verifiedSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  const script = findSnapshotNodeByPath(session.lastStudioSnapshot, ["ServerScriptService", "Hello"]);
+  assert.equal(script.source, "return 11\n");
+});
+
+test("fast file patch with a stale Studio snapshot falls back to full tree apply", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
   app.refreshWorkspace();
@@ -709,9 +803,11 @@ test("fast file patch with a stale Studio snapshot marks sync degraded", async (
     snapshot: staleSnapshot
   });
 
-  assert.equal(session.sync.state, "degraded");
-  assert.match(session.sync.degradedReason, /file patch source/);
-  assert.equal(session.sync.lastFailure.commandType, "apply_file_patch");
+  assert.equal(session.sync.state, "ready");
+  await wait(100);
+  const fallback = app.dequeueCommands(session.id).commands[0];
+  assert.equal(fallback.type, "apply_project_tree");
+  assert.equal(fallback.payload.reason, "file_patch_mismatch");
 });
 
 test("Studio snapshot writes coalesce bursts and persist the latest snapshot", async () => {
