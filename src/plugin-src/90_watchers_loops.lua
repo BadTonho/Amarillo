@@ -1,31 +1,36 @@
 -- ===== Event-driven Watcher (OPT-008: DescendantAdded/Removing) =====
-local watcherConnections = {}
-local watcherDirty = false
+state.watchers = state.watchers or {}
+state.watcherConnections = state.watcherConnections or {}
+state.watcherDirty = false
+state.watcherDirtyAt = 0
+state.watchers.consecutiveOfferFailures = 0
+state.watchers.currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
+state.watchers.consecutivePollFailures = 0
+state.watchers.currentPollInterval = POLL_MIN_INTERVAL
 
 disconnectWatcher = function()
-	for _, conns in pairs(watcherConnections) do
+	for _, conns in pairs(state.watcherConnections) do
 		for _, conn in ipairs(conns) do
-			conn:Disconnect()
+			pcall(function() conn:Disconnect() end)
 		end
 	end
-	watcherConnections = {}
-	watcherDirty = false
+	state.watcherConnections = {}
+	state.watcherDirty = false
+	state.watcherDirtyAt = 0
 	state.pendingScriptPatches = {}
 	state.openDocumentCache = {}
 end
 
-local watcherDirtyAt = 0
-
-local function markDirty()
+state.watchers.markDirty = function()
 	if state.isApplyingRemote or state.awaitingInitialSync then
 		return
 	end
-	watcherDirty = true
-	watcherDirtyAt = now()
+	state.watcherDirty = true
+	state.watcherDirtyAt = now()
 	state.lastActivityAt = now()
 end
 
-local function sendScriptPatch(path, source)
+state.watchers.sendScriptPatch = function(path, source)
 	if not state.sessionId or state.isApplyingRemote or state.awaitingInitialSync then
 		return false
 	end
@@ -55,7 +60,7 @@ local function sendScriptPatch(path, source)
 	return true
 end
 
-local function scheduleScriptPatch(pathSegments, source)
+state.watchers.scheduleScriptPatch = function(pathSegments, source)
 	local key = table.concat(pathSegments, "\0")
 	local current = state.pendingScriptPatches[key]
 	local version = current and current.version + 1 or 1
@@ -71,75 +76,106 @@ local function scheduleScriptPatch(pathSegments, source)
 			return
 		end
 		state.pendingScriptPatches[key] = nil
-		if not sendScriptPatch(pending.pathSegments, pending.source) then
-			markDirty()
+		if not state.watchers.sendScriptPatch(pending.pathSegments, pending.source) then
+			state.watchers.markDirty()
 		end
 	end)
 end
 
+state.watchers.connectToPropertyChanges = function(instance)
+	if instance == workspace.CurrentCamera then
+		return
+	end
+	pcall(function()
+		if not state.watcherConnections[instance] then
+			state.watcherConnections[instance] = {}
+		end
+		table.insert(state.watcherConnections[instance], instance.Changed:Connect(function()
+			state.watchers.markDirty()
+		end))
+	end)
+end
+
+state.watchers.disconnectFromInstance = function(instance)
+	if state.watcherConnections[instance] then
+		for _, conn in ipairs(state.watcherConnections[instance]) do
+			pcall(function() conn:Disconnect() end)
+		end
+		state.watcherConnections[instance] = nil
+	end
+end
+
+state.watchers.connectDescendants = function(container)
+	for _, descendant in ipairs(container:GetDescendants()) do
+		state.watchers.connectToPropertyChanges(descendant)
+	end
+end
+
 -- OPT-008: Use DescendantAdded/DescendantRemoving on mount containers
 -- instead of recursively connecting to every instance.
--- This reduces connections from O(N*4) to O(containers*3).
-local function connectMountWatcher(container)
+-- FIXED: No longer duplicate listeners inside loop - connect once at container level
+state.watchers.connectMountWatcher = function(container)
 	local conns = {}
 
 	-- Listen for any descendant added (covers all new children recursively)
 	table.insert(conns, container.DescendantAdded:Connect(function(descendant)
-		if descendant == workspace.CurrentCamera then
-			return
-		end
-		markDirty()
+		state.watchers.connectToPropertyChanges(descendant)
+		state.watchers.markDirty()
 	end))
 
 	-- Listen for any descendant being removed
 	table.insert(conns, container.DescendantRemoving:Connect(function(descendant)
-		markDirty()
+		state.watchers.disconnectFromInstance(descendant)
+		state.watchers.markDirty()
 	end))
 
 	-- Listen for direct property changes on the container itself
-	table.insert(conns, container.Changed:Connect(function(property)
-		markDirty()
+	table.insert(conns, container.Changed:Connect(function()
+		state.watchers.markDirty()
 	end))
 
-	-- For existing descendants, we only need Changed on scripts (where Source matters)
-	-- and general property changes. Use a single ChildAdded connection on each descendant's
-	-- Changed signal for property tracking.
-	for _, descendant in ipairs(container:GetDescendants()) do
-		if descendant ~= workspace.CurrentCamera then
-			local descConns = {}
-			pcall(function()
-				table.insert(descConns, descendant.Changed:Connect(function(property)
-					markDirty()
-				end))
-			end)
-			-- Also connect Changed for new descendants going forward
-			table.insert(conns, container.DescendantAdded:Connect(function(newDesc)
-				if newDesc ~= workspace.CurrentCamera then
-					pcall(function()
-						local newConns = {}
-						table.insert(newConns, newDesc.Changed:Connect(function(prop)
-							markDirty()
-						end))
-						watcherConnections[newDesc] = newConns
-					end)
-				end
-			end))
-			-- Clean up on removal
-			table.insert(conns, container.DescendantRemoving:Connect(function(removedDesc)
-				if watcherConnections[removedDesc] then
-					for _, c in ipairs(watcherConnections[removedDesc]) do
-						c:Disconnect()
-					end
-					watcherConnections[removedDesc] = nil
-				end
-			end))
-			if #descConns > 0 then
-				watcherConnections[descendant] = descConns
-			end
-		end
+	-- For EXISTING descendants, connect their Changed events (only once, outside the DescendantAdded loop)
+	state.watchers.connectDescendants(container)
+
+	state.watcherConnections[container] = conns
+end
+
+state.watchers.connectScriptEditorWatcher = function()
+	local conns = state.watcherConnections[ScriptEditorService] or {}
+	if not state.watcherConnections[ScriptEditorService] then
+		state.watcherConnections[ScriptEditorService] = conns
 	end
 
-	watcherConnections[container] = conns
+	pcall(function()
+		table.insert(conns, ScriptEditorService.TextDocumentDidChange:Connect(function(doc, changes)
+			if state.isApplyingRemote then
+				return
+			end
+			local okScript, scriptInst = pcall(function() return doc:GetScript() end)
+			if okScript and scriptInst then
+				local text = ""
+				pcall(function() text = doc:GetText() end)
+
+				-- OPT-003: Update the open document cache in real-time
+				state.openDocumentCache[scriptInst] = text
+
+				local pathSegments = getInstancePathSegments(scriptInst)
+				state.watchers.scheduleScriptPatch(pathSegments, text)
+			else
+				appendLog("TextDocumentDidChange: could not get the script from the document.")
+			end
+		end))
+		table.insert(conns, ScriptEditorService.TextDocumentDidClose:Connect(function(doc)
+			-- OPT-003: Remove closed document from cache
+			pcall(function()
+				local scriptInst = doc:GetScript()
+				if scriptInst then
+					state.openDocumentCache[scriptInst] = nil
+				end
+			end)
+			state.watchers.markDirty()
+		end))
+	end)
 end
 
 startWatcher = function()
@@ -154,43 +190,12 @@ startWatcher = function()
 	for _, mount in ipairs(state.project.mounts or {}) do
 		local container = resolveMountContainer(string.split(mount.path, "."))
 		if container then
-			connectMountWatcher(container)
+			state.watchers.connectMountWatcher(container)
 		end
 	end
-	
-	if okScriptEditor and ScriptEditorService then
-		local conns = watcherConnections[ScriptEditorService] or {}
-		pcall(function()
-			table.insert(conns, ScriptEditorService.TextDocumentDidChange:Connect(function(doc, changes)
-				if state.isApplyingRemote then
-					return
-				end
-				local okScript, scriptInst = pcall(function() return doc:GetScript() end)
-				if okScript and scriptInst then
-					local text = ""
-					pcall(function() text = doc:GetText() end)
-					
-					-- OPT-003: Update the open document cache in real-time
-					state.openDocumentCache[scriptInst] = text
 
-					local pathSegments = getInstancePathSegments(scriptInst)
-					scheduleScriptPatch(pathSegments, text)
-				else
-					appendLog("TextDocumentDidChange: could not get the script from the document.")
-				end
-			end))
-			table.insert(conns, ScriptEditorService.TextDocumentDidClose:Connect(function(doc)
-				-- OPT-003: Remove closed document from cache
-				pcall(function()
-					local scriptInst = doc:GetScript()
-					if scriptInst then
-						state.openDocumentCache[scriptInst] = nil
-					end
-				end)
-				markDirty()
-			end))
-		end)
-		watcherConnections[ScriptEditorService] = conns
+	if okScriptEditor and ScriptEditorService then
+		state.watchers.connectScriptEditorWatcher()
 	else
 		appendLog("ScriptEditorService unavailable!")
 	end
@@ -199,33 +204,30 @@ startWatcher = function()
 end
 
 -- ===== Offer poll loop while disconnected =====
-local consecutiveOfferFailures = 0
-local currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
-
 task.spawn(function()
 	while true do
 		if not state.connected then
 			local healthOk = pcall(fetchDaemonHealth)
 			if healthOk then
-				consecutiveOfferFailures = 0
+				state.watchers.consecutiveOfferFailures = 0
 				local reqOk, reqResponse = pollConnectionOffer()
 				if reqOk then
 					if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
 						updateStatus("waiting for confirmation")
-						currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL
+						state.watchers.currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL
 					else
-						currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
+						state.watchers.currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL
 					end
-					task.wait(currentOfferPollInterval)
+					task.wait(state.watchers.currentOfferPollInterval)
 				else
-					currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL
-					task.wait(currentOfferPollInterval)
+					state.watchers.currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL
+					task.wait(state.watchers.currentOfferPollInterval)
 				end
 			else
-				consecutiveOfferFailures = consecutiveOfferFailures + 1
+				state.watchers.consecutiveOfferFailures = state.watchers.consecutiveOfferFailures + 1
 				updateStatus("daemon offline")
 				-- Back off gradually: 1s, 2s, 3s, max 5s
-				task.wait(math.min(consecutiveOfferFailures, 5))
+				task.wait(math.min(state.watchers.consecutiveOfferFailures, 5))
 			end
 		else
 			task.wait(1)
@@ -234,15 +236,12 @@ task.spawn(function()
 end)
 
 -- ===== Long-poll loop for receiving commands from daemon =====
-local consecutivePollFailures = 0
-local currentPollInterval = POLL_MIN_INTERVAL
-
 task.spawn(function()
 	while true do
 		if state.connected and state.sessionId then
 			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId .. "&" .. pluginVersionQuery())
 			if reqOk then
-				consecutivePollFailures = 0
+				state.watchers.consecutivePollFailures = 0
 				applySyncSummary(reqResponse.session)
 				if state.syncState ~= "degraded" then
 					if state.awaitingInitialSync then
@@ -258,39 +257,39 @@ task.spawn(function()
 
 				if #commands > 0 then
 					state.lastActivityAt = now()
-					currentPollInterval = POLL_MIN_INTERVAL
+					state.watchers.currentPollInterval = POLL_MIN_INTERVAL
 				else
 					local idleTime = now() - state.lastActivityAt
 					if idleTime > POLL_IDLE_THRESHOLD_2 then
-						currentPollInterval = POLL_MAX_INTERVAL
+						state.watchers.currentPollInterval = POLL_MAX_INTERVAL
 					elseif idleTime > POLL_IDLE_THRESHOLD_1 then
-						currentPollInterval = 0.5
+						state.watchers.currentPollInterval = 0.5
 					else
-						currentPollInterval = POLL_MIN_INTERVAL
+						state.watchers.currentPollInterval = POLL_MIN_INTERVAL
 					end
 				end
 
 				for _, command in ipairs(commands) do
 					task.spawn(handleCommandSafely, command)
 				end
-				task.wait(currentPollInterval)
+				task.wait(state.watchers.currentPollInterval)
 			else
-				consecutivePollFailures = consecutivePollFailures + 1
-				updateStatus("reconnecting (" .. consecutivePollFailures .. ")")
-				appendLog("Connection lost, attempting to reconnect... (" .. consecutivePollFailures .. ")")
+				state.watchers.consecutivePollFailures = state.watchers.consecutivePollFailures + 1
+				updateStatus("reconnecting (" .. state.watchers.consecutivePollFailures .. ")")
+				appendLog("Connection lost, attempting to reconnect... (" .. state.watchers.consecutivePollFailures .. ")")
 
 				-- After 15 consecutive failures (~30s), give up and disconnect
-				if consecutivePollFailures >= 15 then
+				if state.watchers.consecutivePollFailures >= 15 then
 					appendLog("Too many failed reconnect attempts. Disconnecting.")
 					pcall(disconnectWatcher)
 					resetSessionState("disconnected (timeout)")
-					consecutivePollFailures = 0
+					state.watchers.consecutivePollFailures = 0
 				else
 					task.wait(2)
 				end
 			end
 		else
-			task.wait(currentPollInterval)
+			task.wait(state.watchers.currentPollInterval)
 		end
 	end
 end)
@@ -311,9 +310,9 @@ task.spawn(function()
 	while true do
 		task.wait(0.15)
 
-		if state.connected and state.sessionId and watcherDirty then
-			if now() - watcherDirtyAt >= 0.5 then
-				watcherDirty = false
+		if state.connected and state.sessionId and state.watcherDirty then
+			if now() - state.watcherDirtyAt >= 0.5 then
+				state.watcherDirty = false
 				local snapOk, snapErr = pcall(function()
 					syncSnapshot("auto")
 				end)

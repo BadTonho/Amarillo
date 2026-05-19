@@ -13,6 +13,10 @@ const pluginSource = fs.readFileSync(
   path.join(__dirname, "..", "src", "plugin", "Amarillo.lua"),
   "utf8"
 );
+const watcherSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "plugin-src", "90_watchers_loops.lua"),
+  "utf8"
+);
 const {
   readManifest,
   generatePluginSource
@@ -127,6 +131,17 @@ test("Roblox plugin confirms apply commands with verification snapshots", () => 
   assert.match(pluginSource, /postCommandResult\(command\.id, ok, \{\s+result = ok and "Patch aplicado" or tostring\(err\),\s+snapshot = appliedSnapshot,/);
 });
 
+test("Roblox plugin refreshes open document cache after file patches", () => {
+  assert.match(pluginSource, /ScriptEditorService:GetScriptDocuments\(\)/);
+  assert.match(pluginSource, /ScriptEditorService:GetEditorSource\(instance\)/);
+  assert.doesNotMatch(pluginSource, /GetEditorDocuments/);
+  assert.match(pluginSource, /local function updateScriptSourceIfChanged\(instance, desiredSource, openDocumentSources, force\)/);
+  assert.match(pluginSource, /if not force and currentSource == desiredSource then\s+return false, true, nil/);
+  assert.match(pluginSource, /local changed, updateOk, updateErr = updateScriptSourceIfChanged\(container, desiredSource, nil, true\)/);
+  assert.match(pluginSource, /if not updateOk then\s+error\("Failed to update script source: " \.\. tostring\(updateErr\)\)\s+end/);
+  assert.match(pluginSource, /refreshOpenDocumentCache\(\)\s+if changed then\s+ChangeHistoryService:SetWaypoint\("Amarillo Patch: " \.\. container\.Name\)\s+end\s+appliedSnapshot = snapshotCurrentProject\(\)/);
+});
+
 test("Roblox plugin stores and sends the daemon session token", () => {
   assert.match(pluginSource, /sessionToken = nil/);
   assert.match(pluginSource, /state\.sessionToken = response\.session and response\.session\.sessionToken or nil/);
@@ -138,22 +153,29 @@ test("Roblox plugin uses adaptive connected polling intervals", () => {
   assert.match(pluginSource, /local POLL_MAX_INTERVAL = 1\.0/);
   assert.match(pluginSource, /local POLL_IDLE_THRESHOLD_1 = 5\.0/);
   assert.match(pluginSource, /local POLL_IDLE_THRESHOLD_2 = 30\.0/);
-  assert.match(pluginSource, /local currentPollInterval = POLL_MIN_INTERVAL/);
-  assert.match(pluginSource, /if #commands > 0 then\s+state\.lastActivityAt = now\(\)\s+currentPollInterval = POLL_MIN_INTERVAL/);
-  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_2[\s\S]+currentPollInterval = POLL_MAX_INTERVAL/);
-  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_1[\s\S]+currentPollInterval = 0\.5/);
-  assert.match(pluginSource, /task\.wait\(currentPollInterval\)/);
+  assert.match(pluginSource, /state\.watchers\.currentPollInterval = POLL_MIN_INTERVAL/);
+  assert.match(pluginSource, /if #commands > 0 then\s+state\.lastActivityAt = now\(\)\s+state\.watchers\.currentPollInterval = POLL_MIN_INTERVAL/);
+  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_2[\s\S]+state\.watchers\.currentPollInterval = POLL_MAX_INTERVAL/);
+  assert.match(pluginSource, /idleTime > POLL_IDLE_THRESHOLD_1[\s\S]+state\.watchers\.currentPollInterval = 0\.5/);
+  assert.match(pluginSource, /task\.wait\(state\.watchers\.currentPollInterval\)/);
 });
 
 test("Roblox plugin backs off disconnected offer polling while idle", () => {
   assert.match(pluginSource, /local OFFER_ACTIVE_POLL_INTERVAL = 0\.5/);
   assert.match(pluginSource, /local OFFER_IDLE_POLL_INTERVAL = 1\.5/);
   assert.match(pluginSource, /local OFFER_RETRY_POLL_INTERVAL = 1\.0/);
-  assert.match(pluginSource, /local currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
-  assert.match(pluginSource, /currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL/);
-  assert.match(pluginSource, /currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
-  assert.match(pluginSource, /currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL/);
-  assert.match(pluginSource, /task\.wait\(currentOfferPollInterval\)/);
+  assert.match(pluginSource, /state\.watchers\.currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
+  assert.match(pluginSource, /state\.watchers\.currentOfferPollInterval = OFFER_ACTIVE_POLL_INTERVAL/);
+  assert.match(pluginSource, /state\.watchers\.currentOfferPollInterval = OFFER_IDLE_POLL_INTERVAL/);
+  assert.match(pluginSource, /state\.watchers\.currentOfferPollInterval = OFFER_RETRY_POLL_INTERVAL/);
+  assert.match(pluginSource, /task\.wait\(state\.watchers\.currentOfferPollInterval\)/);
+});
+
+test("Roblox plugin watcher module avoids top-level locals", () => {
+  assert.doesNotMatch(watcherSource, /^local(?:\s+function|\s+)/m);
+  assert.match(watcherSource, /state\.watchers = state\.watchers or \{\}/);
+  assert.match(watcherSource, /state\.watchers\.markDirty = function\(\)/);
+  assert.match(watcherSource, /state\.watchers\.connectScriptEditorWatcher = function\(\)/);
 });
 
 test("Roblox plugin caches property metadata while reading live values", () => {

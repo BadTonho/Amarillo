@@ -250,7 +250,12 @@ local function handleCommand(command)
 		local ok, err = pcall(function()
 			local container = resolveMountContainer(command.payload.path)
 			if container then
-				local changed = updateScriptSourceIfChanged(container, command.payload.source, collectOpenDocumentSources())
+				local desiredSource = command.payload.source or ""
+				local changed, updateOk, updateErr = updateScriptSourceIfChanged(container, desiredSource, nil, true)
+				if not updateOk then
+					error("Failed to update script source: " .. tostring(updateErr))
+				end
+				refreshOpenDocumentCache()
 				if changed then
 					ChangeHistoryService:SetWaypoint("Amarillo Patch: " .. container.Name)
 				end
