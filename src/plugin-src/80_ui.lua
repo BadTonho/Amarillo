@@ -1,3 +1,6 @@
+local function initializeUiModule()
+state.uiActions = state.uiActions or {}
+
 local function openConnectionPrompt(context)
 	state.pendingConnectionContext = context
 	if context.offerId then
@@ -260,7 +263,7 @@ local function chooseStudioTruth()
 	acceptPendingConnection("studio")
 end
 
-local function pollConnectionOffer()
+state.uiActions.pollConnectionOffer = function()
 	local ok, response = request("GET", "/studio/poll?studioInstanceId=" .. state.studioInstanceId .. "&" .. pluginVersionQuery())
 	if not ok then
 		return false, response
@@ -987,3 +990,6 @@ local function createPluginUi()
 end
 
 createPluginUi()
+end
+
+initializeUiModule()

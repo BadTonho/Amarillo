@@ -2,6 +2,8 @@
 
 This file is an operational checklist. Use it when creating a new Amarillo VSIX and installing it locally while keeping MCP portable across machines.
 
+Before preparing a public release, review `PublicPluginDistributionPlan.md`. It documents the Roblox Studio plugin packaging work needed to avoid Luau `Out of local registers` failures in shared installs.
+
 Run this from the folder that contains the workspace, then enter the Amarillo repo:
 
 ```powershell
@@ -11,7 +13,7 @@ cd .\amarillo
 Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version. Legacy direct-runtime `.vscode/mcp.json` files are updated best-effort, but the current MCP flow uses a portable bootstrap instead:
 
 ```powershell
-npm.cmd run version:set -- 1.1.14
+npm.cmd run version:set -- 1.1.15
 ```
 
 Generate the VSIX:

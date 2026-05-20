@@ -126,7 +126,9 @@ const PROJECT_TREE_DEBOUNCE_MS = 250;
 const WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS = 50;
 const STUDIO_DISK_WRITE_EVENT_SUPPRESSION_MS = 1500;
 const COMMAND_RESULT_TIMEOUT_MS = 120000;
-const SYNC_COMMAND_TIMEOUT_MS = 30000;
+const SYNC_COMMAND_PICKUP_TIMEOUT_MS = 30000;
+const SYNC_COMMAND_COMPLETION_TIMEOUT_MS = 180000;
+const SYNC_COMMAND_WAIT_TIMEOUT_MS = SYNC_COMMAND_PICKUP_TIMEOUT_MS + SYNC_COMMAND_COMPLETION_TIMEOUT_MS;
 const INITIAL_STUDIO_SYNC_REASON = "initial_accept";
 const INITIAL_PC_SYNC_REASON = "initial_pc_truth";
 const INITIAL_STUDIO_CONTACT_GRACE_MS = 5000;
@@ -2805,18 +2807,28 @@ class PluginRobloxApp {
     return snapshotHash;
   }
 
-  startSyncCommandGuard(session, command, timeoutMs = SYNC_COMMAND_TIMEOUT_MS) {
+  startSyncCommandGuard(session, command, timeoutMs = SYNC_COMMAND_PICKUP_TIMEOUT_MS, phase = "pickup") {
     if (!isSyncCommandType(command.type)) {
       return;
     }
+    this.clearCommandSyncGuard(command);
     command.syncGuardTimer = setTimeout(() => {
       command.syncGuardTimer = null;
-      this.removePendingSyncCommand(session, command.id);
-      this.markSyncDegraded(session, `Timed out waiting for Studio confirmation for ${command.type}.`, {
+      const stillPending = session.pendingCommands.some((pending) => pending.id === command.id);
+      const stillInFlight = session.inFlightCommands.has(command.id);
+      if (!stillPending && !stillInFlight) {
+        return;
+      }
+      if (phase === "pickup") {
+        this.removePendingSyncCommand(session, command.id);
+      }
+      const waitLabel = phase === "pickup" ? "Studio to pick up" : "Studio confirmation for";
+      this.markSyncDegraded(session, `Timed out waiting for ${waitLabel} ${command.type}.`, {
         code: "SYNC-TIMEOUT",
         commandId: command.id,
         commandType: command.type,
-        expectedHash: command.expectedHash || null
+        expectedHash: command.expectedHash || null,
+        phase
       });
     }, timeoutMs);
     if (typeof command.syncGuardTimer.unref === "function") {
@@ -2829,7 +2841,9 @@ class PluginRobloxApp {
     type,
     payload,
     waitForResult = false,
-    timeoutMs = waitForResult ? COMMAND_RESULT_TIMEOUT_MS : SYNC_COMMAND_TIMEOUT_MS
+    timeoutMs = waitForResult
+      ? (isSyncCommandType(type) ? SYNC_COMMAND_WAIT_TIMEOUT_MS : COMMAND_RESULT_TIMEOUT_MS)
+      : SYNC_COMMAND_PICKUP_TIMEOUT_MS
   ) {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -2922,6 +2936,9 @@ class PluginRobloxApp {
         this.recordPerformance("command.queue_age", nowMs - command.queuedAt);
       }
       session.inFlightCommands.set(command.id, command);
+      if (isSyncCommandType(command.type) && !session.pendingResponses.has(command.id)) {
+        this.startSyncCommandGuard(session, command, SYNC_COMMAND_COMPLETION_TIMEOUT_MS, "completion");
+      }
     }
     if (commands.length > 0) {
       logSync("dequeue_commands", {

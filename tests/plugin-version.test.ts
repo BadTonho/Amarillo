@@ -263,13 +263,17 @@ test("Roblox plugin surfaces sync diagnostics and sends place identity with conn
 });
 
 test("Roblox plugin UI construction keeps local registers below Studio limits", () => {
+  assert.match(pluginSource, /local function initializeUiModule\(\)/);
+  assert.match(pluginSource, /state\.uiActions = state\.uiActions or \{\}/);
+  assert.match(pluginSource, /state\.uiActions\.pollConnectionOffer = function\(\)/);
+  assert.match(pluginSource, /local reqOk, reqResponse = state\.uiActions\.pollConnectionOffer\(\)/);
   assert.match(pluginSource, /local function buildPluginShell\(\)/);
   assert.match(pluginSource, /local function buildHomePage\(\)\s+local homeHero = makeCard/);
   assert.match(pluginSource, /local function buildSettingsPage\(\)\s+local settingsHeader = makeCard/);
   assert.match(pluginSource, /local function buildAdvancedPage\(\)\s+local advancedHeader = makeCard/);
   assert.match(pluginSource, /local function buildDiffOverlay\(root\)\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
   assert.match(pluginSource, /local function createPluginUi\(\)/);
-  assert.match(pluginSource, /createPluginUi\(\)/);
+  assert.match(pluginSource, /createPluginUi\(\)\s+end\s+initializeUiModule\(\)/);
 });
 
 test("Amarillo component versions stay synchronized from amarillo-version.json", () => {

@@ -210,7 +210,7 @@ task.spawn(function()
 			local healthOk = pcall(fetchDaemonHealth)
 			if healthOk then
 				state.watchers.consecutiveOfferFailures = 0
-				local reqOk, reqResponse = pollConnectionOffer()
+				local reqOk, reqResponse = state.uiActions.pollConnectionOffer()
 				if reqOk then
 					if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
 						updateStatus("waiting for confirmation")
@@ -234,6 +234,11 @@ task.spawn(function()
 		end
 	end
 end)
+
+state.watchers.isSyncApplyCommand = function(command)
+	return command
+		and (command.type == "apply_project_tree" or command.type == "apply_file_patch")
+end
 
 -- ===== Long-poll loop for receiving commands from daemon =====
 task.spawn(function()
@@ -270,7 +275,11 @@ task.spawn(function()
 				end
 
 				for _, command in ipairs(commands) do
-					task.spawn(handleCommandSafely, command)
+					if state.watchers.isSyncApplyCommand(command) then
+						handleCommandSafely(command)
+					else
+						task.spawn(handleCommandSafely, command)
+					end
 				end
 				task.wait(state.watchers.currentPollInterval)
 			else
