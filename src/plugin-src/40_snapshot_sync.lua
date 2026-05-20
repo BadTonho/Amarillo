@@ -196,8 +196,26 @@ local function isProtectedSyncInstance(instance)
 	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
-local function shouldIncludeSnapshotChild(instance, desiredChildIndex)
+local shouldDestroyUnexpectedChild = nil
+
+local function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
+	if parentDesiredNode and parentDesiredNode.keepUnknowns == true then
+		return true
+	end
+	if shouldDestroyUnexpectedChild then
+		return not shouldDestroyUnexpectedChild(child, parentDesiredNode)
+	end
+	return isProtectedSyncInstance(child)
+end
+
+local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
 	if isPlayerControlledInstance(instance) then
+		return false
+	end
+	if desiredChild then
+		return true
+	end
+	if options and options.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply(instance, parentDesiredNode) then
 		return false
 	end
 	if not isProtectedSyncInstance(instance) then
@@ -232,7 +250,7 @@ local function describeInstanceForLog(instance)
 	return fullName
 end
 
-local function snapshotNode(instance, openDocumentSources, desiredNode)
+local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	local node = {
 		name = instance.Name,
 		className = instance.ClassName,
@@ -255,8 +273,9 @@ local function snapshotNode(instance, openDocumentSources, desiredNode)
 
 	local desiredChildIndex = indexDesiredChildren(desiredNode and desiredNode.children or nil)
 	for _, child in ipairs(instance:GetChildren()) do
-		if shouldIncludeSnapshotChild(child, desiredChildIndex) then
-			table.insert(node.children, snapshotNode(child, openDocumentSources, findDesiredChildForInstance(child, desiredChildIndex)))
+		local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
+		if shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredNode, options) then
+			table.insert(node.children, snapshotNode(child, openDocumentSources, desiredChild, options))
 		end
 	end
 	table.sort(node.children, function(left, right)
@@ -451,15 +470,17 @@ local function preflightProjectMounts(projectSnapshot)
 	return true, nil, containers
 end
 
-local function snapshotCurrentProject()
+local function snapshotCurrentProject(options)
 	if not state.project then
 		return nil
 	end
+	options = options or {}
 	local openDocumentSources = collectOpenDocumentSources()
 	local mounts = {}
 	local cachedMounts = {}
+	local referenceSnapshot = options.desiredSnapshot or state.treeCache
 	local nestedMountChildIndex = buildNestedMountChildIndex(state.project.mounts or {})
-	for _, mount in ipairs(state.treeCache and state.treeCache.mounts or {}) do
+	for _, mount in ipairs(referenceSnapshot and referenceSnapshot.mounts or {}) do
 		cachedMounts[mount.id] = mount
 	end
 	for _, mount in ipairs(state.project.mounts or {}) do
@@ -470,8 +491,9 @@ local function snapshotCurrentProject()
 			local desiredMount = cachedMounts[mount.id]
 			local desiredChildIndex = indexDesiredChildren(desiredMount and desiredMount.children or nil)
 			for _, child in ipairs(container:GetChildren()) do
-				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex) then
-					table.insert(children, snapshotNode(child, openDocumentSources, findDesiredChildForInstance(child, desiredChildIndex)))
+				local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
+				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredMount or mount, options) then
+					table.insert(children, snapshotNode(child, openDocumentSources, desiredChild, options))
 				end
 			end
 			table.sort(children, function(left, right)
@@ -555,7 +577,7 @@ end
 -- Returns true if the desired node may contain Studio-only descendants
 -- that the daemon cannot fully represent on disk.
 local function mayContainStudioOnlyChildren(desiredNode)
-	if desiredNode.keepUnknowns == true then
+	if desiredNode and desiredNode.keepUnknowns == true then
 		return true
 	end
 	-- Implicit folders never come from explicit declarations;
@@ -566,7 +588,7 @@ local function mayContainStudioOnlyChildren(desiredNode)
 	end
 	-- Nodes whose class was preserved from Studio (corrected during
 	-- a prior apply) also cannot list non-script children.
-	if desiredNode.classNameSource == "studio" then
+	if desiredNode and desiredNode.classNameSource == "studio" then
 		return true
 	end
 	return false
@@ -599,7 +621,7 @@ local function hasNonSyncableDescendant(instance)
 	return false
 end
 
-local function shouldDestroyUnexpectedChild(child, desiredNode)
+shouldDestroyUnexpectedChild = function(child, desiredNode)
 	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) then
 		return false
 	end
@@ -808,7 +830,10 @@ local function applyProjectSnapshot(projectSnapshot, command)
 
 		ChangeHistoryService:SetWaypoint("Amarillo Sync End")
 		
-		appliedSnapshot = snapshotCurrentProject()
+		appliedSnapshot = snapshotCurrentProject({
+			desiredSnapshot = projectSnapshot,
+			omitPreservedUnknowns = true
+		})
 		if correctedDuringApply then
 			appendLog("Studio classes preserved; sending corrected snapshot to daemon.")
 		end
