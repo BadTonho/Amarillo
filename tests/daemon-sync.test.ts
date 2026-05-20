@@ -30,6 +30,10 @@ async function waitForPendingCommand(session, timeoutMs = 1000) {
   assert.fail("Timed out waiting for a pending Studio command.");
 }
 
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({
@@ -86,6 +90,29 @@ test("session open no longer auto-enqueues apply_project_tree on session_opened"
   assert.equal(session.connectionState, "ready");
 });
 
+test("semantic snapshot hash ignores representation-only fields", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const project = app.getProjectById("Game.project.json");
+  const localSnapshot = readLocalProjectState(project);
+  const studioSnapshot = cloneJson(localSnapshot);
+  const studioNode = studioSnapshot.mounts[0].children[0];
+
+  delete studioSnapshot.name;
+  delete studioSnapshot.placeIds;
+  delete studioSnapshot.mounts[0].absolutePath;
+  delete studioSnapshot.mounts[0].relativePath;
+  delete studioNode.ext;
+  studioNode.classNameSource = "studio";
+  studioNode.source = "return 1\n";
+
+  assert.equal(hashSnapshot(studioSnapshot), hashSnapshot(localSnapshot));
+
+  studioNode.source = "return 2";
+  assert.notEqual(hashSnapshot(studioSnapshot), hashSnapshot(localSnapshot));
+});
+
 test("failed initial PC sync can be retried by the same Studio window", () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -136,6 +163,7 @@ test("corrected apply snapshot replaces assumed daemon cache and writes metadata
     result: "Snapshot aplicado",
     corrected: true,
     snapshot: {
+      projectId: "Game.project.json",
       mounts: [
         {
           id: "ServerScriptService",
@@ -644,14 +672,58 @@ test("MCP push_changes explicitly persists Studio snapshots to disk", async () =
   assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 99");
 });
 
-test("corrected apply snapshots are accepted after Studio preserves classes", async () => {
+test("apply project tree accepts semantically equivalent Studio snapshots", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
   app.refreshWorkspace();
   const { session } = app.openSession(0, null);
   const project = app.getProjectById(session.projectId);
   const expectedSnapshot = readLocalProjectState(project);
-  const correctedSnapshot = readLocalProjectState(project);
+  const studioSnapshot = cloneJson(expectedSnapshot);
+  const studioNode = studioSnapshot.mounts[0].children[0];
+  delete studioSnapshot.name;
+  delete studioSnapshot.placeIds;
+  delete studioSnapshot.mounts[0].absolutePath;
+  delete studioSnapshot.mounts[0].relativePath;
+  delete studioNode.ext;
+  studioNode.classNameSource = "studio";
+  studioNode.source = "return 1\n";
+
+  app.markSyncDegraded(session, "test degradation");
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: studioSnapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(session.sync.degradedReason, null);
+  assert.equal(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+});
+
+test("corrected apply snapshots accept safe Studio class preservation only", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "StarterGui", "MainGui"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $path: "sync/StarterGui"
+      }
+    }
+  }, null, 2));
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const expectedSnapshot = readLocalProjectState(project);
+  const correctedSnapshot = cloneJson(expectedSnapshot);
+  correctedSnapshot.mounts[0].children[0].className = "ScreenGui";
   correctedSnapshot.mounts[0].children[0].classNameSource = "studio";
 
   app.markSyncDegraded(session, "test degradation");
@@ -669,6 +741,33 @@ test("corrected apply snapshots are accepted after Studio preserves classes", as
   assert.equal(session.sync.state, "ready");
   assert.equal(session.sync.degradedReason, null);
   assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+});
+
+test("corrected apply snapshots still degrade when source differs", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const expectedSnapshot = readLocalProjectState(project);
+  const correctedSnapshot = readLocalProjectState(project);
+  correctedSnapshot.mounts[0].children[0].source = "return 'not expected'";
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: expectedSnapshot,
+    reason: "manual_resync"
+  });
+  const command = app.dequeueCommands(session.id).commands[0];
+  app.completeCommand(session.id, command.id, {
+    ok: true,
+    snapshot: correctedSnapshot,
+    corrected: true
+  });
+
+  assert.equal(session.sync.state, "degraded");
+  const errors = app.errorTracker.query({ code: "SYNC-HASH-MISMATCH", limit: 1 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].context.mismatchSummary.changes[0].type, "source");
 });
 
 test("apply project tree with a mismatched Studio snapshot marks sync degraded", async () => {
@@ -694,7 +793,36 @@ test("apply project tree with a mismatched Studio snapshot marks sync degraded",
   assert.equal(session.sync.state, "degraded");
   assert.match(session.sync.degradedReason, /hash did not match/);
   assert.notEqual(session.sync.lastExpectedHash, session.sync.lastObservedHash);
+  const errors = app.errorTracker.query({ code: "SYNC-HASH-MISMATCH", limit: 1 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].context.mismatchSummary.changes[0].type, "source");
   assert.equal(app.pendingStudioWrites.size, 0);
+});
+
+test("ambiguous script suffixes block project tree apply without repairing files", async () => {
+  const workspace = createWorkspaceWithProject();
+  const ambiguousPath = path.join(workspace, "sync", "ServerScriptService", "Broken.server.server.luau");
+  fs.writeFileSync(ambiguousPath, "return 'broken'", "utf8");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+
+  await assert.rejects(
+    app.enqueueCommand(session.id, "apply_project_tree", {
+      project: readLocalProjectState(project),
+      reason: "manual_resync"
+    }, true),
+    /ambiguous script filename/
+  );
+
+  assert.equal(session.sync.state, "degraded");
+  assert.equal(fs.existsSync(ambiguousPath), true);
+  assert.equal(fs.existsSync(path.join(workspace, "sync", "ServerScriptService", "Broken.server.luau")), false);
+  const errors = app.errorTracker.query({ code: "PROJECT-TREE-INVALID", limit: 1 });
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].context.issues[0].relativePath, "Broken.server.server.luau");
+  assert.equal(errors[0].context.issues[0].suggestedFileName, "Broken.server.luau");
 });
 
 test("stale apply project tree mismatch retries the latest workspace instead of pausing sync", async () => {
