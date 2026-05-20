@@ -230,6 +230,14 @@ test("Roblox plugin preserves nested exclusive mount containers during sync", ()
   assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mount\.segments or \{\}, child\.Name\) and not isNonSyncableInstance/);
 });
 
+test("Roblox plugin verifies apply snapshots against the applied tree without preserved Studio-only nodes", () => {
+  assert.match(pluginSource, /local shouldDestroyUnexpectedChild = nil/);
+  assert.match(pluginSource, /local function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
+  assert.match(pluginSource, /options and options\.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply/);
+  assert.match(pluginSource, /local referenceSnapshot = options\.desiredSnapshot or state\.treeCache/);
+  assert.match(pluginSource, /appliedSnapshot = snapshotCurrentProject\(\{\s+desiredSnapshot = projectSnapshot,\s+omitPreservedUnknowns = true\s+\}\)/);
+});
+
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {
   assert.match(pluginSource, /local function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
   assert.match(pluginSource, /local function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);
