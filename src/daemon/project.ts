@@ -340,6 +340,58 @@ function scriptFileExistsForMeta(metaPath) {
   ].some((fileName) => fs.existsSync(path.join(dirPath, fileName)));
 }
 
+function ambiguousScriptSuffixMatch(fileName) {
+  return fileName.match(/^(.*)\.(server|client)\.(server|client)\.(lua|luau)$/i);
+}
+
+function suggestedScriptFileName(fileName) {
+  const match = ambiguousScriptSuffixMatch(fileName);
+  if (!match) {
+    return null;
+  }
+  return `${match[1]}.${match[3]}.${match[4]}`;
+}
+
+function collectInvalidProjectTreeFilesInDir(rootDir, dirPath, options: any = {}, issues = []) {
+  for (const entry of listDirectoryEntries(dirPath)) {
+    const fullPath = path.join(dirPath, entry.name);
+    const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, "/");
+    if (matchesAnyGlob(relativePath, options.ignoreGlobs || [])) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      collectInvalidProjectTreeFilesInDir(rootDir, fullPath, options, issues);
+      continue;
+    }
+    if (!entry.isFile() || !detectScriptFileType(entry.name) || !ambiguousScriptSuffixMatch(entry.name)) {
+      continue;
+    }
+    issues.push({
+      code: "AMBIGUOUS_SCRIPT_SUFFIX",
+      filePath: fullPath,
+      relativePath,
+      fileName: entry.name,
+      suggestedFileName: suggestedScriptFileName(entry.name),
+      message: "Script filename contains two script kind suffixes and cannot be mapped to a stable Roblox instance name."
+    });
+  }
+  return issues;
+}
+
+function validateProjectTreeFiles(project, options: any = {}) {
+  const issues = [];
+  for (const mount of project?.mounts || []) {
+    if (!mount?.absolutePath) {
+      continue;
+    }
+    collectInvalidProjectTreeFilesInDir(mount.absolutePath, mount.absolutePath, {
+      ignoreGlobs: project.ignoreGlobs || [],
+      ...options
+    }, issues);
+  }
+  return issues;
+}
+
 function collectOrphanScriptMetaCandidates(rootDir, metaName, targetMetaPath, results = []) {
   for (const entry of listDirectoryEntries(rootDir)) {
     const fullPath = path.join(rootDir, entry.name);
@@ -1806,6 +1858,7 @@ module.exports = {
   readWorkspaceConfig: projectResolver.readWorkspaceConfig,
   resolveProjectSelectionForPlace: projectResolver.resolveProjectSelectionForPlace,
   resolveProjectForPlace: projectResolver.resolveProjectForPlace,
+  validateProjectTreeFiles,
   writeStudioProjectState,
   writeStudioProjectStateAsync,
   patchStudioFileSource

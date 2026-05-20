@@ -42,6 +42,7 @@ const {
   readLocalProjectStateAsync,
   readWorkspaceConfig,
   resolveProjectSelectionForPlace,
+  validateProjectTreeFiles,
   writeStudioProjectState,
   writeStudioProjectStateAsync
 } = require("./project");
@@ -50,7 +51,7 @@ const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { McpAuditLog } = require("./lib/mcp-audit-log");
 const { RateLimiter } = require("./lib/rate-limiter");
 const { PerfTracker } = require("./lib/perf-tracker");
-const { hashSnapshot, normalizeAndHashSnapshot } = require("./lib/snapshot-hash");
+const { diffSnapshots, hashSnapshot, normalizeAndHashSnapshot } = require("./lib/snapshot-hash");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
 const { DoctorService } = require("./services/doctor-service");
 const { SessionRegistry } = require("./services/session-registry");
@@ -1775,6 +1776,13 @@ class PluginRobloxApp {
         sessionId: session.id,
         reason
       });
+      if (this.blockInvalidProjectTree(session, project)) {
+        logSync("enqueue_apply_project_tree_blocked", {
+          sessionId: session.id,
+          reason: "project_tree_invalid"
+        });
+        return;
+      }
       // OPT-006: Use async file reading to avoid blocking the event loop
       try {
         const projectState = await this.readLocalProjectStateAsyncWithPerf(project, this.projectReadOptions(session));
@@ -2634,6 +2642,12 @@ class PluginRobloxApp {
     const sync = this.ensureSessionSyncState(session);
     const message = String(reason || "Sync verification failed.");
     const timestamp = new Date().toISOString();
+    const contextExtras = Object.entries(details).reduce((next, [key, value]) => {
+      if (!["code", "component", "severity", "suggestion"].includes(key)) {
+        next[key] = value;
+      }
+      return next;
+    }, {} as Record<string, unknown>);
     sync.state = "degraded";
     sync.degradedReason = message;
     sync.lastFailure = {
@@ -2663,9 +2677,48 @@ class PluginRobloxApp {
         commandType: details.commandType || null,
         expectedHash: details.expectedHash || null,
         observedHash: details.observedHash || null,
-        path: details.path || null
-      }
+        path: details.path || null,
+        ...contextExtras
+      },
+      suggestion: typeof details.suggestion === "string" ? details.suggestion : null
     });
+  }
+
+  projectTreeInvalidError(session, issues) {
+    const normalizedIssues = (issues || []).slice(0, 10).map((issue) => ({
+      code: issue.code || "PROJECT_TREE_INVALID",
+      relativePath: issue.relativePath || null,
+      fileName: issue.fileName || null,
+      suggestedFileName: issue.suggestedFileName || null,
+      message: issue.message || null
+    }));
+    const first = normalizedIssues[0] || {};
+    const pathLabel = first.relativePath || first.fileName || "unknown";
+    const suggestion = first.suggestedFileName
+      ? `Rename '${first.fileName}' to '${first.suggestedFileName}', or represent that script as a folder with an init script if the dot is part of the intended instance name.`
+      : "Rename the ambiguous script file before syncing, or represent it as a folder with an init script if the dot is part of the intended instance name.";
+    const message = `Project tree contains an ambiguous script filename: ${pathLabel}. Rename it before syncing.`;
+    this.markSyncDegraded(session, message, {
+      code: "PROJECT-TREE-INVALID",
+      commandType: "apply_project_tree",
+      path: pathLabel,
+      issues: normalizedIssues,
+      issueCount: (issues || []).length,
+      suggestion
+    });
+    const error = new Error(message) as Error & { statusCode?: number; code?: string; issues?: unknown[] };
+    error.statusCode = 409;
+    error.code = "PROJECT-TREE-INVALID";
+    error.issues = normalizedIssues;
+    return error;
+  }
+
+  blockInvalidProjectTree(session, project) {
+    const issues = validateProjectTreeFiles(project);
+    if (issues.length === 0) {
+      return null;
+    }
+    return this.projectTreeInvalidError(session, issues);
   }
 
   scheduleFilePatchVerificationFallback(session, command, commandId, observedHash, instanceSegments) {
@@ -2796,7 +2849,7 @@ class PluginRobloxApp {
   cacheStudioSnapshot(session, snapshot, reason = "command_verified", snapshotInfo = null) {
     const effectiveSnapshotInfo = snapshotInfo || this.normalizeAndHashSnapshotWithPerf(snapshot);
     const snapshotHash = effectiveSnapshotInfo.hash;
-    session.lastStudioSnapshot = effectiveSnapshotInfo.normalized;
+    session.lastStudioSnapshot = snapshot && typeof snapshot === "object" ? snapshot : { mounts: [] };
     session.lastStudioHash = snapshotHash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_cached", {
@@ -2856,6 +2909,15 @@ class PluginRobloxApp {
       throw error;
     }
     if (type === "apply_project_tree") {
+      const project = this.getProjectById(session.projectId);
+      if (project) {
+        const invalidProjectTree = this.blockInvalidProjectTree(session, project);
+        if (invalidProjectTree) {
+          return waitForResult
+            ? Promise.reject(invalidProjectTree)
+            : Promise.resolve({ ok: false, blocked: true, code: invalidProjectTree.code, error: invalidProjectTree.message });
+        }
+      }
       session.pendingCommands = session.pendingCommands.filter((command) => {
         const keep = command.type !== "apply_project_tree" && command.type !== "apply_file_patch";
         if (!keep) {
@@ -2987,8 +3049,8 @@ class PluginRobloxApp {
       }
       if (command.type === "apply_project_tree" && command.payload?.project) {
         if (payload?.snapshot) {
-          const correctedSnapshotAccepted = payload?.corrected === true;
-          const snapshotReason = correctedSnapshotAccepted
+          const correctedSnapshotReported = payload?.corrected === true;
+          const snapshotReason = correctedSnapshotReported
             ? "apply_project_tree_corrected"
             : "apply_project_tree_verified";
           const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(payload.snapshot);
@@ -3016,18 +3078,30 @@ class PluginRobloxApp {
             }
             this.scheduleStudioSnapshotWrite(session, snapshotReason, false);
           };
-          if ((command.expectedHash && observedHash === command.expectedHash) || correctedSnapshotAccepted) {
+          const hashesMatch = Boolean(command.expectedHash && observedHash === command.expectedHash);
+          let mismatchSummary = null;
+          let correctedSnapshotAccepted = false;
+          if (!hashesMatch && correctedSnapshotReported) {
+            mismatchSummary = diffSnapshots(command.payload.project, payload.snapshot, {
+              allowCorrectedStudioClasses: true,
+              maxChanges: 10
+            });
+            correctedSnapshotAccepted = mismatchSummary.changeCount === 0;
+          }
+          if (hashesMatch || correctedSnapshotAccepted) {
             this.markSyncVerified(session, observedHash);
             scheduleVerifiedWrite();
           } else if (this.resolveStaleProjectTreeMismatch(session, command, commandId, observedHash)) {
             // The workspace moved on while Studio was applying this command.
           } else {
+            mismatchSummary = mismatchSummary || diffSnapshots(command.payload.project, payload.snapshot, { maxChanges: 10 });
             this.markSyncDegraded(session, "Studio snapshot hash did not match the applied project tree.", {
               code: "SYNC-HASH-MISMATCH",
               commandId,
               commandType: command.type,
               expectedHash: command.expectedHash || null,
-              observedHash: observedHash || null
+              observedHash: observedHash || null,
+              mismatchSummary
             });
           }
         } else {
@@ -3085,7 +3159,7 @@ class PluginRobloxApp {
       return;
     }
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(projectSnapshot);
-    session.lastStudioSnapshot = snapshotInfo.normalized;
+    session.lastStudioSnapshot = projectSnapshot;
     session.lastStudioHash = snapshotInfo.hash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_project_apply", {
@@ -3107,7 +3181,6 @@ class PluginRobloxApp {
 
     node.source = String(source ?? "");
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(session.lastStudioSnapshot);
-    session.lastStudioSnapshot = snapshotInfo.normalized;
     session.lastStudioHash = snapshotInfo.hash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_source_patch", {
