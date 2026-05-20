@@ -1187,7 +1187,7 @@ function shouldPreserveSyncbackEntry(fullPath, entryName, options: any = {}) {
 
 function metaForNode(node, options: any = {}) {
   const meta: any = {};
-  if (node.className && node.className !== "Folder" && !node.fileKind) {
+  if (node.className && !node.fileKind && (node.className !== "Folder" || node.classNameSource !== "defaultFolder")) {
     meta.className = node.className;
   }
   const properties = filterSyncbackProperties(node.properties, options);
@@ -1280,8 +1280,7 @@ function expectedEntriesForNode(node, withInitScript = false, options: any = {},
     const extension = scriptExtensionForNode(node);
     expected.add(`init${extension}`);
   }
-  const properties = filterSyncbackProperties(node.properties, options);
-  if (node.className !== "Folder" || (properties && Object.keys(properties).length > 0) || node.keepUnknowns !== undefined) {
+  if (Object.keys(metaForNode(node, options)).length > 0) {
     expected.add(`init${META_SUFFIX}`);
   }
   for (const child of node.children || []) {
