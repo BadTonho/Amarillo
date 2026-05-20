@@ -629,7 +629,7 @@ local toolbarButton = nil
 
 local function buildPluginShell()
 	local toolbar = plugin:CreateToolbar("Amarillo")
-	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxasset://textures/DeveloperFramework/PluginLogo.png")
+	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "")
 	toolbarButton.ClickableWhenViewportHidden = true
 
 	local widgetInfo = DockWidgetPluginGuiInfo.new(
