@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.14"
+local PLUGIN_VERSION = "1.1.15"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -3155,6 +3155,9 @@ end
 -- <<< src/plugin-src/70_privileged_actions.lua
 
 -- >>> src/plugin-src/80_ui.lua
+local function initializeUiModule()
+state.uiActions = state.uiActions or {}
+
 local function openConnectionPrompt(context)
 	state.pendingConnectionContext = context
 	if context.offerId then
@@ -3417,7 +3420,7 @@ local function chooseStudioTruth()
 	acceptPendingConnection("studio")
 end
 
-local function pollConnectionOffer()
+state.uiActions.pollConnectionOffer = function()
 	local ok, response = request("GET", "/studio/poll?studioInstanceId=" .. state.studioInstanceId .. "&" .. pluginVersionQuery())
 	if not ok then
 		return false, response
@@ -4144,6 +4147,9 @@ local function createPluginUi()
 end
 
 createPluginUi()
+end
+
+initializeUiModule()
 -- <<< src/plugin-src/80_ui.lua
 
 -- >>> src/plugin-src/90_watchers_loops.lua
@@ -4359,7 +4365,7 @@ task.spawn(function()
 			local healthOk = pcall(fetchDaemonHealth)
 			if healthOk then
 				state.watchers.consecutiveOfferFailures = 0
-				local reqOk, reqResponse = pollConnectionOffer()
+				local reqOk, reqResponse = state.uiActions.pollConnectionOffer()
 				if reqOk then
 					if reqResponse and reqResponse.offer and not state.pendingConnectionContext then
 						updateStatus("waiting for confirmation")
@@ -4383,6 +4389,11 @@ task.spawn(function()
 		end
 	end
 end)
+
+state.watchers.isSyncApplyCommand = function(command)
+	return command
+		and (command.type == "apply_project_tree" or command.type == "apply_file_patch")
+end
 
 -- ===== Long-poll loop for receiving commands from daemon =====
 task.spawn(function()
@@ -4419,7 +4430,11 @@ task.spawn(function()
 				end
 
 				for _, command in ipairs(commands) do
-					task.spawn(handleCommandSafely, command)
+					if state.watchers.isSyncApplyCommand(command) then
+						handleCommandSafely(command)
+					else
+						task.spawn(handleCommandSafely, command)
+					end
 				end
 				task.wait(state.watchers.currentPollInterval)
 			else

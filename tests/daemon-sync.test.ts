@@ -19,6 +19,16 @@ const {
   findSnapshotNodeByPath
 } = require("./helpers/daemon-workspace");
 
+async function waitForPendingCommand(session, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (session.pendingCommands.length > 0) {
+      return session.pendingCommands[0];
+    }
+    await wait(10);
+  }
+  assert.fail("Timed out waiting for a pending Studio command.");
+}
 
 test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {
   const workspace = createWorkspaceWithProject();
@@ -499,6 +509,33 @@ test("sync guard marks timed out apply commands as degraded and pauses auto-sync
   assert.equal(session.pendingCommands.length, 0);
 });
 
+test("sync guard gives Studio more time after an apply command is picked up", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const project = app.getProjectById(session.projectId);
+  const snapshot = readLocalProjectState(project);
+
+  await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: snapshot,
+    reason: "test_pickup"
+  }, false, 10);
+
+  const dequeued = app.dequeueCommands(session.id);
+  await wait(25);
+
+  assert.equal(session.sync.state, "ready");
+  assert.equal(dequeued.commands.length, 1);
+
+  app.completeCommand(session.id, dequeued.commands[0].id, {
+    ok: true,
+    snapshot
+  });
+
+  assert.equal(session.sync.state, "ready");
+});
+
 test("verified apply snapshot clears degraded sync state", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -532,8 +569,8 @@ test("MCP pull_changes can recover a degraded session with a verified apply", as
 
   app.markSyncDegraded(session, "test degradation");
   const resultPromise = handleTool(app, "pull_changes", { sessionId: session.id });
-  await wait(25);
 
+  await waitForPendingCommand(session);
   const command = app.dequeueCommands(session.id).commands[0];
   assert.equal(command.type, "apply_project_tree");
   assert.equal(command.payload.reason, "mcp_pull");
