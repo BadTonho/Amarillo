@@ -865,6 +865,68 @@ test("studio snapshot writes metadata for non-Folder instance classes", () => {
   );
 });
 
+test("studio snapshot writes init metadata for Studio folders", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "Shared",
+            className: "Folder",
+            classNameSource: "studio",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  const folderMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "Shared", "init.meta.json"), "utf8"));
+  assert.equal(folderMeta.className, "Folder");
+});
+
+test("studio snapshot preserves explicit Folder init metadata markers", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(path.join(syncRoot, "Shared"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(path.join(syncRoot, "Shared", "init.meta.json"), JSON.stringify({
+    className: "Folder"
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const snapshot = readLocalProjectState(project);
+  writeStudioProjectState(project, snapshot);
+
+  const folderMetaPath = path.join(syncRoot, "Shared", "init.meta.json");
+  assert.equal(fs.existsSync(folderMetaPath), true);
+  assert.equal(JSON.parse(fs.readFileSync(folderMetaPath, "utf8")).className, "Folder");
+});
+
 test("patchStudioFileSource accepts array paths and game-prefixed string paths", () => {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService"), { recursive: true });
