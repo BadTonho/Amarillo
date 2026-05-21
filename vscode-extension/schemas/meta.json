@@ -8,6 +8,19 @@
       "type": "string",
       "description": "The ClassName of the instance this metadata describes."
     },
+    "robloxName": {
+      "type": "string",
+      "description": "The real Roblox Instance.Name when the filesystem entry uses a disambiguated name."
+    },
+    "amarilloId": {
+      "type": "string",
+      "description": "Internal stable identity used to match duplicate Roblox siblings."
+    },
+    "duplicateOrdinal": {
+      "type": "integer",
+      "minimum": 2,
+      "description": "Ordinal for a duplicate sibling with the same Roblox name."
+    },
     "properties": {
       "type": "object",
       "description": "Properties to apply to this instance.",

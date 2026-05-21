@@ -326,7 +326,7 @@ test("Doctor reports healthy workspace with compatible plugin and MCP config", a
       "x-amarillo-session-token": accept.payload.session.sessionToken
     }
   });
-  await wait(25);
+  await app.drainPendingStudioWrites();
 
   const doctor = await invoke(app, "GET", "/doctor");
   assert.equal(doctor.statusCode, 200);

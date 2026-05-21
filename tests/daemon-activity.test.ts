@@ -84,7 +84,7 @@ test("Studio snapshot disk writes are recorded in the local activity log", async
       }
     ]
   }, "manual");
-  await wait(120);
+  await app.drainPendingStudioWrites();
 
   const entries = app.activityLog.query({ limit: 10 });
   const byPath = new Map(entries.map((entry) => [`${entry.action}:${entry.relativePath}`, entry]));

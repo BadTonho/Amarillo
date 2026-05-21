@@ -78,6 +78,13 @@ function normalizeProperties(properties) {
   return isPlainObject(properties) ? normalizeSemanticValue(properties) : {};
 }
 
+function isScriptLikeNode(node) {
+  return Boolean(normalizeFileKind(node))
+    || node?.className === "Script"
+    || node?.className === "LocalScript"
+    || node?.className === "ModuleScript";
+}
+
 function canonicalNodeSortKey(node) {
   return [
     node.name || "",
@@ -87,14 +94,20 @@ function canonicalNodeSortKey(node) {
   ].join("\u0000");
 }
 
-function normalizeNode(node) {
+function normalizeNode(node, context: any = {}) {
   const value = isPlainObject(node) ? node : {};
   const fileKind = normalizeFileKind(value);
+  const insideModel = context.insideModel === true;
+  const isModel = normalizeClassName(value, fileKind) === "Model";
+  const children = normalizeChildren(value.children, { insideModel: insideModel || isModel });
+  if (insideModel && !fileKind && !isScriptLikeNode(value) && children.length === 0) {
+    return null;
+  }
   const normalized = {
     name: typeof value.name === "string" ? value.name : "",
     className: normalizeClassName(value, fileKind),
-    properties: normalizeProperties(value.properties),
-    children: normalizeChildren(value.children)
+    properties: insideModel && !fileKind && !isScriptLikeNode(value) ? {} : normalizeProperties(value.properties),
+    children
   } as any;
 
   if (fileKind) {
@@ -106,9 +119,10 @@ function normalizeNode(node) {
   return normalized;
 }
 
-function normalizeChildren(children) {
+function normalizeChildren(children, context: any = {}) {
   return (Array.isArray(children) ? children : [])
-    .map((child) => normalizeNode(child))
+    .map((child) => normalizeNode(child, context))
+    .filter(Boolean)
     .sort((left, right) => canonicalNodeSortKey(left).localeCompare(canonicalNodeSortKey(right)));
 }
 
@@ -181,14 +195,20 @@ function rawMounts(snapshot) {
   return Array.isArray(snapshot?.mounts) ? snapshot.mounts : [];
 }
 
-function indexByName(items) {
+function indexByName(items, context: any = {}) {
   const indexed = new Map();
   for (const item of items || []) {
+    if (!normalizeNode(item, context)) {
+      continue;
+    }
     const name = typeof item?.name === "string" ? item.name : "";
     if (!indexed.has(name)) {
       indexed.set(name, []);
     }
     indexed.get(name).push(item);
+  }
+  for (const bucket of indexed.values()) {
+    bucket.sort((left, right) => canonicalNodeSortKey(normalizeNode(left, context) || {}).localeCompare(canonicalNodeSortKey(normalizeNode(right, context) || {})));
   }
   return indexed;
 }
@@ -221,7 +241,7 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
     }
   }
 
-  function compareNodes(pathLabel, expectedNode, observedNode) {
+  function compareNodes(pathLabel, expectedNode, observedNode, context: any = {}) {
     if (!expectedNode && observedNode) {
       addChange({ path: pathLabel, type: "unexpected_in_studio", observedClassName: observedNode.className || null });
       return;
@@ -231,8 +251,19 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
       return;
     }
 
-    const expectedNormalized = normalizeNode(expectedNode);
-    const observedNormalized = normalizeNode(observedNode);
+    const expectedNormalized = normalizeNode(expectedNode, context);
+    const observedNormalized = normalizeNode(observedNode, context);
+    if (!expectedNormalized && !observedNormalized) {
+      return;
+    }
+    if (!expectedNormalized && observedNormalized) {
+      addChange({ path: pathLabel, type: "unexpected_in_studio", observedClassName: observedNormalized.className || null });
+      return;
+    }
+    if (expectedNormalized && !observedNormalized) {
+      addChange({ path: pathLabel, type: "missing_in_studio", expectedClassName: expectedNormalized.className || null });
+      return;
+    }
     const classCorrectionAllowed = isAllowedCorrectedStudioClass(expectedNode, observedNode, options);
 
     if (!classCorrectionAllowed && expectedNormalized.className !== observedNormalized.className) {
@@ -266,18 +297,21 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
       });
     }
 
-    compareChildren(pathLabel, rawChildren(expectedNode), rawChildren(observedNode));
+    const childContext = {
+      insideModel: context.insideModel === true || expectedNormalized.className === "Model" || observedNormalized.className === "Model"
+    };
+    compareChildren(pathLabel, rawChildren(expectedNode), rawChildren(observedNode), childContext);
   }
 
-  function compareChildren(parentPath, expectedChildren, observedChildren) {
-    const expectedByName = indexByName(expectedChildren);
-    const observedByName = indexByName(observedChildren);
+  function compareChildren(parentPath, expectedChildren, observedChildren, context: any = {}) {
+    const expectedByName = indexByName(expectedChildren, context);
+    const observedByName = indexByName(observedChildren, context);
     const names = new Set([...expectedByName.keys(), ...observedByName.keys()]);
     for (const name of Array.from(names).sort()) {
       const expectedItems = expectedByName.get(name) || [];
       const observedItems = observedByName.get(name) || [];
       const maxLength = Math.max(expectedItems.length, observedItems.length);
-      if (expectedItems.length > 1 || observedItems.length > 1) {
+      if (expectedItems.length !== observedItems.length && (expectedItems.length > 1 || observedItems.length > 1)) {
         addChange({
           path: parentPath ? `${parentPath}/${name}` : name,
           type: "duplicate_name",
@@ -287,7 +321,7 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
       }
       for (let index = 0; index < maxLength; index++) {
         const suffix = maxLength > 1 ? `#${index + 1}` : "";
-        compareNodes(parentPath ? `${parentPath}/${name}${suffix}` : `${name}${suffix}`, expectedItems[index], observedItems[index]);
+        compareNodes(parentPath ? `${parentPath}/${name}${suffix}` : `${name}${suffix}`, expectedItems[index], observedItems[index], context);
       }
     }
   }

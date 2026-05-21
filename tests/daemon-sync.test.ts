@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { handleTool } = require("../src/daemon/mcp");
-const { hashSnapshot } = require("../src/daemon/lib/snapshot-hash");
+const { diffSnapshots, hashSnapshot } = require("../src/daemon/lib/snapshot-hash");
 const { readLocalProjectState } = require("../src/daemon/project");
 const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
@@ -113,6 +113,119 @@ test("semantic snapshot hash ignores representation-only fields", () => {
   assert.notEqual(hashSnapshot(studioSnapshot), hashSnapshot(localSnapshot));
 });
 
+test("semantic snapshot hash accepts duplicate siblings and Model visual leaves", () => {
+  const expectedSnapshot = {
+    projectId: "Game.project.json",
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        segments: ["ReplicatedStorage"],
+        children: [
+          {
+            name: "Duplicate",
+            className: "Folder",
+            properties: {},
+            amarilloId: "id-a",
+            children: []
+          },
+          {
+            name: "Duplicate",
+            fsName: "Duplicate.amarillo-2",
+            className: "Folder",
+            properties: {},
+            amarilloId: "id-b",
+            duplicateOrdinal: 2,
+            children: []
+          },
+          {
+            name: "Vehicle",
+            className: "Model",
+            properties: {},
+            children: [
+              {
+                name: "Hull",
+                className: "Part",
+                properties: {},
+                keepUnknowns: true,
+                children: [
+                  {
+                    name: "Controller",
+                    className: "Script",
+                    fileKind: "server",
+                    source: "return 'drive'",
+                    properties: {},
+                    children: []
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+  const observedSnapshot = {
+    projectId: "Game.project.json",
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        segments: ["ReplicatedStorage"],
+        children: [
+          {
+            name: "Vehicle",
+            className: "Model",
+            properties: {},
+            children: [
+              {
+                name: "Wheel",
+                className: "Attachment",
+                properties: {},
+                children: []
+              },
+              {
+                name: "Wheel",
+                className: "Attachment",
+                properties: {},
+                children: []
+              },
+              {
+                name: "Hull",
+                className: "Part",
+                properties: { Anchored: true },
+                children: [
+                  {
+                    name: "Controller",
+                    className: "Script",
+                    fileKind: "server",
+                    source: "return 'drive'\n",
+                    properties: {},
+                    children: []
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            name: "Duplicate",
+            className: "Folder",
+            properties: {},
+            children: []
+          },
+          {
+            name: "Duplicate",
+            className: "Folder",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  };
+
+  assert.equal(hashSnapshot(observedSnapshot), hashSnapshot(expectedSnapshot));
+  assert.equal(diffSnapshots(expectedSnapshot, observedSnapshot).changeCount, 0);
+});
+
 test("failed initial PC sync can be retried by the same Studio window", () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -193,7 +306,7 @@ test("corrected apply snapshot replaces assumed daemon cache and writes metadata
   });
 
   assert.equal(session.lastStudioSnapshot.mounts[0].children[1].className, "ScreenGui");
-  await wait(350);
+  await app.drainPendingStudioWrites();
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "ImplicitGui", "init.meta.json"), "utf8")).className,
     "ScreenGui"
@@ -232,7 +345,7 @@ test("Studio truth writes the initial snapshot to disk and marks the session rea
     ]
   }, "initial_accept");
 
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await app.drainPendingStudioWrites();
 
   assert.equal(app.sessions.get(result.session.id).connectionState, "ready");
   assert.match(
