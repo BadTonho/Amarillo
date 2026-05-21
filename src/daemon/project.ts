@@ -8,6 +8,8 @@ const projectResolver = require("./project-resolver");
 
 const PROJECT_SUFFIX = ".project.json";
 const META_SUFFIX = ".meta.json";
+const AMARILLO_ID_ATTRIBUTE = "AmarilloId";
+const DUPLICATE_FS_SUFFIX = ".amarillo-";
 
 // ===== Lightweight glob matching (no external dependency) =====
 function globToRegex(glob) {
@@ -69,7 +71,8 @@ function isPlainObject(value) {
 }
 
 function isReservedAttributeName(attributeName) {
-  return typeof attributeName === "string" && attributeName.startsWith("RBX");
+  return typeof attributeName === "string"
+    && (attributeName.startsWith("RBX") || attributeName === AMARILLO_ID_ATTRIBUTE);
 }
 
 function sanitizeSyncAttributes(attributes) {
@@ -319,6 +322,112 @@ function readMetaFile(metaPath) {
   return parseJsonFile(metaPath);
 }
 
+function applyIdentityMeta(node, meta, fsName) {
+  if (!node || !isPlainObject(meta)) {
+    return node;
+  }
+  const robloxName = typeof meta.robloxName === "string" && meta.robloxName.length > 0
+    ? meta.robloxName
+    : null;
+  const actualFsName = typeof fsName === "string" && fsName.length > 0 ? fsName : node.name;
+  if (robloxName) {
+    node.name = robloxName;
+  }
+  if (actualFsName && actualFsName !== node.name) {
+    node.fsName = actualFsName;
+  }
+  if (typeof meta.amarilloId === "string" && meta.amarilloId.length > 0) {
+    node.amarilloId = meta.amarilloId;
+  }
+  if (Number.isInteger(meta.duplicateOrdinal) && meta.duplicateOrdinal > 1) {
+    node.duplicateOrdinal = meta.duplicateOrdinal;
+  }
+  return node;
+}
+
+function nodeFsName(node) {
+  if (typeof node?.fsName === "string" && node.fsName.length > 0) {
+    return node.fsName;
+  }
+  return typeof node?.name === "string" ? node.name : "";
+}
+
+function duplicateBaseName(value) {
+  return String(value || "");
+}
+
+function makeDuplicateFsName(baseName, ordinal) {
+  return `${baseName}${DUPLICATE_FS_SUFFIX}${ordinal}`;
+}
+
+function stableAmarilloId(parts) {
+  return `amarillo-${crypto.createHash("sha1").update(parts.join("\u0000")).digest("hex").slice(0, 16)}`;
+}
+
+function cloneNodeForFs(node, fsName, duplicateOrdinal, identityKey, isDuplicate = false) {
+  const next = {
+    ...(node || {}),
+    fsName
+  };
+  if (isDuplicate || duplicateOrdinal > 1) {
+    if (!next.amarilloId) {
+      next.amarilloId = stableAmarilloId([identityKey, node?.name || "", node?.className || "", String(Math.max(1, duplicateOrdinal))]);
+    }
+  }
+  if (duplicateOrdinal > 1) {
+    next.duplicateOrdinal = duplicateOrdinal;
+  }
+  if (fsName === next.name) {
+    delete next.fsName;
+  }
+  return next;
+}
+
+function prepareSiblingNodesForWrite(children, identityKey = "") {
+  const source = Array.isArray(children) ? children : [];
+  const grouped = new Map();
+  for (const child of source) {
+    const baseName = duplicateBaseName(nodeFsName(child) || child?.name);
+    if (!grouped.has(baseName)) {
+      grouped.set(baseName, []);
+    }
+    grouped.get(baseName).push(child);
+  }
+
+  const used = new Set();
+  const prepared = [];
+  for (const child of source) {
+    const baseName = duplicateBaseName(nodeFsName(child) || child?.name);
+    const bucket = grouped.get(baseName) || [];
+    let fsName = baseName;
+    let duplicateOrdinal = Number.isInteger(child?.duplicateOrdinal) && child.duplicateOrdinal > 1
+      ? child.duplicateOrdinal
+      : 1;
+
+    if (bucket.length > 1) {
+      const indexInBucket = bucket.indexOf(child) + 1;
+      duplicateOrdinal = Math.max(duplicateOrdinal, indexInBucket);
+      fsName = duplicateOrdinal === 1 && !used.has(baseName)
+        ? baseName
+        : makeDuplicateFsName(baseName, Math.max(2, duplicateOrdinal));
+    } else if (used.has(fsName)) {
+      duplicateOrdinal = 2;
+      fsName = makeDuplicateFsName(baseName, duplicateOrdinal);
+    }
+
+    if (fsName !== baseName || used.has(fsName)) {
+      while (used.has(fsName)) {
+        duplicateOrdinal++;
+        fsName = makeDuplicateFsName(baseName, duplicateOrdinal);
+      }
+    }
+
+    used.add(fsName);
+    prepared.push(cloneNodeForFs(child, fsName, duplicateOrdinal, `${identityKey}/${fsName}`, bucket.length > 1));
+  }
+  return prepared;
+}
+
 function scriptMetaNameForFile(filePath) {
   const fileName = path.basename(filePath);
   if (!detectScriptFileType(fileName)) {
@@ -560,7 +669,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
       }
     }
 
-    return {
+    return applyIdentityMeta({
       name: baseName,
       className,
       classNameSource: "file",
@@ -570,7 +679,7 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
       properties,
       keepUnknowns: meta.keepUnknowns,
       children: []
-    };
+    }, meta, baseName);
   }
 
   if (name.endsWith(".model.json")) {
@@ -764,6 +873,7 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
   if (meta.keepUnknowns !== undefined) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
+  applyIdentityMeta(baseNode, meta, dirName);
 
   const ignoreGlobs = options.ignoreGlobs || [];
   const children = [];
@@ -818,30 +928,31 @@ function readLocalProjectState(project, extraOptions: any = {}) {
     placeIds: project.placeIds,
     mounts: project.mounts.map((mount) => {
       const mountOptions = { ...options, mountRoot: mount.absolutePath };
+      const children = listDirectoryEntries(mount.absolutePath)
+        .filter((entry) => !entry.isFile() || !entry.name.endsWith(META_SUFFIX))
+        .filter((entry) => {
+          if (mountOptions.ignoreGlobs.length === 0) return true;
+          return !matchesAnyGlob(entry.name, mountOptions.ignoreGlobs);
+        })
+        .flatMap((entry) => {
+          const fullPath = path.join(mount.absolutePath, entry.name);
+          if (entry.isDirectory()) {
+            return [buildNodeFromDirectory(fullPath, mountOptions)];
+          }
+          if (entry.isFile()) {
+            const node = buildNodeFromFile(fullPath, null, mountOptions);
+            return node ? [node] : [];
+          }
+          return [];
+        })
+        .sort((left, right) => left.name.localeCompare(right.name));
       return {
         id: mount.id,
         segments: mount.segments.slice(),
         relativePath: mount.relativePath,
         absolutePath: mount.absolutePath,
         keepUnknowns: mount.keepUnknowns,
-        children: listDirectoryEntries(mount.absolutePath)
-          .filter((entry) => !entry.isFile() || !entry.name.endsWith(META_SUFFIX))
-          .filter((entry) => {
-            if (mountOptions.ignoreGlobs.length === 0) return true;
-            return !matchesAnyGlob(entry.name, mountOptions.ignoreGlobs);
-          })
-          .flatMap((entry) => {
-            const fullPath = path.join(mount.absolutePath, entry.name);
-            if (entry.isDirectory()) {
-              return [buildNodeFromDirectory(fullPath, mountOptions)];
-            }
-            if (entry.isFile()) {
-              const node = buildNodeFromFile(fullPath, null, mountOptions);
-              return node ? [node] : [];
-            }
-            return [];
-          })
-          .sort((left, right) => left.name.localeCompare(right.name))
+        children: filterModelScriptOnlyChildren(children, mountOptions)
       };
     })
   };
@@ -876,7 +987,7 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options: an
       }
     }
 
-    return {
+    return applyIdentityMeta({
       name: baseName,
       className,
       classNameSource: "file",
@@ -886,7 +997,7 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options: an
       properties,
       keepUnknowns: meta.keepUnknowns,
       children: []
-    };
+    }, meta, baseName);
   }
   // For non-script files, delegate to sync (they're small JSON/metadata)
   return buildNodeFromFile(filePath, explicitName, options);
@@ -930,6 +1041,7 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
   if (meta.keepUnknowns !== undefined) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
+  applyIdentityMeta(baseNode, meta, dirName);
 
   const childPromises = [];
   const ignoreGlobs = options.ignoreGlobs || [];
@@ -992,9 +1104,9 @@ async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
       return null;
     });
 
-    const children = (await Promise.all(childPromises))
+    const children = filterModelScriptOnlyChildren((await Promise.all(childPromises))
       .filter(Boolean)
-      .sort((left, right) => left.name.localeCompare(right.name));
+      .sort((left, right) => left.name.localeCompare(right.name)), mountOptions);
 
     return {
       id: mount.id,
@@ -1130,6 +1242,12 @@ function filterSyncbackProperties(properties, options: any = {}) {
   if (Object.keys(sanitized).length === 0) {
     return {};
   }
+  if (isPlainObject(sanitized.Attributes)) {
+    delete sanitized.Attributes[AMARILLO_ID_ATTRIBUTE];
+    if (Object.keys(sanitized.Attributes).length === 0) {
+      delete sanitized.Attributes;
+    }
+  }
   const ignored = ignoredSyncbackProperties(options);
   if (ignored.size === 0) {
     return sanitized;
@@ -1179,6 +1297,60 @@ function scriptExtensionForNode(node) {
   return ".luau";
 }
 
+function isScriptNode(node) {
+  return Boolean(node?.fileKind)
+    || node?.className === "Script"
+    || node?.className === "LocalScript"
+    || node?.className === "ModuleScript";
+}
+
+function shouldUseModelScriptOnly(children, options: any = {}) {
+  return options.modelScriptOnly !== false && Array.isArray(children);
+}
+
+function filterModelScriptOnlyNode(node, context: any = {}) {
+  if (!node) {
+    return null;
+  }
+  const insideModel = context.insideModel === true;
+  const isModel = node.className === "Model";
+  const nextInsideModel = insideModel || isModel;
+  const filteredChildren = [];
+  for (const child of node.children || []) {
+    const filtered = filterModelScriptOnlyNode(child, { insideModel: nextInsideModel });
+    if (filtered) {
+      filteredChildren.push(filtered);
+    }
+  }
+
+  const scriptNode = isScriptNode(node);
+  if (insideModel && !scriptNode && filteredChildren.length === 0) {
+    return null;
+  }
+
+  const next = {
+    ...node,
+    children: filteredChildren
+  };
+  if (insideModel && !scriptNode) {
+    next.properties = {};
+    next.keepUnknowns = true;
+  }
+  if (isModel) {
+    next.keepUnknowns = true;
+  }
+  return next;
+}
+
+function filterModelScriptOnlyChildren(children, options: any = {}) {
+  if (!shouldUseModelScriptOnly(children, options)) {
+    return children || [];
+  }
+  return (children || [])
+    .map((child) => filterModelScriptOnlyNode(child, { insideModel: false }))
+    .filter(Boolean);
+}
+
 function matchesSyncbackGlob(fullPath, entryName, options: any = {}) {
   const syncback = syncbackConfig(options);
   if (!syncback.ignoreGlobs || syncback.ignoreGlobs.length === 0) {
@@ -1199,11 +1371,12 @@ function shouldIgnoreSyncbackNode(node, options: any = {}, parentDir = null) {
   if (!parentDir) {
     return false;
   }
+  const fsName = nodeFsName(node);
   if (node.fileKind && (!node.children || node.children.length === 0)) {
-    const fileName = `${node.name}${scriptExtensionForNode(node)}`;
+    const fileName = `${fsName}${scriptExtensionForNode(node)}`;
     return matchesSyncbackGlob(path.join(parentDir, fileName), fileName, options);
   }
-  return matchesSyncbackGlob(path.join(parentDir, node.name), node.name, options);
+  return matchesSyncbackGlob(path.join(parentDir, fsName), fsName, options);
 }
 
 function syncbackEntryBaseName(entryName) {
@@ -1242,6 +1415,16 @@ function metaForNode(node, options: any = {}) {
   if (node.className && !node.fileKind && (node.className !== "Folder" || node.classNameSource !== "defaultFolder")) {
     meta.className = node.className;
   }
+  const fsName = nodeFsName(node);
+  if (fsName && fsName !== node.name) {
+    meta.robloxName = node.name;
+  }
+  if (typeof node.amarilloId === "string" && node.amarilloId.length > 0) {
+    meta.amarilloId = node.amarilloId;
+  }
+  if (Number.isInteger(node.duplicateOrdinal) && node.duplicateOrdinal > 1) {
+    meta.duplicateOrdinal = node.duplicateOrdinal;
+  }
   const properties = filterSyncbackProperties(node.properties, options);
   if (properties && Object.keys(properties).length > 0) {
     meta.properties = serializePropertyValue(properties);
@@ -1254,6 +1437,16 @@ function metaForNode(node, options: any = {}) {
 
 function metaForScriptNode(node, options: any = {}) {
   const meta: any = {};
+  const fsName = nodeFsName(node);
+  if (fsName && fsName !== node.name) {
+    meta.robloxName = node.name;
+  }
+  if (typeof node.amarilloId === "string" && node.amarilloId.length > 0) {
+    meta.amarilloId = node.amarilloId;
+  }
+  if (Number.isInteger(node.duplicateOrdinal) && node.duplicateOrdinal > 1) {
+    meta.duplicateOrdinal = node.duplicateOrdinal;
+  }
   const properties = filterSyncbackProperties(node.properties, options);
   if (properties && Object.keys(properties).length > 0) {
     meta.properties = serializePropertyValue(properties);
@@ -1269,12 +1462,13 @@ function writeScriptNode(parentDir, node, asInit = false, options: any = {}) {
     return;
   }
   const extension = scriptExtensionForNode(node);
-  const fileName = asInit ? `init${extension}` : `${node.name}${extension}`;
+  const fsName = nodeFsName(node);
+  const fileName = asInit ? `init${extension}` : `${fsName}${extension}`;
   writeTextFileIfChanged(path.join(parentDir, fileName), node.source || "", options);
 
   const meta = metaForScriptNode(node, options);
   if (Object.keys(meta).length > 0) {
-    const metaName = asInit ? `init${META_SUFFIX}` : `${node.name}${META_SUFFIX}`;
+    const metaName = asInit ? `init${META_SUFFIX}` : `${fsName}${META_SUFFIX}`;
     writeJsonFile(path.join(parentDir, metaName), meta, options);
   }
 }
@@ -1283,7 +1477,7 @@ function writeFolderNode(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
-  const nodeDir = path.join(parentDir, node.name);
+  const nodeDir = path.join(parentDir, nodeFsName(node));
   ensureDirectory(nodeDir);
 
   const meta = metaForNode(node, options);
@@ -1292,7 +1486,8 @@ function writeFolderNode(parentDir, node, options: any = {}) {
   }
 
   if (Array.isArray(node.children)) {
-    for (const child of node.children) {
+    const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
+    for (const child of children) {
       writeNode(nodeDir, child, options);
     }
   }
@@ -1308,10 +1503,11 @@ function writeNode(parentDir, node, options: any = {}) {
   }
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
-      const nodeDir = path.join(parentDir, node.name);
+      const nodeDir = path.join(parentDir, nodeFsName(node));
       ensureDirectory(nodeDir);
       writeScriptNode(nodeDir, node, true, options);
-      for (const child of node.children) {
+      const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
+      for (const child of children) {
         writeNode(nodeDir, child, options);
       }
       if (node.keepUnknowns !== true) {
@@ -1335,19 +1531,21 @@ function expectedEntriesForNode(node, withInitScript = false, options: any = {},
   if (Object.keys(metaForNode(node, options)).length > 0) {
     expected.add(`init${META_SUFFIX}`);
   }
-  for (const child of node.children || []) {
+  const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children || [], options), parentDir || "");
+  for (const child of children) {
     if (shouldIgnoreSyncbackNode(child, options, parentDir)) {
       continue;
     }
+    const fsName = nodeFsName(child);
     if (child.fileKind && (!child.children || child.children.length === 0)) {
       const ext = scriptExtensionForNode(child);
-      expected.add(`${child.name}${ext}`);
+      expected.add(`${fsName}${ext}`);
       const childMeta = metaForScriptNode(child, options);
       if (Object.keys(childMeta).length > 0) {
-        expected.add(`${child.name}${META_SUFFIX}`);
+        expected.add(`${fsName}${META_SUFFIX}`);
       }
     } else {
-      expected.add(child.name);
+      expected.add(fsName);
     }
   }
   return expected;
@@ -1368,8 +1566,9 @@ function writeMountSnapshot(mount, children, options: any = {}) {
     ...options,
     mount
   };
+  const writableChildren = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(children || [], mountOptions), mount.absolutePath);
   ensureDirectory(mount.absolutePath);
-  for (const child of children) {
+  for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
     }
@@ -1377,19 +1576,20 @@ function writeMountSnapshot(mount, children, options: any = {}) {
   }
 
   const expected = new Set();
-  for (const child of children) {
+  for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
     }
+    const fsName = nodeFsName(child);
     if (child.fileKind && (!child.children || child.children.length === 0)) {
       const ext = scriptExtensionForNode(child);
-      expected.add(`${child.name}${ext}`);
+      expected.add(`${fsName}${ext}`);
       const meta = metaForScriptNode(child, mountOptions);
       if (Object.keys(meta).length > 0) {
-        expected.add(`${child.name}${META_SUFFIX}`);
+        expected.add(`${fsName}${META_SUFFIX}`);
       }
     } else {
-      expected.add(child.name);
+      expected.add(fsName);
     }
   }
 
@@ -1557,12 +1757,13 @@ async function writeScriptNodeAsync(parentDir, node, asInit = false, options: an
     return;
   }
   const extension = scriptExtensionForNode(node);
-  const fileName = asInit ? `init${extension}` : `${node.name}${extension}`;
+  const fsName = nodeFsName(node);
+  const fileName = asInit ? `init${extension}` : `${fsName}${extension}`;
   await writeTextFileIfChangedAsync(path.join(parentDir, fileName), node.source || "", options);
 
   const meta = metaForScriptNode(node, options);
   if (Object.keys(meta).length > 0) {
-    const metaName = asInit ? `init${META_SUFFIX}` : `${node.name}${META_SUFFIX}`;
+    const metaName = asInit ? `init${META_SUFFIX}` : `${fsName}${META_SUFFIX}`;
     await writeJsonFileAsync(path.join(parentDir, metaName), meta, options);
   }
 }
@@ -1571,7 +1772,7 @@ async function writeFolderNodeAsync(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
-  const nodeDir = path.join(parentDir, node.name);
+  const nodeDir = path.join(parentDir, nodeFsName(node));
   await fsp.mkdir(nodeDir, { recursive: true });
 
   const meta = metaForNode(node, options);
@@ -1580,7 +1781,8 @@ async function writeFolderNodeAsync(parentDir, node, options: any = {}) {
   }
 
   if (Array.isArray(node.children)) {
-    for (const child of node.children) {
+    const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
+    for (const child of children) {
       await writeNodeAsync(nodeDir, child, options);
     }
   }
@@ -1596,10 +1798,11 @@ async function writeNodeAsync(parentDir, node, options: any = {}) {
   }
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
-      const nodeDir = path.join(parentDir, node.name);
+      const nodeDir = path.join(parentDir, nodeFsName(node));
       await fsp.mkdir(nodeDir, { recursive: true });
       await writeScriptNodeAsync(nodeDir, node, true, options);
-      for (const child of node.children) {
+      const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
+      for (const child of children) {
         await writeNodeAsync(nodeDir, child, options);
       }
       if (node.keepUnknowns !== true) {
@@ -1619,8 +1822,9 @@ async function writeMountSnapshotAsync(mount, children, options: any = {}) {
     ...options,
     mount
   };
+  const writableChildren = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(children || [], mountOptions), mount.absolutePath);
   await fsp.mkdir(mount.absolutePath, { recursive: true });
-  for (const child of children) {
+  for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
     }
@@ -1628,19 +1832,20 @@ async function writeMountSnapshotAsync(mount, children, options: any = {}) {
   }
 
   const expected = new Set();
-  for (const child of children) {
+  for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
     }
+    const fsName = nodeFsName(child);
     if (child.fileKind && (!child.children || child.children.length === 0)) {
       const ext = scriptExtensionForNode(child);
-      expected.add(`${child.name}${ext}`);
+      expected.add(`${fsName}${ext}`);
       const meta = metaForScriptNode(child, mountOptions);
       if (Object.keys(meta).length > 0) {
-        expected.add(`${child.name}${META_SUFFIX}`);
+        expected.add(`${fsName}${META_SUFFIX}`);
       }
     } else {
-      expected.add(child.name);
+      expected.add(fsName);
     }
   }
 

@@ -901,6 +901,127 @@ test("studio snapshot writes init metadata for Studio folders", () => {
   assert.equal(folderMeta.className, "Folder");
 });
 
+test("studio snapshot roundtrips duplicate sibling names with filesystem metadata", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "Duplicate",
+            className: "Folder",
+            classNameSource: "studio",
+            properties: {},
+            children: []
+          },
+          {
+            name: "Duplicate",
+            className: "Folder",
+            classNameSource: "studio",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(fs.existsSync(path.join(syncRoot, "Duplicate")), true);
+  assert.equal(fs.existsSync(path.join(syncRoot, "Duplicate.amarillo-2")), true);
+  const duplicateMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "Duplicate.amarillo-2", "init.meta.json"), "utf8"));
+  assert.equal(duplicateMeta.robloxName, "Duplicate");
+  assert.equal(duplicateMeta.duplicateOrdinal, 2);
+  assert.equal(typeof duplicateMeta.amarilloId, "string");
+
+  const snapshot = readLocalProjectState(project);
+  const names = snapshot.mounts[0].children.map((child) => child.name).sort();
+  assert.deepEqual(names, ["Duplicate", "Duplicate"]);
+  const fsNames = snapshot.mounts[0].children.map((child) => child.fsName || child.name).sort();
+  assert.deepEqual(fsNames, ["Duplicate", "Duplicate.amarillo-2"]);
+});
+
+test("studio snapshot syncback keeps scripts inside Models and ignores visual leaves", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "Vehicle",
+            className: "Model",
+            classNameSource: "studio",
+            properties: {},
+            children: [
+              {
+                name: "Wheel",
+                className: "Part",
+                classNameSource: "studio",
+                properties: { Anchored: true },
+                children: []
+              },
+              {
+                name: "Hull",
+                className: "Part",
+                classNameSource: "studio",
+                properties: { Anchored: false },
+                children: [
+                  {
+                    name: "Controller",
+                    className: "Script",
+                    fileKind: "server",
+                    source: "return 'drive'",
+                    properties: {},
+                    children: []
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  assert.equal(fs.existsSync(path.join(syncRoot, "Vehicle", "Wheel")), false);
+  assert.equal(fs.existsSync(path.join(syncRoot, "Vehicle", "Hull", "Controller.server.luau")), true);
+
+  const snapshot = readLocalProjectState(project);
+  const vehicle = snapshot.mounts[0].children.find((child) => child.name === "Vehicle");
+  assert.equal(vehicle.className, "Model");
+  assert.equal(vehicle.keepUnknowns, true);
+  assert.deepEqual(vehicle.children.map((child) => child.name), ["Hull"]);
+  assert.deepEqual(vehicle.children[0].properties, {});
+  assert.equal(vehicle.children[0].children[0].source, "return 'drive'");
+});
+
 test("studio snapshot preserves explicit Folder init metadata markers", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");

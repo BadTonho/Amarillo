@@ -188,7 +188,7 @@ test("Roblox plugin caches property metadata while reading live values", () => {
 });
 
 test("Roblox plugin filters reserved RBX attributes during sync", () => {
-  assert.match(pluginSource, /local function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and string\.sub\(attributeName, 1, 3\) == "RBX"\s+end/);
+  assert.match(pluginSource, /local function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId"\)\s+end/);
   assert.match(pluginSource, /local function syncableAttributes\(attributes\)/);
   assert.equal((pluginSource.match(/syncableAttributes\(instance:GetAttributes\(\)\)/g) || []).length, 2);
   assert.match(pluginSource, /local desiredAttributes = syncableAttributes\(rawValue\)/);

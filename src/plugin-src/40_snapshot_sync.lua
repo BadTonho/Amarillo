@@ -91,16 +91,68 @@ local function updateScriptSourceIfChanged(instance, desiredSource, openDocument
 end
 
 local function indexDesiredChildren(children)
-	local indexed = {}
+	local indexed = { _byId = {} }
 	for _, child in ipairs(children or {}) do
-		local bucket = indexed[child.name]
+		local childName = child.name or child.robloxName or ""
+		local bucket = indexed[childName]
 		if bucket then
 			table.insert(bucket, child)
 		else
-			indexed[child.name] = { child }
+			indexed[childName] = { child }
+		end
+		if type(child.amarilloId) == "string" and child.amarilloId ~= "" then
+			indexed._byId[child.amarilloId] = child
 		end
 	end
 	return indexed
+end
+
+local function desiredNodeName(desiredNode)
+	return desiredNode and (desiredNode.name or desiredNode.robloxName) or nil
+end
+
+local function getAmarilloId(instance)
+	if not instance then
+		return nil
+	end
+	local ok, value = pcall(function()
+		return instance:GetAttribute("AmarilloId")
+	end)
+	if ok and type(value) == "string" and value ~= "" then
+		return value
+	end
+	return nil
+end
+
+local function setAmarilloId(instance, amarilloId, contextLabel)
+	if not instance or type(amarilloId) ~= "string" or amarilloId == "" then
+		return false
+	end
+	if getAmarilloId(instance) == amarilloId then
+		return true
+	end
+	local ok = safeSetAttribute(instance, "AmarilloId", amarilloId, contextLabel or "amarillo identity")
+	return ok == true
+end
+
+local function ensureAmarilloId(instance)
+	local existing = getAmarilloId(instance)
+	if existing then
+		return existing
+	end
+	local generated = HttpService:GenerateGUID(false)
+	if setAmarilloId(instance, generated, "snapshot duplicate identity") then
+		return generated
+	end
+	return nil
+end
+
+local function childNameCounts(parent)
+	local counts = {}
+	for _, child in ipairs(parent:GetChildren()) do
+		counts[child.Name] = (counts[child.Name] or 0) + 1
+	end
+	return counts
 end
 
 local function mountKeyFromSegments(segments)
@@ -135,6 +187,10 @@ local function isNestedMountChild(indexed, parentSegments, childName)
 end
 
 local function findDesiredChildForInstance(instance, desiredChildIndex)
+	local instanceId = getAmarilloId(instance)
+	if instanceId and desiredChildIndex and desiredChildIndex._byId and desiredChildIndex._byId[instanceId] then
+		return desiredChildIndex._byId[instanceId]
+	end
 	local bucket = desiredChildIndex and desiredChildIndex[instance.Name]
 	if not bucket then
 		return nil
@@ -251,6 +307,7 @@ local function describeInstanceForLog(instance)
 end
 
 local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+	local amarilloId = getAmarilloId(instance)
 	local node = {
 		name = instance.Name,
 		className = instance.ClassName,
@@ -258,6 +315,9 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 		properties = collectProperties(instance),
 		children = {}
 	}
+	if amarilloId then
+		node.amarilloId = amarilloId
+	end
 
 	if instance:IsA("Script") then
 		node.fileKind = "server"
@@ -272,14 +332,20 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	end
 
 	local desiredChildIndex = indexDesiredChildren(desiredNode and desiredNode.children or nil)
+	local nameCounts = childNameCounts(instance)
 	for _, child in ipairs(instance:GetChildren()) do
+		if (nameCounts[child.Name] or 0) > 1 then
+			ensureAmarilloId(child)
+		end
 		local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 		if shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredNode, options) then
 			table.insert(node.children, snapshotNode(child, openDocumentSources, desiredChild, options))
 		end
 	end
 	table.sort(node.children, function(left, right)
-		return left.name < right.name
+		local leftKey = tostring(left.name or "") .. "\0" .. tostring(left.className or "") .. "\0" .. tostring(left.amarilloId or "")
+		local rightKey = tostring(right.name or "") .. "\0" .. tostring(right.className or "") .. "\0" .. tostring(right.amarilloId or "")
+		return leftKey < rightKey
 	end)
 
 	return node
@@ -490,14 +556,20 @@ local function snapshotCurrentProject(options)
 			local children = {}
 			local desiredMount = cachedMounts[mount.id]
 			local desiredChildIndex = indexDesiredChildren(desiredMount and desiredMount.children or nil)
+			local nameCounts = childNameCounts(container)
 			for _, child in ipairs(container:GetChildren()) do
+				if (nameCounts[child.Name] or 0) > 1 then
+					ensureAmarilloId(child)
+				end
 				local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredMount or mount, options) then
 					table.insert(children, snapshotNode(child, openDocumentSources, desiredChild, options))
 				end
 			end
 			table.sort(children, function(left, right)
-				return left.name < right.name
+				local leftKey = tostring(left.name or "") .. "\0" .. tostring(left.className or "") .. "\0" .. tostring(left.amarilloId or "")
+				local rightKey = tostring(right.name or "") .. "\0" .. tostring(right.className or "") .. "\0" .. tostring(right.amarilloId or "")
+				return leftKey < rightKey
 			end)
 			table.insert(mounts, {
 				id = mount.id,
@@ -631,10 +703,18 @@ shouldDestroyUnexpectedChild = function(child, desiredNode)
 	return true
 end
 
-local function findExistingChildForDesired(parent, desiredNode)
+local function findExistingChildForDesired(parent, desiredNode, claimedChildren)
+	if type(desiredNode.amarilloId) == "string" and desiredNode.amarilloId ~= "" then
+		for _, child in ipairs(parent:GetChildren()) do
+			if not (claimedChildren and claimedChildren[child]) and getAmarilloId(child) == desiredNode.amarilloId then
+				return child
+			end
+		end
+	end
+	local targetName = desiredNodeName(desiredNode)
 	local sameName = nil
 	for _, child in ipairs(parent:GetChildren()) do
-		if child.Name == desiredNode.name then
+		if not (claimedChildren and claimedChildren[child]) and child.Name == targetName then
 			if child.ClassName == desiredNode.className then
 				return child
 			end
@@ -644,8 +724,9 @@ local function findExistingChildForDesired(parent, desiredNode)
 	return sameName
 end
 
-local function ensureInstance(parent, desiredNode)
-	local existing = findExistingChildForDesired(parent, desiredNode)
+local function ensureInstance(parent, desiredNode, claimedChildren)
+	local targetName = desiredNodeName(desiredNode)
+	local existing = findExistingChildForDesired(parent, desiredNode, claimedChildren)
 	local corrected = false
 	if isPlayerControlledInstance(existing) then
 		appendLog("Sync ignored player-controlled instance: " .. describeInstanceForLog(existing))
@@ -679,11 +760,11 @@ local function ensureInstance(parent, desiredNode)
 			return Instance.new(desiredNode.className)
 		end)
 		if not okNew then
-			appendLog("Failed to create during sync: " .. tostring(desiredNode.className) .. " " .. tostring(desiredNode.name) .. " -> " .. tostring(newInstance))
+			appendLog("Failed to create during sync: " .. tostring(desiredNode.className) .. " " .. tostring(targetName) .. " -> " .. tostring(newInstance))
 			return nil, true
 		end
 		existing = newInstance
-		local okName = safeSetProperty(existing, "Name", desiredNode.name, "sync create name")
+		local okName = safeSetProperty(existing, "Name", targetName, "sync create name")
 		local okParent = okName and safeSetParent(existing, parent, "sync create parent")
 		if not okName or not okParent then
 			destroyUnexpectedChild(existing, "failed sync create cleanup")
@@ -691,18 +772,24 @@ local function ensureInstance(parent, desiredNode)
 		end
 	end
 
-	if existing.Name ~= desiredNode.name then
-		local okRename, renameErr = safeSetProperty(existing, "Name", desiredNode.name, "sync rename")
+	if existing.Name ~= targetName then
+		local okRename, renameErr = safeSetProperty(existing, "Name", targetName, "sync rename")
 		if not okRename then
 			appendLog("Failed to rename during sync: " .. describeInstanceForLog(existing) .. " -> " .. tostring(renameErr))
 			return nil, true
 		end
 	end
+	if type(desiredNode.amarilloId) == "string" and desiredNode.amarilloId ~= "" then
+		setAmarilloId(existing, desiredNode.amarilloId, "sync identity")
+	end
+	if claimedChildren then
+		claimedChildren[existing] = true
+	end
 	return existing, corrected
 end
 
-local function applyNode(parent, desiredNode, openDocumentSources)
-	local instance, corrected = ensureInstance(parent, desiredNode)
+local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings)
+	local instance, corrected = ensureInstance(parent, desiredNode, claimedSiblings)
 	if not instance then
 		return corrected
 	end
@@ -715,17 +802,16 @@ local function applyNode(parent, desiredNode, openDocumentSources)
 		updateScriptSourceIfChanged(instance, desiredNode.source, openDocumentSources)
 	end
 
-	local desiredChildren = {}
+	local appliedChildren = {}
 	for _, child in ipairs(desiredNode.children or {}) do
-		desiredChildren[child.name] = true
-		if applyNode(instance, child, openDocumentSources) then
+		if applyNode(instance, child, openDocumentSources, appliedChildren) then
 			corrected = true
 		end
 	end
 
 	if desiredNode.keepUnknowns ~= true then
 		for _, child in ipairs(instance:GetChildren()) do
-			if not desiredChildren[child.Name] then
+			if not appliedChildren[child] then
 				-- Preserve Studio-only objects, but remove syncable scripts/folders
 				-- that disappeared from the desired tree so moves do not duplicate.
 				if shouldDestroyUnexpectedChild(child, desiredNode) then
@@ -806,16 +892,15 @@ local function applyProjectSnapshot(projectSnapshot, command)
 		for _, mount in ipairs(projectSnapshot.mounts or {}) do
 			local container = mountContainers[mount]
 			if container then
-				local desiredChildren = {}
+				local appliedChildren = {}
 				for _, child in ipairs(mount.children or {}) do
-					desiredChildren[child.name] = true
-					if applyNode(container, child, openDocumentSources) then
+					if applyNode(container, child, openDocumentSources, appliedChildren) then
 						correctedDuringApply = true
 					end
 				end
 				if mount.keepUnknowns ~= true then
 					for _, child in ipairs(container:GetChildren()) do
-						if not desiredChildren[child.Name] then
+						if not appliedChildren[child] then
 							-- Never destroy non-syncable instances (GUIs, Parts,
 							-- Cameras, etc.) during mount cleanup. The daemon
 							-- cannot represent these in the filesystem.
