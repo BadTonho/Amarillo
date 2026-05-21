@@ -232,6 +232,8 @@ test("Roblox plugin preserves nested exclusive mount containers during sync", ()
 
 test("Roblox plugin verifies apply snapshots against the applied tree without preserved Studio-only nodes", () => {
   assert.match(pluginSource, /local shouldDestroyUnexpectedChild = nil/);
+  assert.match(pluginSource, /local function isOpaqueModelInstance\(instance\)/);
+  assert.match(pluginSource, /if isOpaqueModelInstance\(instance\) then\s+return false\s+end/);
   assert.match(pluginSource, /local function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
   assert.match(pluginSource, /options and options\.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply/);
   assert.match(pluginSource, /local referenceSnapshot = options\.desiredSnapshot or state\.treeCache/);

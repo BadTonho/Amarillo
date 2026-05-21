@@ -113,7 +113,7 @@ test("semantic snapshot hash ignores representation-only fields", () => {
   assert.notEqual(hashSnapshot(studioSnapshot), hashSnapshot(localSnapshot));
 });
 
-test("semantic snapshot hash accepts duplicate siblings and Model visual leaves", () => {
+test("semantic snapshot hash ignores opaque Models and accepts duplicate folders", () => {
   const expectedSnapshot = {
     projectId: "Game.project.json",
     mounts: [
@@ -224,6 +224,48 @@ test("semantic snapshot hash accepts duplicate siblings and Model visual leaves"
 
   assert.equal(hashSnapshot(observedSnapshot), hashSnapshot(expectedSnapshot));
   assert.equal(diffSnapshots(expectedSnapshot, observedSnapshot).changeCount, 0);
+
+  const emptyExpectedSnapshot = {
+    projectId: "Game.project.json",
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        segments: ["ReplicatedStorage"],
+        children: []
+      }
+    ]
+  };
+  const observedModelOnlySnapshot = {
+    projectId: "Game.project.json",
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        segments: ["ReplicatedStorage"],
+        children: [
+          {
+            name: "EsferaTransformacaoBroly",
+            className: "Model",
+            properties: {},
+            children: [
+              {
+                name: "UpThings",
+                className: "Folder",
+                properties: {},
+                children: [
+                  { name: "1", className: "MeshPart", properties: {}, children: [] },
+                  { name: "1", className: "MeshPart", properties: {}, children: [] },
+                  { name: "1", className: "MeshPart", properties: {}, children: [] }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  assert.equal(hashSnapshot(observedModelOnlySnapshot), hashSnapshot(emptyExpectedSnapshot));
+  assert.equal(diffSnapshots(emptyExpectedSnapshot, observedModelOnlySnapshot).changeCount, 0);
 });
 
 test("failed initial PC sync can be retried by the same Studio window", () => {
