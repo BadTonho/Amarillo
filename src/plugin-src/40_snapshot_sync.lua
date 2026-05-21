@@ -252,6 +252,10 @@ local function isProtectedSyncInstance(instance)
 	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
+local function isOpaqueModelInstance(instance)
+	return instance and instance:IsA("Model")
+end
+
 local shouldDestroyUnexpectedChild = nil
 
 local function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
@@ -266,6 +270,9 @@ end
 
 local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
 	if isPlayerControlledInstance(instance) then
+		return false
+	end
+	if isOpaqueModelInstance(instance) then
 		return false
 	end
 	if desiredChild then
@@ -307,6 +314,9 @@ local function describeInstanceForLog(instance)
 end
 
 local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+	if isOpaqueModelInstance(instance) then
+		return nil
+	end
 	local amarilloId = getAmarilloId(instance)
 	local node = {
 		name = instance.Name,
@@ -339,7 +349,10 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 		end
 		local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 		if shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredNode, options) then
-			table.insert(node.children, snapshotNode(child, openDocumentSources, desiredChild, options))
+			local childSnapshot = snapshotNode(child, openDocumentSources, desiredChild, options)
+			if childSnapshot then
+				table.insert(node.children, childSnapshot)
+			end
 		end
 	end
 	table.sort(node.children, function(left, right)
@@ -563,7 +576,10 @@ local function snapshotCurrentProject(options)
 				end
 				local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredMount or mount, options) then
-					table.insert(children, snapshotNode(child, openDocumentSources, desiredChild, options))
+					local childSnapshot = snapshotNode(child, openDocumentSources, desiredChild, options)
+					if childSnapshot then
+						table.insert(children, childSnapshot)
+					end
 				end
 			end
 			table.sort(children, function(left, right)

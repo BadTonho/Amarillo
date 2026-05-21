@@ -85,6 +85,10 @@ function isScriptLikeNode(node) {
     || node?.className === "ModuleScript";
 }
 
+function isOpaqueModelNode(node, fileKind = null) {
+  return normalizeClassName(node, fileKind ?? normalizeFileKind(node)) === "Model";
+}
+
 function canonicalNodeSortKey(node) {
   return [
     node.name || "",
@@ -97,15 +101,19 @@ function canonicalNodeSortKey(node) {
 function normalizeNode(node, context: any = {}) {
   const value = isPlainObject(node) ? node : {};
   const fileKind = normalizeFileKind(value);
+  const className = normalizeClassName(value, fileKind);
+  if (isOpaqueModelNode(value, fileKind)) {
+    return null;
+  }
   const insideModel = context.insideModel === true;
-  const isModel = normalizeClassName(value, fileKind) === "Model";
+  const isModel = className === "Model";
   const children = normalizeChildren(value.children, { insideModel: insideModel || isModel });
   if (insideModel && !fileKind && !isScriptLikeNode(value) && children.length === 0) {
     return null;
   }
   const normalized = {
     name: typeof value.name === "string" ? value.name : "",
-    className: normalizeClassName(value, fileKind),
+    className,
     properties: insideModel && !fileKind && !isScriptLikeNode(value) ? {} : normalizeProperties(value.properties),
     children
   } as any;

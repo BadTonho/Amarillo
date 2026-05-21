@@ -954,7 +954,7 @@ test("studio snapshot roundtrips duplicate sibling names with filesystem metadat
   assert.deepEqual(fsNames, ["Duplicate", "Duplicate.amarillo-2"]);
 });
 
-test("studio snapshot syncback keeps scripts inside Models and ignores visual leaves", () => {
+test("studio snapshot syncback ignores Models as opaque Studio assets", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
   fs.mkdirSync(syncRoot, { recursive: true });
@@ -1004,6 +1004,15 @@ test("studio snapshot syncback keeps scripts inside Models and ignores visual le
                 ]
               }
             ]
+          },
+          {
+            name: "SharedUtil",
+            className: "ModuleScript",
+            fileKind: "module",
+            ext: ".luau",
+            source: "return 'shared'",
+            properties: {},
+            children: []
           }
         ]
       }
@@ -1011,15 +1020,48 @@ test("studio snapshot syncback keeps scripts inside Models and ignores visual le
   });
 
   assert.equal(fs.existsSync(path.join(syncRoot, "Vehicle", "Wheel")), false);
-  assert.equal(fs.existsSync(path.join(syncRoot, "Vehicle", "Hull", "Controller.server.luau")), true);
+  assert.equal(fs.existsSync(path.join(syncRoot, "Vehicle", "Hull", "Controller.server.luau")), false);
+  assert.equal(fs.existsSync(path.join(syncRoot, "SharedUtil.luau")), true);
 
   const snapshot = readLocalProjectState(project);
-  const vehicle = snapshot.mounts[0].children.find((child) => child.name === "Vehicle");
-  assert.equal(vehicle.className, "Model");
-  assert.equal(vehicle.keepUnknowns, true);
-  assert.deepEqual(vehicle.children.map((child) => child.name), ["Hull"]);
-  assert.deepEqual(vehicle.children[0].properties, {});
-  assert.equal(vehicle.children[0].children[0].source, "return 'drive'");
+  assert.equal(snapshot.mounts[0].children.some((child) => child.name === "Vehicle"), false);
+  assert.deepEqual(snapshot.mounts[0].children.map((child) => child.name), ["SharedUtil"]);
+});
+
+test("local Model directories are pruned from snapshots and preserved during syncback cleanup", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  const modelRoot = path.join(syncRoot, "EsferaTransformacaoBroly");
+  fs.mkdirSync(modelRoot, { recursive: true });
+  fs.writeFileSync(path.join(modelRoot, "init.meta.json"), JSON.stringify({
+    className: "Model"
+  }, null, 2));
+  fs.writeFileSync(path.join(modelRoot, "Legacy.server.luau"), "return 'keep me'", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const snapshot = readLocalProjectState(project);
+  assert.equal(snapshot.mounts[0].children.some((child) => child.name === "EsferaTransformacaoBroly"), false);
+
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: []
+      }
+    ]
+  });
+
+  assert.equal(fs.existsSync(modelRoot), true);
+  assert.equal(fs.readFileSync(path.join(modelRoot, "Legacy.server.luau"), "utf8"), "return 'keep me'");
 });
 
 test("studio snapshot preserves explicit Folder init metadata markers", () => {

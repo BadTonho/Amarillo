@@ -322,6 +322,45 @@ function readMetaFile(metaPath) {
   return parseJsonFile(metaPath);
 }
 
+function isOpaqueModelNode(node) {
+  return node?.className === "Model";
+}
+
+function isModelAssetFileName(fileName) {
+  return /\.model\.json$/i.test(fileName) || /\.(rbxm|rbxmx)$/i.test(fileName);
+}
+
+function isInitModelAssetFileName(fileName) {
+  return /^init(\.model\.json|\.rbxm|\.rbxmx)$/i.test(fileName);
+}
+
+function isOpaqueModelDirectory(dirPath) {
+  const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
+  if (fs.existsSync(metaPath)) {
+    try {
+      const meta = parseJsonFile(metaPath);
+      if (meta?.className === "Model") {
+        return true;
+      }
+    } catch (_error) {
+      return false;
+    }
+  }
+  return listDirectoryEntries(dirPath)
+    .some((entry) => entry.isFile() && isInitModelAssetFileName(entry.name));
+}
+
+function isOpaqueModelEntry(fullPath, entryName = path.basename(fullPath)) {
+  if (isModelAssetFileName(entryName)) {
+    return true;
+  }
+  try {
+    return fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory() && isOpaqueModelDirectory(fullPath);
+  } catch (_error) {
+    return false;
+  }
+}
+
 function applyIdentityMeta(node, meta, fsName) {
   if (!node || !isPlainObject(meta)) {
     return node;
@@ -465,6 +504,9 @@ function collectInvalidProjectTreeFilesInDir(rootDir, dirPath, options: any = {}
   for (const entry of listDirectoryEntries(dirPath)) {
     const fullPath = path.join(dirPath, entry.name);
     const relativePath = path.relative(rootDir, fullPath).replace(/\\/g, "/");
+    if (isOpaqueModelEntry(fullPath, entry.name)) {
+      continue;
+    }
     if (matchesAnyGlob(relativePath, options.ignoreGlobs || [])) {
       continue;
     }
@@ -874,6 +916,10 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
   applyIdentityMeta(baseNode, meta, dirName);
+  if (isOpaqueModelNode(baseNode)) {
+    baseNode.children = [];
+    return baseNode;
+  }
 
   const ignoreGlobs = options.ignoreGlobs || [];
   const children = [];
@@ -897,6 +943,9 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
     }
 
     const fullPath = path.join(dirPath, entry.name);
+    if (isOpaqueModelEntry(fullPath, entry.name)) {
+      continue;
+    }
     if (entry.isDirectory()) {
       children.push(buildNodeFromDirectory(fullPath, options));
       continue;
@@ -936,6 +985,9 @@ function readLocalProjectState(project, extraOptions: any = {}) {
         })
         .flatMap((entry) => {
           const fullPath = path.join(mount.absolutePath, entry.name);
+          if (isOpaqueModelEntry(fullPath, entry.name)) {
+            return [];
+          }
           if (entry.isDirectory()) {
             return [buildNodeFromDirectory(fullPath, mountOptions)];
           }
@@ -1042,6 +1094,10 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
   applyIdentityMeta(baseNode, meta, dirName);
+  if (isOpaqueModelNode(baseNode)) {
+    baseNode.children = [];
+    return baseNode;
+  }
 
   const childPromises = [];
   const ignoreGlobs = options.ignoreGlobs || [];
@@ -1058,6 +1114,9 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
     }
 
     const fullPath = path.join(dirPath, entry.name);
+    if (isOpaqueModelEntry(fullPath, entry.name)) {
+      continue;
+    }
     if (entry.isDirectory()) {
       childPromises.push(buildNodeFromDirectoryAsync(fullPath, options));
     } else if (entry.isFile()) {
@@ -1095,6 +1154,9 @@ async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
 
     const childPromises = entries.map(async (entry) => {
       const fullPath = path.join(mount.absolutePath, entry.name);
+      if (isOpaqueModelEntry(fullPath, entry.name)) {
+        return null;
+      }
       if (entry.isDirectory()) {
         return buildNodeFromDirectoryAsync(fullPath, mountOptions);
       }
@@ -1312,12 +1374,13 @@ function filterModelScriptOnlyNode(node, context: any = {}) {
   if (!node) {
     return null;
   }
+  if (isOpaqueModelNode(node)) {
+    return null;
+  }
   const insideModel = context.insideModel === true;
-  const isModel = node.className === "Model";
-  const nextInsideModel = insideModel || isModel;
   const filteredChildren = [];
   for (const child of node.children || []) {
-    const filtered = filterModelScriptOnlyNode(child, { insideModel: nextInsideModel });
+    const filtered = filterModelScriptOnlyNode(child, { insideModel });
     if (filtered) {
       filteredChildren.push(filtered);
     }
@@ -1334,9 +1397,6 @@ function filterModelScriptOnlyNode(node, context: any = {}) {
   };
   if (insideModel && !scriptNode) {
     next.properties = {};
-    next.keepUnknowns = true;
-  }
-  if (isModel) {
     next.keepUnknowns = true;
   }
   return next;
@@ -1364,6 +1424,9 @@ function matchesSyncbackGlob(fullPath, entryName, options: any = {}) {
 }
 
 function shouldIgnoreSyncbackNode(node, options: any = {}, parentDir = null) {
+  if (isOpaqueModelNode(node)) {
+    return true;
+  }
   const syncback = syncbackConfig(options);
   if ((syncback.ignoreNames || []).includes(node.name) || (syncback.ignoreClasses || []).includes(node.className)) {
     return true;
@@ -1386,6 +1449,9 @@ function syncbackEntryBaseName(entryName) {
 }
 
 function shouldPreserveSyncbackEntry(fullPath, entryName, options: any = {}) {
+  if (isOpaqueModelEntry(fullPath, entryName)) {
+    return true;
+  }
   const syncback = syncbackConfig(options);
   const baseName = syncbackEntryBaseName(entryName);
   if ((syncback.ignoreNames || []).includes(baseName)) {
@@ -1712,6 +1778,9 @@ async function removePathAsync(targetPath, options: any = {}) {
 }
 
 async function shouldPreserveSyncbackEntryAsync(fullPath, entryName, options: any = {}) {
+  if (isOpaqueModelEntry(fullPath, entryName)) {
+    return true;
+  }
   const syncback = syncbackConfig(options);
   const baseName = syncbackEntryBaseName(entryName);
   if ((syncback.ignoreNames || []).includes(baseName)) {
