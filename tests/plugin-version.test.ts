@@ -51,6 +51,12 @@ test("generated Roblox plugin is synchronized with plugin-src modules", () => {
   assert.equal(pluginSource, generatePluginSource());
 });
 
+test("Roblox plugin classifies Script snapshots by RunContext", () => {
+  assert.match(pluginSource, /local function scriptFileKind\(instance\)[\s\S]+instance\.RunContext[\s\S]+runContext == Enum\.RunContext\.Client[\s\S]+return "client"[\s\S]+return "server"/);
+  assert.match(pluginSource, /node\.fileKind = scriptFileKind\(instance\)/);
+  assert.doesNotMatch(pluginSource, /if instance:IsA\("Script"\) then\s+node\.fileKind = "server"/);
+});
+
 test("Roblox plugin declares Amarillo version and protocol constants", () => {
   assert.match(pluginSource, /local PLUGIN_VERSION = "\d+\.\d+\.\d+"/);
   assert.match(pluginSource, /local AMARILLO_PROTOCOL_VERSION = \d+/);
