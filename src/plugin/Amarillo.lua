@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.21"
+local PLUGIN_VERSION = "1.1.22"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -1306,6 +1306,23 @@ local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredCh
 	return hasDesiredChildNamed(desiredChildIndex, instance.Name)
 end
 
+local function scriptFileKind(instance)
+	if instance:IsA("Script") then
+		local okRunContext, runContext = pcall(function()
+			return instance.RunContext
+		end)
+		if okRunContext and runContext == Enum.RunContext.Client then
+			return "client"
+		end
+		return "server"
+	elseif instance:IsA("LocalScript") then
+		return "client"
+	elseif instance:IsA("ModuleScript") then
+		return "module"
+	end
+	return nil
+end
+
 local function destroyUnexpectedChild(instance, contextLabel)
 	if isProtectedSyncInstance(instance) then
 		return false
@@ -1348,13 +1365,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 		node.amarilloId = amarilloId
 	end
 
-	if instance:IsA("Script") then
-		node.fileKind = "server"
-	elseif instance:IsA("LocalScript") then
-		node.fileKind = "client"
-	elseif instance:IsA("ModuleScript") then
-		node.fileKind = "module"
-	end
+	node.fileKind = scriptFileKind(instance)
 
 	if node.fileKind then
 		node.source = readScriptSource(instance, openDocumentSources) or ""
