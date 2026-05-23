@@ -1307,7 +1307,11 @@ local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredCh
 end
 
 local function scriptFileKind(instance)
-	if instance:IsA("Script") then
+	if instance:IsA("LocalScript") then
+		return "client"
+	elseif instance:IsA("ModuleScript") then
+		return "module"
+	elseif instance:IsA("Script") then
 		local okRunContext, runContext = pcall(function()
 			return instance.RunContext
 		end)
@@ -1315,10 +1319,6 @@ local function scriptFileKind(instance)
 			return "client"
 		end
 		return "server"
-	elseif instance:IsA("LocalScript") then
-		return "client"
-	elseif instance:IsA("ModuleScript") then
-		return "module"
 	end
 	return nil
 end
