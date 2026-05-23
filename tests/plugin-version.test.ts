@@ -52,6 +52,14 @@ test("generated Roblox plugin is synchronized with plugin-src modules", () => {
 });
 
 test("Roblox plugin classifies Script snapshots by RunContext", () => {
+  const helperStart = pluginSource.indexOf("local function scriptFileKind(instance)");
+  const localScriptCheck = pluginSource.indexOf("instance:IsA(\"LocalScript\")", helperStart);
+  const moduleScriptCheck = pluginSource.indexOf("instance:IsA(\"ModuleScript\")", helperStart);
+  const scriptCheck = pluginSource.indexOf("instance:IsA(\"Script\")", helperStart);
+
+  assert.ok(helperStart >= 0, "expected scriptFileKind helper");
+  assert.ok(localScriptCheck > helperStart && localScriptCheck < scriptCheck, "LocalScript must be checked before Script");
+  assert.ok(moduleScriptCheck > helperStart && moduleScriptCheck < scriptCheck, "ModuleScript must be checked before Script");
   assert.match(pluginSource, /local function scriptFileKind\(instance\)[\s\S]+instance\.RunContext[\s\S]+runContext == Enum\.RunContext\.Client[\s\S]+return "client"[\s\S]+return "server"/);
   assert.match(pluginSource, /node\.fileKind = scriptFileKind\(instance\)/);
   assert.doesNotMatch(pluginSource, /if instance:IsA\("Script"\) then\s+node\.fileKind = "server"/);
