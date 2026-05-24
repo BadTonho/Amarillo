@@ -22,6 +22,7 @@ import {
 import { STUDIO_SYNC_MAX_JSON_BODY_BYTES, jsonResponse, readJsonBody } from "../http-utils";
 
 const { readLocalProjectStateAsync } = require("../project");
+const { filterSnapshotBySyncTargets, normalizeSyncTargets } = require("../sync-targets");
 
 interface ConnectionProject {
   id?: string;
@@ -50,7 +51,8 @@ interface ConnectionApp {
   requiresPlaceSetup?(placeId: number, projectId?: string | null): boolean;
   rememberPendingPlaceSetup?(placeId: number, placeName?: string | null): unknown;
   calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource): string[];
-  readLocalProjectStateAsyncWithPerf?(project: ConnectionProject): Promise<StudioSnapshot>;
+  projectForSync?(project: ConnectionProject, syncTargets: Record<string, unknown>): ConnectionProject;
+  readLocalProjectStateAsyncWithPerf?(project: ConnectionProject, options?: Record<string, unknown>): Promise<StudioSnapshot>;
 }
 
 async function handleConnectionRoutes(
@@ -79,6 +81,7 @@ async function handleConnectionRoutes(
     const body = normalizeConnectionAcceptBody(await readJsonBody<ConnectionAcceptBody>(request));
     const result = app.acceptConnection({
       ...body,
+      syncTargets: normalizeSyncTargets(body.syncTargets),
       requirePluginVersion: true
     });
     if (!result.ok) {
@@ -122,10 +125,11 @@ async function handleConnectionRoutes(
       jsonResponse(response, 404, { ok: false, error: "Project not found" });
       return true;
     }
+    const syncTargets = normalizeSyncTargets(body.syncTargets);
     const pcSnapshot = app.readLocalProjectStateAsyncWithPerf
-      ? await app.readLocalProjectStateAsyncWithPerf(project)
-      : await readLocalProjectStateAsync(project) as StudioSnapshot;
-    const studioSnapshot = body.studioSnapshot;
+      ? await app.readLocalProjectStateAsyncWithPerf(project, { syncTargets })
+      : await readLocalProjectStateAsync(app.projectForSync ? app.projectForSync(project, syncTargets) : project) as StudioSnapshot;
+    const studioSnapshot = filterSnapshotBySyncTargets(body.studioSnapshot, syncTargets);
     const changes = app.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
     jsonResponse(response, 200, {
       ok: true,

@@ -8,6 +8,12 @@ export interface StudioSnapshot {
   [key: string]: unknown;
 }
 
+export interface SyncTargetsPayload {
+  Workspace?: unknown;
+  workspace?: unknown;
+  [key: string]: unknown;
+}
+
 export interface ConnectionRequestBody {
   requestedBy?: unknown;
 }
@@ -27,6 +33,7 @@ export interface ConnectionAcceptBody {
   pluginVersion?: unknown;
   pluginProtocolVersion?: unknown;
   privilegedActionConfirmationEnabled?: unknown;
+  syncTargets?: unknown;
 }
 
 export interface ConnectionDiffBody {
@@ -35,6 +42,7 @@ export interface ConnectionDiffBody {
   projectId?: unknown;
   studioSnapshot?: unknown;
   truthSource?: unknown;
+  syncTargets?: unknown;
 }
 
 export interface NormalizedConnectionRequest {
@@ -56,6 +64,7 @@ export interface NormalizedConnectionAccept {
   pluginVersion: string | null;
   pluginProtocolVersion: string | number | null;
   privilegedActionConfirmationEnabled: boolean | null;
+  syncTargets: SyncTargetsPayload;
 }
 
 export interface NormalizedConnectionDiff {
@@ -64,6 +73,7 @@ export interface NormalizedConnectionDiff {
   projectId: string | null;
   studioSnapshot: StudioSnapshot;
   truthSource: TruthSource;
+  syncTargets: SyncTargetsPayload;
 }
 
 export interface ConnectionOfferSummary {
@@ -134,6 +144,12 @@ function optionalBoolean(value: unknown): boolean | null {
   return null;
 }
 
+function optionalObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
 export function normalizeTruthSource(value: unknown): TruthSource {
   return value === "studio" ? "studio" : "pc";
 }
@@ -173,7 +189,8 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
     truthSource: normalizeTruthSource(body.truthSource),
     pluginVersion: optionalString(body.pluginVersion),
     pluginProtocolVersion: optionalVersion(body.pluginProtocolVersion),
-    privilegedActionConfirmationEnabled: optionalBoolean(body.privilegedActionConfirmationEnabled)
+    privilegedActionConfirmationEnabled: optionalBoolean(body.privilegedActionConfirmationEnabled),
+    syncTargets: optionalObject(body.syncTargets)
   };
 }
 
@@ -183,6 +200,7 @@ export function normalizeConnectionDiffBody(body: ConnectionDiffBody): Normalize
     placeName: optionalString(body.placeName),
     projectId: optionalString(body.projectId),
     studioSnapshot: normalizeStudioSnapshot(body.studioSnapshot),
-    truthSource: normalizeTruthSource(body.truthSource)
+    truthSource: normalizeTruthSource(body.truthSource),
+    syncTargets: optionalObject(body.syncTargets)
   };
 }

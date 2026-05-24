@@ -58,6 +58,14 @@ const { SessionRegistry } = require("./services/session-registry");
 const { StudioSnapshotWriter } = require("./services/studio-snapshot-writer");
 const { SyncCoordinator } = require("./services/sync-coordinator");
 const { WorkspaceWatcher } = require("./services/workspace-watcher");
+const {
+  DEFAULT_SYNC_TARGETS,
+  filterProjectBySyncTargets,
+  filterSnapshotBySyncTargets,
+  isMountSyncEnabled,
+  isWorkspaceMount,
+  normalizeSyncTargets
+} = require("./sync-targets");
 const { handleConnectionRoutes } = require("./routes/connection");
 const { handleDiagnosticsRoutes } = require("./routes/diagnostics");
 const { handleMcpRoutes } = require("./routes/mcp");
@@ -428,6 +436,7 @@ class PluginRobloxApp {
   strictPort: boolean;
   autoSyncToStudioExplicit: boolean;
   autoSyncToStudio: boolean;
+  syncTargets: Record<string, boolean>;
   privilegedActionConfirmation: boolean;
   bridgeToken: string | null;
   extensionVersion: string | null;
@@ -471,6 +480,7 @@ class PluginRobloxApp {
     this.strictPort = options.strictPort === true;
     this.autoSyncToStudioExplicit = options.autoSyncToStudio !== undefined;
     this.autoSyncToStudio = coerceBoolean(options.autoSyncToStudio, DEFAULT_AUTO_SYNC_TO_STUDIO);
+    this.syncTargets = normalizeSyncTargets(options.syncTargets);
     this.privilegedActionConfirmation = coerceBoolean(options.privilegedActionConfirmation, DEFAULT_PRIVILEGED_ACTION_CONFIRMATION);
     this.bridgeToken = normalizeToken(options.bridgeToken || process.env.AMARILLO_BRIDGE_TOKEN || null);
     this.extensionVersion = normalizeVersion(options.extensionVersion);
@@ -771,31 +781,52 @@ class PluginRobloxApp {
     }
   }
 
-  readLocalProjectStateWithPerf(project, options = {}) {
+  syncTargetsForSession(session = null) {
+    return normalizeSyncTargets(session?.syncTargets || this.syncTargets);
+  }
+
+  projectForSync(project, syncTargets = this.syncTargets) {
+    return filterProjectBySyncTargets(project, normalizeSyncTargets(syncTargets));
+  }
+
+  snapshotForSync(snapshot, syncTargets = this.syncTargets) {
+    return filterSnapshotBySyncTargets(snapshot, normalizeSyncTargets(syncTargets));
+  }
+
+  isInstancePathSyncEnabled(session, instanceSegments) {
+    return isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session));
+  }
+
+  readLocalProjectStateWithPerf(project, options: any = {}) {
     const startedAt = performance.now();
     try {
-      this.ensureProjectMountDirectories(project);
-      return readLocalProjectState(project, options);
+      const syncTargets = normalizeSyncTargets(options.syncTargets || this.syncTargets);
+      const syncProject = this.projectForSync(project, syncTargets);
+      this.ensureProjectMountDirectories(syncProject, syncTargets);
+      return readLocalProjectState(syncProject, options);
     } finally {
       this.recordPerformance("project.read.duration", performance.now() - startedAt);
     }
   }
 
-  async readLocalProjectStateAsyncWithPerf(project, options = {}) {
+  async readLocalProjectStateAsyncWithPerf(project, options: any = {}) {
     const startedAt = performance.now();
     try {
-      this.ensureProjectMountDirectories(project);
-      return await readLocalProjectStateAsync(project, options);
+      const syncTargets = normalizeSyncTargets(options.syncTargets || this.syncTargets);
+      const syncProject = this.projectForSync(project, syncTargets);
+      this.ensureProjectMountDirectories(syncProject, syncTargets);
+      return await readLocalProjectStateAsync(syncProject, options);
     } finally {
       this.recordPerformance("project.read.duration", performance.now() - startedAt);
     }
   }
 
-  ensureProjectMountDirectories(project = null) {
+  ensureProjectMountDirectories(project = null, syncTargets = this.syncTargets) {
     const projects = project ? [project] : this.allProjects;
+    const targets = normalizeSyncTargets(syncTargets);
     for (const candidate of projects || []) {
       for (const mount of candidate?.mounts || []) {
-        if (mount?.absolutePath) {
+        if (mount?.absolutePath && isMountSyncEnabled(mount, targets)) {
           fs.mkdirSync(mount.absolutePath, { recursive: true });
         }
       }
@@ -914,6 +945,9 @@ class PluginRobloxApp {
         session.privilegedActionConfirmationEnabled ?? null
       );
       this.queuePrivilegedActionConfirmationPreference(session, "plugin_report");
+    }
+    if (Object.prototype.hasOwnProperty.call(metadata, "syncTargets")) {
+      session.syncTargets = normalizeSyncTargets((metadata as Record<string, unknown>).syncTargets);
     }
   }
 
@@ -1580,6 +1614,7 @@ class PluginRobloxApp {
     session.requirePluginVersion = options.requirePluginVersion === true;
     session.pluginVersion = normalizeVersion(options.pluginVersion);
     session.pluginProtocolVersion = normalizeProtocolVersion(options.pluginProtocolVersion);
+    session.syncTargets = normalizeSyncTargets(options.syncTargets);
     session.privilegedActionConfirmationEnabled = coerceBoolean(
       options.privilegedActionConfirmationEnabled,
       null
@@ -1737,6 +1772,7 @@ class PluginRobloxApp {
 
   projectReadOptions(session) {
     return {
+      syncTargets: this.syncTargetsForSession(session),
       repairOrphanScriptMetas: true,
       onFileChange: (change) => {
         this.recordActivity(change, {
@@ -1804,6 +1840,14 @@ class PluginRobloxApp {
   }
 
   scheduleScriptFilePatch(session, project, filePath, instanceSegments) {
+    if (!isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session))) {
+      logSync("enqueue_apply_file_patch_skipped", {
+        sessionId: session.id,
+        reason: "sync_target_disabled",
+        path: instanceSegments.join(".")
+      });
+      return;
+    }
     const patchKey = instanceSegments.join(".");
     session.filePatchBatch.set(patchKey, {
       project,
@@ -1869,6 +1913,9 @@ class PluginRobloxApp {
   }
 
   snapshotHasScriptInstance(session, instanceSegments) {
+    if (!isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session))) {
+      return false;
+    }
     const snapshot = session.lastStudioSnapshot;
     if (!snapshot) {
       return null;
@@ -1990,6 +2037,14 @@ class PluginRobloxApp {
       
       const mount = project.mounts.find((m) => isPathInside(normalizedChangedPath, m.absolutePath));
       if (!mount) {
+        continue;
+      }
+      if (!isMountSyncEnabled(mount, this.syncTargetsForSession(session))) {
+        logSync("disk_file_change_sync_target_disabled", {
+          sessionId: session.id,
+          path: normalizedChangedPath,
+          mountId: mount.id
+        });
         continue;
       }
 
@@ -2378,6 +2433,9 @@ class PluginRobloxApp {
           existing.requirePluginVersion = true;
         }
         this.updateSessionPluginVersion(existing, options);
+        if (Object.prototype.hasOwnProperty.call(options, "syncTargets")) {
+          existing.syncTargets = normalizeSyncTargets(options.syncTargets);
+        }
         this.queuePrivilegedActionConfirmationPreference(existing, "session_open");
       }
       return {
@@ -2411,6 +2469,7 @@ class PluginRobloxApp {
       requirePluginVersion: options.requirePluginVersion === true,
       pluginVersion: normalizeVersion(options.pluginVersion),
       pluginProtocolVersion: normalizeProtocolVersion(options.pluginProtocolVersion),
+      syncTargets: normalizeSyncTargets(options.syncTargets),
       privilegedActionConfirmationEnabled: coerceBoolean(
         options.privilegedActionConfirmationEnabled,
         null
@@ -2489,6 +2548,7 @@ class PluginRobloxApp {
     pluginVersion = null,
     pluginProtocolVersion = null,
     privilegedActionConfirmationEnabled = null,
+    syncTargets = null,
     requirePluginVersion = false
   }) {
     if (offerId) {
@@ -2530,6 +2590,7 @@ class PluginRobloxApp {
         pluginVersion,
         pluginProtocolVersion,
         privilegedActionConfirmationEnabled,
+        syncTargets,
         requirePluginVersion
       });
     } catch (error) {
@@ -2714,7 +2775,7 @@ class PluginRobloxApp {
   }
 
   blockInvalidProjectTree(session, project) {
-    const issues = validateProjectTreeFiles(project);
+    const issues = validateProjectTreeFiles(this.projectForSync(project, this.syncTargetsForSession(session)));
     if (issues.length === 0) {
       return null;
     }
@@ -2847,9 +2908,10 @@ class PluginRobloxApp {
   }
 
   cacheStudioSnapshot(session, snapshot, reason = "command_verified", snapshotInfo = null) {
-    const effectiveSnapshotInfo = snapshotInfo || this.normalizeAndHashSnapshotWithPerf(snapshot);
+    const filteredSnapshot = this.snapshotForSync(snapshot, this.syncTargetsForSession(session));
+    const effectiveSnapshotInfo = snapshotInfo || this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     const snapshotHash = effectiveSnapshotInfo.hash;
-    session.lastStudioSnapshot = snapshot && typeof snapshot === "object" ? snapshot : { mounts: [] };
+    session.lastStudioSnapshot = filteredSnapshot && typeof filteredSnapshot === "object" ? filteredSnapshot : { mounts: [] };
     session.lastStudioHash = snapshotHash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_cached", {
@@ -2907,6 +2969,24 @@ class PluginRobloxApp {
       error.statusCode = 409;
       error.code = "VERSION-BLOCKED";
       throw error;
+    }
+    const syncTargets = this.syncTargetsForSession(session);
+    if (type === "apply_project_tree" && payload?.project) {
+      payload = {
+        ...payload,
+        project: this.snapshotForSync(payload.project, syncTargets),
+        syncTargets
+      };
+    }
+    if (type === "apply_file_patch" && Array.isArray(payload?.path) && !isMountSyncEnabled(payload.path, syncTargets)) {
+      logSync("enqueue_command_skipped", {
+        sessionId,
+        type,
+        reason: "sync_target_disabled",
+        path: payload.path.join("."),
+        syncTargets
+      });
+      return Promise.resolve({ ok: true, skipped: true, reason: "sync_target_disabled" });
     }
     if (type === "apply_project_tree") {
       const project = this.getProjectById(session.projectId);
@@ -3030,7 +3110,8 @@ class PluginRobloxApp {
         requiresPluginUpdate: this.sessionVersionStatus(session).requiresPluginUpdate,
         currentPluginVersion: CURRENT_PLUGIN_VERSION,
         pluginUpdateAvailable: this.sessionVersionStatus(session).pluginUpdateAvailable === true,
-        syncBlockedReason: this.syncBlockedReason(session)
+        syncBlockedReason: this.syncBlockedReason(session),
+        syncTargets: this.syncTargetsForSession(session)
       }
     };
   }
@@ -3049,11 +3130,12 @@ class PluginRobloxApp {
       }
       if (command.type === "apply_project_tree" && command.payload?.project) {
         if (payload?.snapshot) {
+          const observedSnapshot = this.snapshotForSync(payload.snapshot, this.syncTargetsForSession(session));
           const correctedSnapshotReported = payload?.corrected === true;
           const snapshotReason = correctedSnapshotReported
             ? "apply_project_tree_corrected"
             : "apply_project_tree_verified";
-          const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(payload.snapshot);
+          const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(observedSnapshot);
           const previousHash = session.lastStudioHash;
           const observedHash = snapshotInfo.hash;
           const hashChanged = observedHash !== previousHash;
@@ -3065,7 +3147,7 @@ class PluginRobloxApp {
             hashChanged,
             previousHash
           });
-          this.cacheStudioSnapshot(session, payload.snapshot, snapshotReason, snapshotInfo);
+          this.cacheStudioSnapshot(session, observedSnapshot, snapshotReason, snapshotInfo);
           this.ensureSessionSyncState(session).lastObservedHash = observedHash;
           const scheduleVerifiedWrite = () => {
             if (!hashChanged) {
@@ -3082,7 +3164,7 @@ class PluginRobloxApp {
           let mismatchSummary = null;
           let correctedSnapshotAccepted = false;
           if (!hashesMatch && correctedSnapshotReported) {
-            mismatchSummary = diffSnapshots(command.payload.project, payload.snapshot, {
+            mismatchSummary = diffSnapshots(command.payload.project, observedSnapshot, {
               allowCorrectedStudioClasses: true,
               maxChanges: 10
             });
@@ -3094,7 +3176,7 @@ class PluginRobloxApp {
           } else if (this.resolveStaleProjectTreeMismatch(session, command, commandId, observedHash)) {
             // The workspace moved on while Studio was applying this command.
           } else {
-            mismatchSummary = mismatchSummary || diffSnapshots(command.payload.project, payload.snapshot, { maxChanges: 10 });
+            mismatchSummary = mismatchSummary || diffSnapshots(command.payload.project, observedSnapshot, { maxChanges: 10 });
             this.markSyncDegraded(session, "Studio snapshot hash did not match the applied project tree.", {
               code: "SYNC-HASH-MISMATCH",
               commandId,
@@ -3117,9 +3199,10 @@ class PluginRobloxApp {
       }
       if (command.type === "apply_file_patch") {
         if (payload?.snapshot) {
-          const observedHash = this.cacheStudioSnapshot(session, payload.snapshot, "apply_file_patch_verified");
+          const observedSnapshot = this.snapshotForSync(payload.snapshot, this.syncTargetsForSession(session));
+          const observedHash = this.cacheStudioSnapshot(session, observedSnapshot, "apply_file_patch_verified");
           const instanceSegments = normalizeStudioInstancePathSegments(command.payload?.path);
-          const node = findSnapshotNode(payload.snapshot, instanceSegments);
+          const node = findSnapshotNode(observedSnapshot, instanceSegments);
           if (isScriptSnapshotNode(node) && scriptSourcesMatchForPatchVerification(command.payload?.source, node?.source)) {
             this.markSyncVerified(session, observedHash);
           } else if (this.scheduleFilePatchVerificationFallback(session, command, commandId, observedHash, instanceSegments)) {
@@ -3158,8 +3241,9 @@ class PluginRobloxApp {
     if (!projectSnapshot) {
       return;
     }
-    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(projectSnapshot);
-    session.lastStudioSnapshot = projectSnapshot;
+    const filteredSnapshot = this.snapshotForSync(projectSnapshot, this.syncTargetsForSession(session));
+    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
+    session.lastStudioSnapshot = filteredSnapshot;
     session.lastStudioHash = snapshotInfo.hash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_project_apply", {
@@ -3424,7 +3508,9 @@ class PluginRobloxApp {
       error.code = "VERSION-BLOCKED";
       throw error;
     }
-    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(snapshot);
+    const syncTargets = this.syncTargetsForSession(session);
+    const filteredSnapshot = this.snapshotForSync(snapshot, syncTargets);
+    const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     const nextHash = snapshotInfo.hash;
     const prevHash = session.lastStudioHash;
     const hashChanged = nextHash !== prevHash;
@@ -3436,7 +3522,7 @@ class PluginRobloxApp {
       hashChanged,
       previousHash: prevHash
     });
-    this.cacheStudioSnapshot(session, snapshot, reason, snapshotInfo);
+    this.cacheStudioSnapshot(session, filteredSnapshot, reason, snapshotInfo);
     this.ensureSessionSyncState(session).lastObservedHash = nextHash;
 
     if (!hashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
@@ -3664,6 +3750,7 @@ class PluginRobloxApp {
       privilegedActionReasonCode: privileged.reasonCode,
       privilegedActionMessage: privileged.allowed ? null : privileged.message,
       privilegedActionConfirmationEnabled: session.privilegedActionConfirmationEnabled ?? null,
+      syncTargets: this.syncTargetsForSession(session),
       destructiveConfirmationPending: session.destructiveConfirmationPending === true,
       destructiveConfirmationType: session.destructiveConfirmationType || null,
       destructiveConfirmationSinceAt: session.destructiveConfirmationSinceAt || null,
@@ -3772,6 +3859,7 @@ class PluginRobloxApp {
       sessions,
       sync: {
         autoSyncToStudio: this.autoSyncToStudio,
+        syncTargets: this.syncTargets,
         lastDiskWriteTime: this.lastDiskWriteTime,
         degradedSessionIds: sessions.filter((session) => session.requiresManualResync).map((session) => session.id),
         blockedSessionIds: sessions.filter((session) => session.syncBlockedReason).map((session) => session.id)

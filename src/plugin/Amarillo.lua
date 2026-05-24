@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.23"
+local PLUGIN_VERSION = "1.1.24"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -73,6 +73,9 @@ local state = {
 	pendingDestructiveCommand = nil,
 	pendingDestructiveSinceAt = nil,
 	confirmPrivilegedActions = true,
+	syncTargets = {
+		Workspace = false
+	},
 	syncState = "ready",
 	syncMessage = nil,
 	versionState = "unknown",
@@ -133,6 +136,8 @@ local acceptDestructiveAction
 local declineDestructiveAction
 local setPrivilegedActionConfirmation
 local updatePrivilegedActionConfirmationUi
+local setWorkspaceSyncEnabled
+local updateSyncTargetsUi
 -- <<< src/plugin-src/00_bootstrap.lua
 
 -- >>> src/plugin-src/10_settings_status.lua
@@ -169,14 +174,19 @@ local function addVersionPayload(body)
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
 	body.privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+	body.syncTargets = {
+		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
+	}
 	addDestructiveConfirmationPayload(body)
 	return body
 end
 
 local function pluginVersionQuery()
+	local workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
 		.. "&privilegedActionConfirmationEnabled=" .. tostring(state.confirmPrivilegedActions == true)
+		.. "&syncTargets.Workspace=" .. tostring(workspaceSyncEnabled)
 	if state.pendingDestructiveCommand then
 		query = query
 			.. "&destructiveConfirmationPending=true"
@@ -186,6 +196,57 @@ local function pluginVersionQuery()
 		query = query .. "&destructiveConfirmationPending=false"
 	end
 	return query
+end
+
+local function syncTargetsPayload()
+	return {
+		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
+	}
+end
+
+local function mountSegmentsFrom(value)
+	if type(value) ~= "table" then
+		return {}
+	end
+	if type(value.segments) == "table" then
+		return value.segments
+	end
+	if type(value.path) == "string" then
+		return string.split(value.path, ".")
+	end
+	if type(value.id) == "string" then
+		return string.split(value.id, ".")
+	end
+	return value
+end
+
+local function isMountSyncEnabled(value)
+	local segments = mountSegmentsFrom(value)
+	if segments[1] == "Workspace" then
+		return state.syncTargets and state.syncTargets.Workspace == true or false
+	end
+	return true
+end
+
+local function filterSnapshotForSync(snapshot)
+	if type(snapshot) ~= "table" then
+		return {
+			mounts = {}
+		}
+	end
+	local filtered = {}
+	for key, value in pairs(snapshot) do
+		if key ~= "mounts" then
+			filtered[key] = value
+		end
+	end
+	filtered.mounts = {}
+	for _, mount in ipairs(snapshot.mounts or {}) do
+		if isMountSyncEnabled(mount) then
+			table.insert(filtered.mounts, mount)
+		end
+	end
+	return filtered
 end
 
 local function setTextIfPresent(element, text)
@@ -379,6 +440,8 @@ local function saveSettings()
 		port = state.port,
 		projectId = state.selectedProjectId,
 		portCustomized = state.portCustomized,
+		syncTargets = syncTargetsPayload(),
+		workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false,
 		confirmPrivilegedActions = state.confirmPrivilegedActions,
 		confirmDestructiveActions = state.confirmPrivilegedActions,
 		confirmPropertyChanges = state.confirmPrivilegedActions
@@ -401,6 +464,13 @@ local function loadSettings()
 			end
 		end
 		state.selectedProjectId = saved.projectId
+		if type(saved.syncTargets) == "table" and saved.syncTargets.Workspace ~= nil then
+			state.syncTargets.Workspace = saved.syncTargets.Workspace == true
+		elseif saved.workspaceSyncEnabled ~= nil then
+			state.syncTargets.Workspace = saved.workspaceSyncEnabled == true
+		else
+			state.syncTargets.Workspace = false
+		end
 		if saved.confirmPrivilegedActions ~= nil then
 			state.confirmPrivilegedActions = saved.confirmPrivilegedActions
 		elseif saved.confirmDestructiveActions ~= nil then
@@ -1593,6 +1663,9 @@ local function snapshotCurrentProject(options)
 		cachedMounts[mount.id] = mount
 	end
 	for _, mount in ipairs(state.project.mounts or {}) do
+		if not isMountSyncEnabled(mount) then
+			continue
+		end
 		local mountSegments = string.split(mount.path, ".")
 		local container = resolveMountContainer(mountSegments)
 		if container then
@@ -1918,6 +1991,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
 	end
+	projectSnapshot = filterSnapshotForSync(projectSnapshot)
 
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
@@ -2232,6 +2306,14 @@ local function handleCommand(command)
 	end
 
 	if command.type == "apply_file_patch" then
+		if command.payload and not isMountSyncEnabled(command.payload.path) then
+			postCommandResult(command.id, true, {
+				result = "Patch skipped because this sync target is disabled.",
+				snapshot = snapshotCurrentProject(),
+				skipped = true
+			})
+			return
+		end
 		state.isApplyingRemote = true
 		state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
 		local appliedSnapshot = nil
@@ -3366,7 +3448,8 @@ local function acceptPendingConnection(truthSource)
 		truthSource = truthSource,
 		pluginVersion = PLUGIN_VERSION,
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
-		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
+		syncTargets = syncTargetsPayload()
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -3510,7 +3593,8 @@ local function fetchAndShowDiff(truthSource)
 		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
-		studioSnapshot = studioSnapshot
+		studioSnapshot = studioSnapshot,
+		syncTargets = syncTargetsPayload()
 	})
 
 	if ok and response and response.changes then
@@ -3749,6 +3833,38 @@ local function togglePrivilegedActionConfirmation()
 	setPrivilegedActionConfirmation(not state.confirmPrivilegedActions, "Studio")
 end
 
+updateSyncTargetsUi = function()
+	local enabled = state.syncTargets and state.syncTargets.Workspace == true or false
+	local label = enabled and "Enabled" or "Disabled"
+	for _, button in ipairs({ state.ui.workspaceSyncToggle }) do
+		if button then
+			button.Text = label
+			setButtonStyle(button, enabled and "primary" or "secondary")
+		end
+	end
+end
+
+setWorkspaceSyncEnabled = function(enabled, source)
+	state.syncTargets = state.syncTargets or {}
+	state.syncTargets.Workspace = enabled == true
+	state.lastSnapshotBodyJson = nil
+	state.treeCache = nil
+	updateSyncTargetsUi()
+	saveSettings()
+	if state.connected and startWatcher then
+		local okWatcher, watcherErr = pcall(startWatcher)
+		if not okWatcher then
+			appendLog("Failed to restart watcher after Workspace sync change: " .. tostring(watcherErr))
+			reportPluginError(tostring(watcherErr), "WATCHER-START")
+		end
+	end
+	appendLog("Workspace sync " .. (state.syncTargets.Workspace and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
+end
+
+local function toggleWorkspaceSync()
+	setWorkspaceSyncEnabled(not (state.syncTargets and state.syncTargets.Workspace == true), "Studio")
+end
+
 local function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
@@ -3838,6 +3954,7 @@ local function openSettingsView()
 	end
 	updateEndpointSummary()
 	updateProjectTargetSummary()
+	updateSyncTargetsUi()
 	showView("settings")
 end
 
@@ -4033,15 +4150,22 @@ projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(functi
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
+-- Sync target toggles
+local workspaceSyncTitle = makeTextLabel(state.ui.settingsPage, "Workspace sync", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+workspaceSyncTitle.Font = Enum.Font.GothamSemibold
+local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, Workspace is ignored in both sync directions.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 568), 12)
+workspaceSyncHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 568), toggleWorkspaceSync)
+
 -- Confirm privileged actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 620), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before run_code, modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 642), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), togglePrivilegedActionConfirmation)
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 642), togglePrivilegedActionConfirmation)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 648), 12)
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 12)
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 end
 
@@ -4247,6 +4371,7 @@ local function createPluginUi()
 	startWidgetAutoHide()
 	loadSettings()
 	updatePrivilegedActionConfirmationUi()
+	updateSyncTargetsUi()
 	updateEndpointSummary()
 	appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
 	pcall(fetchDaemonHealth)
@@ -4301,6 +4426,9 @@ state.watchers.sendScriptPatch = function(path, source)
 	if not state.sessionId or state.isApplyingRemote or state.awaitingInitialSync then
 		return false
 	end
+	if not isMountSyncEnabled(path) then
+		return true
+	end
 	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
 	local callOk, requestOk, response = pcall(function()
 		return request("POST", "/studio/patch-source", addVersionPayload({
@@ -4328,6 +4456,9 @@ state.watchers.sendScriptPatch = function(path, source)
 end
 
 state.watchers.scheduleScriptPatch = function(pathSegments, source)
+	if not isMountSyncEnabled(pathSegments) then
+		return
+	end
 	local key = table.concat(pathSegments, "\0")
 	local current = state.pendingScriptPatches[key]
 	local version = current and current.version + 1 or 1
@@ -4455,6 +4586,9 @@ startWatcher = function()
 	refreshOpenDocumentCache()
 
 	for _, mount in ipairs(state.project.mounts or {}) do
+		if not isMountSyncEnabled(mount) then
+			continue
+		end
 		local container = resolveMountContainer(string.split(mount.path, "."))
 		if container then
 			state.watchers.connectMountWatcher(container)

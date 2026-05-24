@@ -296,14 +296,12 @@ test("place setup creates a place project and all base and exclusive folders", a
   assert.equal(projectJson.tree.StarterPlayer.StarterPlayerScripts.ExclusivoNamekPrime.$path, "NamekPrime/exclusive/StarterPlayer/StarterPlayerScripts");
 
   for (const relativePath of [
-    "sync/Workspace",
     "sync/ReplicatedStorage",
     "sync/ServerScriptService",
     "sync/ServerStorage",
     "sync/StarterGui",
     "sync/StarterPlayer/StarterCharacterScripts",
     "sync/StarterPlayer/StarterPlayerScripts",
-    "NamekPrime/exclusive/Workspace",
     "NamekPrime/exclusive/ReplicatedStorage",
     "NamekPrime/exclusive/ServerScriptService",
     "NamekPrime/exclusive/ServerStorage",
@@ -313,6 +311,8 @@ test("place setup creates a place project and all base and exclusive folders", a
   ]) {
     assert.equal(fs.existsSync(path.join(workspace, relativePath)), true, relativePath);
   }
+  assert.equal(fs.existsSync(path.join(workspace, "sync/Workspace")), false);
+  assert.equal(fs.existsSync(path.join(workspace, "NamekPrime/exclusive/Workspace")), false);
   assert.equal(app.pendingPlaceSetup, null);
 
   const accept = await invoke(app, "POST", "/connection/accept", {
@@ -375,9 +375,9 @@ test("workspace refresh materializes missing mount folders", () => {
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
   app.refreshWorkspace();
 
-  assert.equal(fs.existsSync(path.join(workspace, "sync/Workspace")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "sync/Workspace")), false);
   assert.equal(fs.existsSync(path.join(workspace, "sync/StarterPlayer/StarterPlayerScripts")), true);
-  assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/Workspace")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/Workspace")), false);
   assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/StarterPlayer/StarterPlayerScripts")), true);
 });
 

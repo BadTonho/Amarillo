@@ -28,6 +28,7 @@ function sessionSyncDebugPayload(app, session) {
     lastStudioSeenAt: session.lastStudioSeenAt,
     lastAppliedAt: session.lastAppliedAt,
     lastStudioHash: session.lastStudioHash,
+    syncTargets: app.syncTargetsForSession ? app.syncTargetsForSession(session) : session.syncTargets,
     hasSnapshot: !!session.lastStudioSnapshot,
     pendingCommandCount: session.pendingCommands.length,
     pendingCommandTypes: session.pendingCommands.map((command) => command.type)
@@ -43,6 +44,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
       port: app.port,
       versions: app.versionPayload(),
       autoSyncToStudio: app.autoSyncToStudio,
+      syncTargets: app.syncTargets,
       privilegedActionConfirmation: app.privilegedActionConfirmation,
       projectCount: app.projects.length,
       defaultProjectId: app.defaultProjectId,
@@ -171,7 +173,8 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
           fileChangeTimerActive: !!session.fileChangeTimer
         },
         lastDiskWriteTime: app.lastDiskWriteTime,
-        autoSyncToStudio: app.autoSyncToStudio
+        autoSyncToStudio: app.autoSyncToStudio,
+        syncTargets: app.syncTargets
       });
       return true;
     }
@@ -184,6 +187,7 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
         projectCount: app.projects.length,
         sessionCount: app.sessions.size,
         autoSyncToStudio: app.autoSyncToStudio,
+        syncTargets: app.syncTargets,
         lastDiskWriteTime: app.lastDiskWriteTime,
         connectionOffer: app.connectionOfferSummary()
       },

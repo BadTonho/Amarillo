@@ -30,7 +30,7 @@ test("ensureWorkspaceProjectFile creates a default project scaffold when the wor
   assert.equal(project.tree.StarterPlayer.StarterPlayerScripts.$path, "src/StarterPlayer/StarterPlayerScripts");
   assert.equal(project.tree.StarterGui.$path, "src/StarterGui");
   assert.equal(project.tree.Workspace.$path, "src/Workspace");
-  assert.equal(fs.existsSync(path.join(workspace, "src", "Workspace")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "src", "Workspace")), false);
 });
 
 test("ensureWorkspaceProjectFile keeps existing project files untouched", async () => {
