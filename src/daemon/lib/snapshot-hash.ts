@@ -74,15 +74,32 @@ function normalizeSemanticValue(value) {
   return value;
 }
 
-function normalizeProperties(properties) {
-  return isPlainObject(properties) ? normalizeSemanticValue(properties) : {};
+function isScriptLikeClassName(className) {
+  return className === "Script" || className === "LocalScript" || className === "ModuleScript";
 }
 
-function isScriptLikeNode(node) {
-  return Boolean(normalizeFileKind(node))
-    || node?.className === "Script"
-    || node?.className === "LocalScript"
-    || node?.className === "ModuleScript";
+function normalizeScriptProperties(properties) {
+  const normalized = normalizeSemanticValue(properties);
+  let disabled = typeof normalized.Disabled === "boolean" ? normalized.Disabled : undefined;
+  if (typeof normalized.Enabled === "boolean") {
+    disabled = !normalized.Enabled;
+  }
+  delete normalized.Enabled;
+  delete normalized.Disabled;
+  if (disabled === true) {
+    normalized.Disabled = true;
+  }
+  return normalized;
+}
+
+function normalizeProperties(properties, node = null) {
+  if (!isPlainObject(properties)) {
+    return {};
+  }
+  if (node && isScriptLikeClassName(node.className)) {
+    return normalizeScriptProperties(properties);
+  }
+  return normalizeSemanticValue(properties);
 }
 
 function isOpaqueModelNode(node, fileKind = null) {
@@ -107,14 +124,15 @@ function normalizeNode(node, context: any = {}) {
   }
   const insideModel = context.insideModel === true;
   const isModel = className === "Model";
+  const scriptLike = Boolean(fileKind) || isScriptLikeClassName(className);
   const children = normalizeChildren(value.children, { insideModel: insideModel || isModel });
-  if (insideModel && !fileKind && !isScriptLikeNode(value) && children.length === 0) {
+  if (insideModel && !scriptLike && children.length === 0) {
     return null;
   }
   const normalized = {
     name: typeof value.name === "string" ? value.name : "",
     className,
-    properties: insideModel && !fileKind && !isScriptLikeNode(value) ? {} : normalizeProperties(value.properties),
+    properties: insideModel && !scriptLike ? {} : normalizeProperties(value.properties, { className, fileKind }),
     children
   } as any;
 

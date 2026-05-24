@@ -266,6 +266,29 @@ test("semantic snapshot hash ignores representation-only fields", () => {
   assert.notEqual(hashSnapshot(studioSnapshot), hashSnapshot(localSnapshot));
 });
 
+test("semantic snapshot hash treats script Enabled as Disabled inverse", () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const project = app.getProjectById("Game.project.json");
+  const localSnapshot = readLocalProjectState(project);
+  const studioEnabledSnapshot = cloneJson(localSnapshot);
+
+  studioEnabledSnapshot.mounts[0].children[0].properties = { Enabled: true };
+
+  assert.equal(hashSnapshot(studioEnabledSnapshot), hashSnapshot(localSnapshot));
+  assert.equal(diffSnapshots(localSnapshot, studioEnabledSnapshot).changeCount, 0);
+
+  const localDisabledSnapshot = cloneJson(localSnapshot);
+  const studioDisabledSnapshot = cloneJson(localSnapshot);
+  localDisabledSnapshot.mounts[0].children[0].properties = { Disabled: true };
+  studioDisabledSnapshot.mounts[0].children[0].properties = { Enabled: false };
+
+  assert.equal(hashSnapshot(studioDisabledSnapshot), hashSnapshot(localDisabledSnapshot));
+  assert.equal(diffSnapshots(localDisabledSnapshot, studioDisabledSnapshot).changeCount, 0);
+  assert.notEqual(hashSnapshot(studioDisabledSnapshot), hashSnapshot(localSnapshot));
+});
+
 test("semantic snapshot hash ignores opaque Models and accepts duplicate folders", () => {
   const expectedSnapshot = {
     projectId: "Game.project.json",
