@@ -18,6 +18,13 @@ function requestHasSessionToken(request) {
   return typeof token === "string" && token.trim().length > 0;
 }
 
+function syncTargetsFromPollParams(searchParams) {
+  const workspaceValue = searchParams.get("syncTargets.Workspace")
+    ?? searchParams.get("syncTargetsWorkspace")
+    ?? searchParams.get("workspaceSyncEnabled");
+  return workspaceValue === null ? {} : { Workspace: workspaceValue };
+}
+
 function recordStudioPollDuration(app, startedAt) {
   if (typeof app.recordPerformance === "function") {
     app.recordPerformance("studio.poll.duration", performance.now() - startedAt);
@@ -79,7 +86,8 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
     app.updateSessionPluginVersion(session, {
       pluginVersion: requestUrl.searchParams.get("pluginVersion"),
       pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion"),
-      privilegedActionConfirmationEnabled: requestUrl.searchParams.get("privilegedActionConfirmationEnabled")
+      privilegedActionConfirmationEnabled: requestUrl.searchParams.get("privilegedActionConfirmationEnabled"),
+      syncTargets: syncTargetsFromPollParams(requestUrl.searchParams)
     });
     app.updateDestructiveConfirmationState(session, {
       destructiveConfirmationPending: requestUrl.searchParams.get("destructiveConfirmationPending"),
@@ -216,6 +224,15 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
     const project = app.getProjectById(session.projectId);
     if (!project) {
       jsonResponse(response, 404, { ok: false, error: "Project not found." });
+      return true;
+    }
+
+    if (app.isInstancePathSyncEnabled && !app.isInstancePathSyncEnabled(session, body.path)) {
+      jsonResponse(response, 200, {
+        ok: true,
+        skipped: true,
+        reason: "sync_target_disabled"
+      });
       return true;
     }
 

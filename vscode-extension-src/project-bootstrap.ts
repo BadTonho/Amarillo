@@ -7,8 +7,7 @@ const DEFAULT_PROJECT_DIRECTORIES = [
   path.join("src", "ReplicatedStorage"),
   path.join("src", "ServerScriptService"),
   path.join("src", "StarterPlayer", "StarterPlayerScripts"),
-  path.join("src", "StarterGui"),
-  path.join("src", "Workspace")
+  path.join("src", "StarterGui")
 ];
 
 function workspaceProjectName(workspaceRoot) {

@@ -97,7 +97,8 @@ local function acceptPendingConnection(truthSource)
 		truthSource = truthSource,
 		pluginVersion = PLUGIN_VERSION,
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
-		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
+		syncTargets = syncTargetsPayload()
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -241,7 +242,8 @@ local function fetchAndShowDiff(truthSource)
 		placeName = currentPlaceName(),
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
-		studioSnapshot = studioSnapshot
+		studioSnapshot = studioSnapshot,
+		syncTargets = syncTargetsPayload()
 	})
 
 	if ok and response and response.changes then
@@ -480,6 +482,38 @@ local function togglePrivilegedActionConfirmation()
 	setPrivilegedActionConfirmation(not state.confirmPrivilegedActions, "Studio")
 end
 
+updateSyncTargetsUi = function()
+	local enabled = state.syncTargets and state.syncTargets.Workspace == true or false
+	local label = enabled and "Enabled" or "Disabled"
+	for _, button in ipairs({ state.ui.workspaceSyncToggle }) do
+		if button then
+			button.Text = label
+			setButtonStyle(button, enabled and "primary" or "secondary")
+		end
+	end
+end
+
+setWorkspaceSyncEnabled = function(enabled, source)
+	state.syncTargets = state.syncTargets or {}
+	state.syncTargets.Workspace = enabled == true
+	state.lastSnapshotBodyJson = nil
+	state.treeCache = nil
+	updateSyncTargetsUi()
+	saveSettings()
+	if state.connected and startWatcher then
+		local okWatcher, watcherErr = pcall(startWatcher)
+		if not okWatcher then
+			appendLog("Failed to restart watcher after Workspace sync change: " .. tostring(watcherErr))
+			reportPluginError(tostring(watcherErr), "WATCHER-START")
+		end
+	end
+	appendLog("Workspace sync " .. (state.syncTargets.Workspace and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
+end
+
+local function toggleWorkspaceSync()
+	setWorkspaceSyncEnabled(not (state.syncTargets and state.syncTargets.Workspace == true), "Studio")
+end
+
 local function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
@@ -569,6 +603,7 @@ local function openSettingsView()
 	end
 	updateEndpointSummary()
 	updateProjectTargetSummary()
+	updateSyncTargetsUi()
 	showView("settings")
 end
 
@@ -764,15 +799,22 @@ projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(functi
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
+-- Sync target toggles
+local workspaceSyncTitle = makeTextLabel(state.ui.settingsPage, "Workspace sync", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+workspaceSyncTitle.Font = Enum.Font.GothamSemibold
+local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, Workspace is ignored in both sync directions.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 568), 12)
+workspaceSyncHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 568), toggleWorkspaceSync)
+
 -- Confirm privileged actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 620), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "When enabled, the plugin asks for confirmation before run_code, modify_property, create_instance, delete_instance, or insert_model via MCP/API.", UDim2.new(1, -20, 0, 32), UDim2.fromOffset(10, 568), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 642), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.fromOffset(10, 606), togglePrivilegedActionConfirmation)
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 642), togglePrivilegedActionConfirmation)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 648), 12)
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 12)
 settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
 end
 
@@ -978,6 +1020,7 @@ local function createPluginUi()
 	startWidgetAutoHide()
 	loadSettings()
 	updatePrivilegedActionConfirmationUi()
+	updateSyncTargetsUi()
 	updateEndpointSummary()
 	appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
 	pcall(fetchDaemonHealth)

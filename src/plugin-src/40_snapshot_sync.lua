@@ -574,6 +574,9 @@ local function snapshotCurrentProject(options)
 		cachedMounts[mount.id] = mount
 	end
 	for _, mount in ipairs(state.project.mounts or {}) do
+		if not isMountSyncEnabled(mount) then
+			continue
+		end
 		local mountSegments = string.split(mount.path, ".")
 		local container = resolveMountContainer(mountSegments)
 		if container then
@@ -899,6 +902,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
 	end
+	projectSnapshot = filterSnapshotForSync(projectSnapshot)
 
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS

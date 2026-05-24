@@ -13,6 +13,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       pluginVersion: body.pluginVersion || null,
       pluginProtocolVersion: body.pluginProtocolVersion || null,
       privilegedActionConfirmationEnabled: body.privilegedActionConfirmationEnabled ?? null,
+      syncTargets: body.syncTargets || null,
       requirePluginVersion: body.requirePluginVersion === true
     });
     jsonResponse(response, 200, {
@@ -130,7 +131,10 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
 
   if (request.method === "GET" && action === "tree") {
     const snapshot = session.lastStudioSnapshot || await app.requestStudioTree(sessionId);
-    jsonResponse(response, 200, { ok: true, snapshot });
+    jsonResponse(response, 200, {
+      ok: true,
+      snapshot: app.snapshotForSync ? app.snapshotForSync(snapshot, app.syncTargetsForSession ? app.syncTargetsForSession(session) : session.syncTargets) : snapshot
+    });
     return true;
   }
 

@@ -34,6 +34,9 @@ state.watchers.sendScriptPatch = function(path, source)
 	if not state.sessionId or state.isApplyingRemote or state.awaitingInitialSync then
 		return false
 	end
+	if not isMountSyncEnabled(path) then
+		return true
+	end
 	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
 	local callOk, requestOk, response = pcall(function()
 		return request("POST", "/studio/patch-source", addVersionPayload({
@@ -61,6 +64,9 @@ state.watchers.sendScriptPatch = function(path, source)
 end
 
 state.watchers.scheduleScriptPatch = function(pathSegments, source)
+	if not isMountSyncEnabled(pathSegments) then
+		return
+	end
 	local key = table.concat(pathSegments, "\0")
 	local current = state.pendingScriptPatches[key]
 	local version = current and current.version + 1 or 1
@@ -188,6 +194,9 @@ startWatcher = function()
 	refreshOpenDocumentCache()
 
 	for _, mount in ipairs(state.project.mounts or {}) do
+		if not isMountSyncEnabled(mount) then
+			continue
+		end
 		local container = resolveMountContainer(string.split(mount.path, "."))
 		if container then
 			state.watchers.connectMountWatcher(container)

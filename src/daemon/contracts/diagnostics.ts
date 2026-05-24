@@ -75,6 +75,7 @@ export interface DoctorSessionSummary {
   privilegedActionReasonCode?: string | null;
   privilegedActionMessage?: string | null;
   privilegedActionConfirmationEnabled?: boolean | null;
+  syncTargets?: Record<string, unknown>;
   destructiveConfirmationPending?: boolean;
   destructiveConfirmationType?: string | null;
   destructiveConfirmationSinceAt?: string | null;
@@ -89,6 +90,7 @@ export interface HealthPayload {
   port: number;
   versions: Record<string, unknown>;
   autoSyncToStudio: boolean;
+  syncTargets?: Record<string, unknown>;
   privilegedActionConfirmation: boolean;
   projectCount: number;
   defaultProjectId: string | null;

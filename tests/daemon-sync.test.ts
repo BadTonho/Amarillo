@@ -34,6 +34,25 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function createWorkspaceWithWorkspaceMount() {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "return 'server'", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      Workspace: {
+        $path: "sync/Workspace"
+      },
+      ServerScriptService: {
+        $path: "sync/ServerScriptService"
+      }
+    }
+  }, null, 2));
+  return workspace;
+}
+
 test("unauthorized initial Studio snapshot is recorded as a diagnostic error", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({
@@ -88,6 +107,140 @@ test("session open no longer auto-enqueues apply_project_tree on session_opened"
 
   assert.equal(session.pendingCommands.length, 0);
   assert.equal(session.connectionState, "ready");
+});
+
+test("Workspace sync target is disabled by default for Studio snapshot writes", async () => {
+  const workspace = createWorkspaceWithWorkspaceMount();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+
+  assert.equal(fs.existsSync(path.join(workspace, "sync", "Workspace")), false);
+
+  app.updateStudioSnapshot(session.id, {
+    mounts: [
+      {
+        id: "Workspace",
+        segments: ["Workspace"],
+        children: [
+          {
+            name: "World",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'studio workspace'",
+            properties: {},
+            children: []
+          }
+        ]
+      },
+      {
+        id: "ServerScriptService",
+        segments: ["ServerScriptService"],
+        children: [
+          {
+            name: "Hello",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'studio server'",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "manual");
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(fs.existsSync(path.join(workspace, "sync", "Workspace")), false);
+  assert.equal(fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "utf8"), "return 'studio server'");
+  assert.equal(session.lastStudioSnapshot.mounts.some((mount) => mount.id === "Workspace"), false);
+});
+
+test("Workspace sync target is disabled by default for PC to Studio applies and diff", async () => {
+  const workspace = createWorkspaceWithWorkspaceMount();
+  fs.mkdirSync(path.join(workspace, "sync", "Workspace"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "sync", "Workspace", "World.server.luau"), "return 'workspace'", "utf8");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+
+  const accept = await invoke(app, "POST", "/connection/accept", {
+    studioInstanceId: "studio-workspace-off",
+    placeId: 0,
+    truthSource: "pc",
+    pluginVersion: MIN_PLUGIN_VERSION,
+    pluginProtocolVersion: AMARILLO_PROTOCOL_VERSION
+  });
+  assert.equal(accept.statusCode, 200);
+  const session = app.sessions.get(accept.payload.session.id);
+  assert.equal(session.pendingCommands.length, 1);
+  assert.equal(session.pendingCommands[0].payload.project.mounts.some((mount) => mount.id === "Workspace"), false);
+
+  const diff = await invoke(app, "POST", "/connection/diff", {
+    placeId: 0,
+    projectId: "Game.project.json",
+    truthSource: "studio",
+    studioSnapshot: {
+      mounts: [
+        {
+          id: "Workspace",
+          segments: ["Workspace"],
+          children: [
+            {
+              name: "StudioOnly",
+              className: "Script",
+              fileKind: "server",
+              ext: ".server.luau",
+              source: "return 'studio'",
+              properties: {},
+              children: []
+            }
+          ]
+        },
+        readLocalProjectState(app.projectForSync(app.getProjectById("Game.project.json"), { Workspace: false })).mounts[0]
+      ]
+    }
+  });
+  assert.equal(diff.statusCode, 200);
+  assert.deepEqual(diff.payload.changes, ["No changes detected. Everything is up to date."]);
+});
+
+test("Workspace sync target can be enabled for both sync directions", async () => {
+  const workspace = createWorkspaceWithWorkspaceMount();
+  fs.mkdirSync(path.join(workspace, "sync", "Workspace"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "sync", "Workspace", "World.server.luau"), "return 'workspace'", "utf8");
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null, { syncTargets: { Workspace: true } });
+  const project = app.getProjectById(session.projectId);
+
+  const localSnapshot = app.readLocalProjectStateWithPerf(project, app.projectReadOptions(session));
+  assert.equal(localSnapshot.mounts.some((mount) => mount.id === "Workspace"), true);
+
+  app.updateStudioSnapshot(session.id, {
+    mounts: [
+      {
+        id: "Workspace",
+        segments: ["Workspace"],
+        children: [
+          {
+            name: "World",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'studio workspace'",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  }, "manual");
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(fs.readFileSync(path.join(workspace, "sync", "Workspace", "World.server.luau"), "utf8"), "return 'studio workspace'");
+  assert.equal(session.lastStudioSnapshot.mounts.some((mount) => mount.id === "Workspace"), true);
 });
 
 test("semantic snapshot hash ignores representation-only fields", () => {

@@ -76,6 +76,7 @@ export interface AppOptions {
   port?: number | string;
   strictPort?: boolean;
   autoSyncToStudio?: unknown;
+  syncTargets?: unknown;
   privilegedActionConfirmation?: unknown;
   bridgeToken?: string | null;
   extensionVersion?: string | null;
@@ -137,6 +138,7 @@ export interface RuntimeSession {
   createdAt: string;
   lastStudioHash: string | null;
   lastStudioSnapshot: StudioSnapshot | null;
+  syncTargets: Record<string, unknown>;
   lastStudioSeenAt: string | null;
   lastStudioContactAt: string | null;
   pendingCommands: SyncCommand[];
@@ -179,6 +181,7 @@ export interface SessionOpenOptions {
   pluginVersion?: string | number | null;
   pluginProtocolVersion?: string | number | null;
   privilegedActionConfirmationEnabled?: boolean | string | number | null;
+  syncTargets?: unknown;
 }
 
 export interface ConnectionOfferRuntime {

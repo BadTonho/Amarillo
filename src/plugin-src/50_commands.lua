@@ -243,6 +243,14 @@ local function handleCommand(command)
 	end
 
 	if command.type == "apply_file_patch" then
+		if command.payload and not isMountSyncEnabled(command.payload.path) then
+			postCommandResult(command.id, true, {
+				result = "Patch skipped because this sync target is disabled.",
+				snapshot = snapshotCurrentProject(),
+				skipped = true
+			})
+			return
+		end
 		state.isApplyingRemote = true
 		state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
 		local appliedSnapshot = nil

@@ -31,14 +31,19 @@ local function addVersionPayload(body)
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
 	body.privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+	body.syncTargets = {
+		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
+	}
 	addDestructiveConfirmationPayload(body)
 	return body
 end
 
 local function pluginVersionQuery()
+	local workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
 		.. "&privilegedActionConfirmationEnabled=" .. tostring(state.confirmPrivilegedActions == true)
+		.. "&syncTargets.Workspace=" .. tostring(workspaceSyncEnabled)
 	if state.pendingDestructiveCommand then
 		query = query
 			.. "&destructiveConfirmationPending=true"
@@ -48,6 +53,57 @@ local function pluginVersionQuery()
 		query = query .. "&destructiveConfirmationPending=false"
 	end
 	return query
+end
+
+local function syncTargetsPayload()
+	return {
+		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
+	}
+end
+
+local function mountSegmentsFrom(value)
+	if type(value) ~= "table" then
+		return {}
+	end
+	if type(value.segments) == "table" then
+		return value.segments
+	end
+	if type(value.path) == "string" then
+		return string.split(value.path, ".")
+	end
+	if type(value.id) == "string" then
+		return string.split(value.id, ".")
+	end
+	return value
+end
+
+local function isMountSyncEnabled(value)
+	local segments = mountSegmentsFrom(value)
+	if segments[1] == "Workspace" then
+		return state.syncTargets and state.syncTargets.Workspace == true or false
+	end
+	return true
+end
+
+local function filterSnapshotForSync(snapshot)
+	if type(snapshot) ~= "table" then
+		return {
+			mounts = {}
+		}
+	end
+	local filtered = {}
+	for key, value in pairs(snapshot) do
+		if key ~= "mounts" then
+			filtered[key] = value
+		end
+	end
+	filtered.mounts = {}
+	for _, mount in ipairs(snapshot.mounts or {}) do
+		if isMountSyncEnabled(mount) then
+			table.insert(filtered.mounts, mount)
+		end
+	end
+	return filtered
 end
 
 local function setTextIfPresent(element, text)
@@ -241,6 +297,8 @@ local function saveSettings()
 		port = state.port,
 		projectId = state.selectedProjectId,
 		portCustomized = state.portCustomized,
+		syncTargets = syncTargetsPayload(),
+		workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false,
 		confirmPrivilegedActions = state.confirmPrivilegedActions,
 		confirmDestructiveActions = state.confirmPrivilegedActions,
 		confirmPropertyChanges = state.confirmPrivilegedActions
@@ -263,6 +321,13 @@ local function loadSettings()
 			end
 		end
 		state.selectedProjectId = saved.projectId
+		if type(saved.syncTargets) == "table" and saved.syncTargets.Workspace ~= nil then
+			state.syncTargets.Workspace = saved.syncTargets.Workspace == true
+		elseif saved.workspaceSyncEnabled ~= nil then
+			state.syncTargets.Workspace = saved.workspaceSyncEnabled == true
+		else
+			state.syncTargets.Workspace = false
+		end
 		if saved.confirmPrivilegedActions ~= nil then
 			state.confirmPrivilegedActions = saved.confirmPrivilegedActions
 		elseif saved.confirmDestructiveActions ~= nil then
