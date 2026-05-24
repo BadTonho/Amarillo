@@ -78,6 +78,14 @@ local function serializeValue(value)
 	if valueType == "BrickColor" then
 		return tostring(value.Name)
 	end
+	if valueType == "Font" then
+		return {
+			__type = "Font",
+			family = value.Family,
+			weight = value.Weight.Name,
+			style = value.Style.Name
+		}
+	end
 	if valueType == "boolean" or valueType == "number" or valueType == "string" then
 		return value
 	end
@@ -142,6 +150,12 @@ local function convertIncomingValue(currentValue, raw)
 			table.insert(points, ColorSequenceKeypoint.new(point.time or 0, Color3.new(color[1] or 1, color[2] or 1, color[3] or 1)))
 		end
 		return ColorSequence.new(points)
+	end
+	if type(raw) == "table" and raw.__type == "Font" then
+		local family = raw.family or "rbxasset://fonts/families/LegacySansSerif.json"
+		local weight = Enum.FontWeight[raw.weight or "Regular"] or Enum.FontWeight.Regular
+		local style = Enum.FontStyle[raw.style or "Normal"] or Enum.FontStyle.Normal
+		return Font.new(family, weight, style)
 	end
 
 	local currentType = typeof(currentValue)
@@ -348,12 +362,122 @@ local function propertyNamesForInstance(instance)
 		propertyNames.BackgroundTransparency = true
 		propertyNames.Visible = true
 		propertyNames.ZIndex = true
+		propertyNames.BackgroundColor3 = true
+		propertyNames.BorderColor3 = true
+		propertyNames.BorderSizePixel = true
+		propertyNames.ClipsDescendants = true
+		propertyNames.LayoutOrder = true
+		propertyNames.Rotation = true
+		propertyNames.SizeConstraint = true
+		propertyNames.AutomaticSize = true
+		propertyNames.Active = true
+		propertyNames.Selectable = true
+		propertyNames.SelectionOrder = true
+	end
+	if instance:IsA("ImageLabel") or instance:IsA("ImageButton") then
+		propertyNames.Image = true
+		propertyNames.ImageColor3 = true
+		propertyNames.ImageTransparency = true
+		propertyNames.ImageRectOffset = true
+		propertyNames.ImageRectSize = true
+		propertyNames.ScaleType = true
+		propertyNames.SliceCenter = true
+		propertyNames.SliceScale = true
+		propertyNames.TileSize = true
+		propertyNames.ResampleMode = true
+	end
+	if instance:IsA("ImageButton") then
+		propertyNames.HoverImage = true
+		propertyNames.PressedImage = true
+		propertyNames.AutoButtonColor = true
+		propertyNames.Modal = true
+		propertyNames.Selected = true
+		propertyNames.Style = true
+	end
+	if instance:IsA("ScrollingFrame") then
+		propertyNames.CanvasSize = true
+		propertyNames.AutomaticCanvasSize = true
+		propertyNames.ScrollBarThickness = true
+		propertyNames.ScrollingDirection = true
+		propertyNames.ScrollingEnabled = true
+		propertyNames.ScrollBarImageColor3 = true
+		propertyNames.ScrollBarImageTransparency = true
+		propertyNames.VerticalScrollBarInset = true
+		propertyNames.HorizontalScrollBarInset = true
+		propertyNames.ElasticBehavior = true
+		propertyNames.TopImage = true
+		propertyNames.MidImage = true
+		propertyNames.BottomImage = true
 	end
 	if instance:IsA("TextLabel") or instance:IsA("TextButton") or instance:IsA("TextBox") then
 		propertyNames.Text = true
 		propertyNames.TextSize = true
 		propertyNames.TextTransparency = true
 		propertyNames.TextColor3 = true
+		propertyNames.TextScaled = true
+		propertyNames.TextWrapped = true
+		propertyNames.TextXAlignment = true
+		propertyNames.TextYAlignment = true
+		propertyNames.Font = true
+		propertyNames.FontFace = true
+		propertyNames.RichText = true
+		propertyNames.LineHeight = true
+		propertyNames.MaxVisibleGraphemes = true
+		propertyNames.TextStrokeColor3 = true
+		propertyNames.TextStrokeTransparency = true
+	end
+	if instance:IsA("UIGridLayout") then
+		propertyNames.CellPadding = true
+		propertyNames.CellSize = true
+		propertyNames.FillDirection = true
+		propertyNames.FillDirectionMaxCells = true
+		propertyNames.HorizontalAlignment = true
+		propertyNames.SortOrder = true
+		propertyNames.StartCorner = true
+		propertyNames.VerticalAlignment = true
+	end
+	if instance:IsA("UIListLayout") then
+		propertyNames.FillDirection = true
+		propertyNames.HorizontalAlignment = true
+		propertyNames.VerticalAlignment = true
+		propertyNames.Padding = true
+		propertyNames.SortOrder = true
+		propertyNames.Wraps = true
+	end
+	if instance:IsA("UICorner") then
+		propertyNames.CornerRadius = true
+	end
+	if instance:IsA("UIStroke") then
+		propertyNames.Thickness = true
+		propertyNames.Color = true
+		propertyNames.Transparency = true
+		propertyNames.ApplyStrokeMode = true
+		propertyNames.LineJoinMode = true
+	end
+	if instance:IsA("UIGradient") then
+		propertyNames.Color = true
+		propertyNames.Transparency = true
+		propertyNames.Rotation = true
+		propertyNames.Offset = true
+	end
+	if instance:IsA("UIPadding") then
+		propertyNames.PaddingLeft = true
+		propertyNames.PaddingRight = true
+		propertyNames.PaddingTop = true
+		propertyNames.PaddingBottom = true
+	end
+	if instance:IsA("UIAspectRatioConstraint") then
+		propertyNames.AspectRatio = true
+		propertyNames.AspectType = true
+		propertyNames.DominantAxis = true
+	end
+	if instance:IsA("UISizeConstraint") then
+		propertyNames.MaxSize = true
+		propertyNames.MinSize = true
+	end
+	if instance:IsA("UITextSizeConstraint") then
+		propertyNames.MaxTextSize = true
+		propertyNames.MinTextSize = true
 	end
 	if instance:IsA("BasePart") then
 		propertyNames.Anchored = true
