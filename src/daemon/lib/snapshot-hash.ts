@@ -78,6 +78,248 @@ function isScriptLikeClassName(className) {
   return className === "Script" || className === "LocalScript" || className === "ModuleScript";
 }
 
+const INHERITANCE_MAP: Record<string, string[]> = {
+  // GUI Objects
+  "Frame": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "TextLabel": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "ImageLabel": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "TextButton": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "ImageButton": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "ScrollingFrame": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  "TextBox": ["GuiObject", "GuiBase2d", "GuiBase", "Instance"],
+  
+  // GUI Base / ScreenGui
+  "ScreenGui": ["LayerCollector", "GuiBase", "Instance"],
+  
+  // UI Constraints & Components
+  "UIGridLayout": ["UIGridStyleLayout", "UIConstraint", "Instance"],
+  "UIListLayout": ["UIGridStyleLayout", "UIConstraint", "Instance"],
+  "UICorner": ["UIComponent", "Instance"],
+  "UIStroke": ["UIComponent", "Instance"],
+  "UIGradient": ["UIComponent", "Instance"],
+  "UIPadding": ["UIComponent", "Instance"],
+  "UIAspectRatioConstraint": ["UIConstraint", "Instance"],
+  "UISizeConstraint": ["UIConstraint", "Instance"],
+  "UITextSizeConstraint": ["UIConstraint", "Instance"],
+  
+  // Parts
+  "Part": ["BasePart", "PVInstance", "Instance"],
+  "MeshPart": ["BasePart", "PVInstance", "Instance"]
+};
+
+function isA(className: string, targetClass: string): boolean {
+  if (className === targetClass) return true;
+  const chain = INHERITANCE_MAP[className];
+  if (!chain) return false;
+  return chain.includes(targetClass);
+}
+
+function deepClone(value: any): any {
+  if (value && typeof value === "object") {
+    if (Array.isArray(value)) {
+      return value.map(deepClone);
+    }
+    const copy: Record<string, any> = {};
+    for (const k of Object.keys(value)) {
+      copy[k] = deepClone(value[k]);
+    }
+    return copy;
+  }
+  return value;
+}
+
+function getDefaultPropertiesForClass(className: string): Record<string, any> {
+  const defaults: Record<string, any> = {};
+
+  if (isA(className, "ScreenGui")) {
+    defaults.ResetOnSpawn = true;
+    defaults.IgnoreGuiInset = false;
+    defaults.DisplayOrder = 0;
+    defaults.Enabled = true;
+    defaults.ZIndexBehavior = "Sibling";
+  }
+  
+  if (isA(className, "GuiObject")) {
+    defaults.Position = { __type: "UDim2", xScale: 0, xOffset: 0, yScale: 0, yOffset: 0 };
+    defaults.Size = { __type: "UDim2", xScale: 0, xOffset: 100, yScale: 0, yOffset: 100 };
+    defaults.AnchorPoint = { __type: "Vector2", x: 0, y: 0 };
+    defaults.BackgroundTransparency = 0;
+    defaults.Visible = true;
+    defaults.ZIndex = 1;
+    defaults.BackgroundColor3 = [1, 1, 1];
+    defaults.BorderColor3 = [0, 0, 0];
+    defaults.BorderSizePixel = 0;
+    defaults.ClipsDescendants = false;
+    defaults.LayoutOrder = 0;
+    defaults.Rotation = 0;
+    defaults.SizeConstraint = "RelativeXY";
+    defaults.AutomaticSize = "None";
+    
+    if (isA(className, "ImageButton") || isA(className, "TextButton") || isA(className, "TextBox")) {
+      defaults.Active = true;
+      defaults.Selectable = true;
+    } else {
+      defaults.Active = false;
+      defaults.Selectable = false;
+    }
+    defaults.SelectionOrder = 0;
+  }
+  
+  if (isA(className, "ImageLabel") || isA(className, "ImageButton")) {
+    defaults.Image = "";
+    defaults.ImageColor3 = [1, 1, 1];
+    defaults.ImageTransparency = 0;
+    defaults.ImageRectOffset = { __type: "Vector2", x: 0, y: 0 };
+    defaults.ImageRectSize = { __type: "Vector2", x: 0, y: 0 };
+    defaults.ScaleType = "Stretch";
+    defaults.SliceCenter = { __type: "Rect", minX: 0, minY: 0, maxX: 0, maxY: 0 };
+    defaults.SliceScale = 1;
+    defaults.TileSize = { __type: "UDim2", xScale: 1, xOffset: 0, yScale: 1, yOffset: 0 };
+    defaults.ResampleMode = "Default";
+  }
+  
+  if (isA(className, "ImageButton")) {
+    defaults.HoverImage = "";
+    defaults.PressedImage = "";
+    defaults.AutoButtonColor = true;
+    defaults.Modal = false;
+    defaults.Selected = false;
+    defaults.Style = "Custom";
+  }
+  
+  if (isA(className, "ScrollingFrame")) {
+    defaults.CanvasSize = { __type: "UDim2", xScale: 0, xOffset: 0, yScale: 2, yOffset: 0 };
+    defaults.AutomaticCanvasSize = "None";
+    defaults.ScrollBarThickness = 12;
+    defaults.ScrollingDirection = "XY";
+    defaults.ScrollingEnabled = true;
+    defaults.ScrollBarImageColor3 = [0, 0, 0];
+    defaults.ScrollBarImageTransparency = 0;
+    defaults.VerticalScrollBarInset = "None";
+    defaults.HorizontalScrollBarInset = "None";
+    defaults.ElasticBehavior = "WhenScrollable";
+    defaults.TopImage = "rbxasset://textures/ui/Scroll/scroll-top.png";
+    defaults.MidImage = "rbxasset://textures/ui/Scroll/scroll-mid.png";
+    defaults.BottomImage = "rbxasset://textures/ui/Scroll/scroll-bottom.png";
+  }
+  
+  if (isA(className, "TextLabel") || isA(className, "TextButton") || isA(className, "TextBox")) {
+    defaults.Text = isA(className, "TextLabel") ? "Label" : (isA(className, "TextButton") ? "Button" : "");
+    defaults.TextSize = 8;
+    defaults.TextTransparency = 0;
+    defaults.TextColor3 = [0, 0, 0];
+    defaults.TextScaled = false;
+    defaults.TextWrapped = false;
+    defaults.TextXAlignment = "Center";
+    defaults.TextYAlignment = "Center";
+    defaults.Font = "Legacy";
+    defaults.FontFace = { __type: "Font", family: "rbxasset://fonts/families/LegacySansSerif.json", weight: "Regular", style: "Normal" };
+    defaults.RichText = false;
+    defaults.LineHeight = 1;
+    defaults.MaxVisibleGraphemes = -1;
+    defaults.TextStrokeColor3 = [0, 0, 0];
+    defaults.TextStrokeTransparency = 1;
+  }
+  
+  if (isA(className, "UIGridLayout")) {
+    defaults.CellPadding = { __type: "UDim2", xScale: 0, xOffset: 5, yScale: 0, yOffset: 5 };
+    defaults.CellSize = { __type: "UDim2", xScale: 0, xOffset: 100, yScale: 0, yOffset: 100 };
+    defaults.FillDirection = "Horizontal";
+    defaults.FillDirectionMaxCells = 0;
+    defaults.HorizontalAlignment = "Left";
+    defaults.SortOrder = "LayoutOrder";
+    defaults.StartCorner = "TopLeft";
+    defaults.VerticalAlignment = "Top";
+  }
+  
+  if (isA(className, "UIListLayout")) {
+    defaults.FillDirection = "Vertical";
+    defaults.HorizontalAlignment = "Left";
+    defaults.VerticalAlignment = "Top";
+    defaults.Padding = { __type: "UDim", scale: 0, offset: 0 };
+    defaults.SortOrder = "LayoutOrder";
+    defaults.Wraps = false;
+  }
+  
+  if (isA(className, "UICorner")) {
+    defaults.CornerRadius = { __type: "UDim", scale: 0, offset: 8 };
+  }
+  
+  if (isA(className, "UIStroke")) {
+    defaults.Thickness = 1;
+    defaults.Color = [0, 0, 0];
+    defaults.Transparency = 0;
+    defaults.ApplyStrokeMode = "Contextual";
+    defaults.LineJoinMode = "Round";
+  }
+  
+  if (isA(className, "UIGradient")) {
+    defaults.Color = {
+      __type: "ColorSequence",
+      keypoints: [
+        { time: 0, value: [1, 1, 1] },
+        { time: 1, value: [1, 1, 1] }
+      ]
+    };
+    defaults.Transparency = {
+      __type: "NumberSequence",
+      keypoints: [
+        { time: 0, value: 0, envelope: 0 },
+        { time: 1, value: 0, envelope: 0 }
+      ]
+    };
+    defaults.Rotation = 0;
+    defaults.Offset = { __type: "Vector2", x: 0, y: 0 };
+  }
+  
+  if (isA(className, "UIPadding")) {
+    defaults.PaddingLeft = { __type: "UDim", scale: 0, offset: 0 };
+    defaults.PaddingRight = { __type: "UDim", scale: 0, offset: 0 };
+    defaults.PaddingTop = { __type: "UDim", scale: 0, offset: 0 };
+    defaults.PaddingBottom = { __type: "UDim", scale: 0, offset: 0 };
+  }
+  
+  if (isA(className, "UIAspectRatioConstraint")) {
+    defaults.AspectRatio = 1;
+    defaults.AspectType = "FitWithinMaxSize";
+    defaults.DominantAxis = "Width";
+  }
+  
+  if (isA(className, "UISizeConstraint")) {
+    defaults.MaxSize = { __type: "Vector2", x: Infinity, y: Infinity };
+    defaults.MinSize = { __type: "Vector2", x: 0, y: 0 };
+  }
+  
+  if (isA(className, "UITextSizeConstraint")) {
+    defaults.MaxTextSize = 100;
+    defaults.MinTextSize = 1;
+  }
+  
+  if (isA(className, "BasePart")) {
+    defaults.Anchored = false;
+    defaults.CanCollide = true;
+    defaults.CanQuery = true;
+    defaults.CanTouch = true;
+    defaults.CastShadow = true;
+    defaults.Color = [0.6392156, 0.6352941, 0.6470588];
+    defaults.Material = "Plastic";
+    defaults.Size = [4, 1.2, 2];
+    defaults.Transparency = 0;
+    defaults.Massless = false;
+    defaults.Shape = "Block";
+    defaults.BottomSurface = "Smooth";
+    defaults.TopSurface = "Smooth";
+  }
+  
+  if (isA(className, "MeshPart")) {
+    defaults.MeshId = "";
+    defaults.TextureID = "";
+    defaults.RenderFidelity = "File";
+  }
+
+  return defaults;
+}
+
 function normalizeScriptProperties(properties) {
   const normalized = normalizeSemanticValue(properties);
   let disabled = typeof normalized.Disabled === "boolean" ? normalized.Disabled : undefined;
@@ -93,13 +335,21 @@ function normalizeScriptProperties(properties) {
 }
 
 function normalizeProperties(properties, node = null) {
-  if (!isPlainObject(properties)) {
-    return {};
+  const props = isPlainObject(properties) ? { ...properties } : {};
+  const className = node?.className;
+  if (className) {
+    const defaults = getDefaultPropertiesForClass(className);
+    for (const key of Object.keys(defaults)) {
+      if (props[key] === undefined) {
+        props[key] = deepClone(defaults[key]);
+      }
+    }
   }
+
   if (node && isScriptLikeClassName(node.className)) {
-    return normalizeScriptProperties(properties);
+    return normalizeScriptProperties(props);
   }
-  return normalizeSemanticValue(properties);
+  return normalizeSemanticValue(props);
 }
 
 function isOpaqueModelNode(node, fileKind = null) {
@@ -312,9 +562,20 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
       addChange({ path: pathLabel, type: "source" });
     }
 
-    const expectedProperties = stringifySorted(expectedNormalized.properties || {});
-    const observedProperties = stringifySorted(observedNormalized.properties || {});
-    if (expectedProperties !== observedProperties) {
+    let propertiesMismatch = false;
+    if (classCorrectionAllowed) {
+      // If class correction is allowed, only compare properties that are explicitly defined on the expected side
+      for (const key of Object.keys(expectedNormalized.properties || {})) {
+        if (stringifySorted(expectedNormalized.properties[key]) !== stringifySorted(observedNormalized.properties[key])) {
+          propertiesMismatch = true;
+          break;
+        }
+      }
+    } else {
+      propertiesMismatch = stringifySorted(expectedNormalized.properties || {}) !== stringifySorted(observedNormalized.properties || {});
+    }
+
+    if (propertiesMismatch) {
       addChange({
         path: pathLabel,
         type: "properties",
