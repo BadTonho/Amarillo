@@ -236,16 +236,49 @@ function ensureTreeNode(root, segments, sharedPath) {
   return node;
 }
 
-function addExclusivePlaceMounts(tree, placeSlug) {
+function addExclusivePlaceMounts(tree, placeSlug, exclusiveServices = null) {
   const exclusiveNodeName = `Exclusivo${placeSlug}`;
   if (!tree.$className) {
     tree.$className = "DataModel";
   }
+  const filterSet = Array.isArray(exclusiveServices) && exclusiveServices.length > 0
+    ? new Set(exclusiveServices.map((s) => String(s)))
+    : null;
   for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
+    const topService = mount.segments[0];
+    if (filterSet && !filterSet.has(topService)) {
+      continue;
+    }
     const leaf = ensureTreeNode(tree, mount.segments, mount.sharedPath);
     leaf[exclusiveNodeName] = {
       "$path": `${placeSlug}/exclusive/${mount.exclusivePath}`
     };
+  }
+  return tree;
+}
+
+function stripBaseSyncPaths(tree: any) {
+  if (!tree || typeof tree !== "object") {
+    return tree;
+  }
+  for (const [key, val] of Object.entries(tree)) {
+    if (key.startsWith("$")) {
+      continue;
+    }
+    const value = val as any;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      if (typeof value.$path === "string" && value.$path.startsWith("sync/")) {
+        delete value.$path;
+      }
+      stripBaseSyncPaths(value);
+      const remaining = Object.keys(value).filter((k) => !k.startsWith("$") || (k === "$path" && typeof value[k] === "string"));
+      if (remaining.length === 0 && !value.$path) {
+        const childKeys = Object.keys(value);
+        if (childKeys.length === 0) {
+          delete tree[key];
+        }
+      }
+    }
   }
   return tree;
 }
@@ -2243,10 +2276,16 @@ class PluginRobloxApp {
     const sourceProject = this.sourceProjectForPlaceSetup();
     const baseTree = this.readRawProjectTree(sourceProject) || cloneJson(DEFAULT_PLACE_PROJECT_TREE);
     const projectFile = path.join(this.workspaceRoot, `${placeSlug}.project.json`);
+    const exclusiveServices = Array.isArray(options.exclusiveServices) ? options.exclusiveServices : null;
+    const includeBase = options.includeBase !== false;
+    let tree = addExclusivePlaceMounts(baseTree, placeSlug, exclusiveServices);
+    if (!includeBase) {
+      tree = stripBaseSyncPaths(tree);
+    }
     const projectJson = {
       name: placeName,
       place_ids: placeIds,
-      tree: addExclusivePlaceMounts(baseTree, placeSlug)
+      tree
     };
 
     fs.writeFileSync(projectFile, `${JSON.stringify(projectJson, null, 2)}\n`, "utf8");

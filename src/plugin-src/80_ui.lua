@@ -537,6 +537,9 @@ local function showView(viewName)
 	if state.ui.advancedPage then
 		state.ui.advancedPage.Visible = viewName == "advanced"
 	end
+	if state.ui.placeSetupPage then
+		state.ui.placeSetupPage.Visible = viewName == "place_setup"
+	end
 end
 
 local function renderProjectList()
@@ -714,6 +717,12 @@ local function buildPluginShell()
 	state.ui.advancedPage.Visible = false
 	safeSetParent(state.ui.advancedPage, root, "UI advanced page parent")
 
+	state.ui.placeSetupPage = Instance.new("Frame")
+	state.ui.placeSetupPage.BackgroundTransparency = 1
+	state.ui.placeSetupPage.Size = UDim2.fromScale(1, 1)
+	state.ui.placeSetupPage.Visible = false
+	safeSetParent(state.ui.placeSetupPage, root, "UI place setup page parent")
+
 	return root
 end
 
@@ -811,22 +820,30 @@ projectListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(functi
 end)
 local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120, 34), UDim2.fromOffset(16, 402), saveSettingsFromView)
 
+-- Place setup shortcut
+local placeSetupButton = makeButton(state.ui.settingsPage, "Setup Place", UDim2.new(1, -20, 0, 34), UDim2.fromOffset(10, 546), function()
+	showView("place_setup")
+end)
+placeSetupButton.Font = Enum.Font.GothamSemibold
+local placeSetupHint = makeTextLabel(state.ui.settingsPage, "Create a derived project for this place with exclusive folders.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 586), 12)
+placeSetupHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+
 -- Sync target toggles
-local workspaceSyncTitle = makeTextLabel(state.ui.settingsPage, "Workspace sync", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
+local workspaceSyncTitle = makeTextLabel(state.ui.settingsPage, "Workspace sync", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 616), 14)
 workspaceSyncTitle.Font = Enum.Font.GothamSemibold
-local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, Workspace is ignored in both sync directions.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 568), 12)
+local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, Workspace is ignored in both sync directions.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 638), 12)
 workspaceSyncHint.TextColor3 = Color3.fromRGB(139, 148, 158)
-state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 568), toggleWorkspaceSync)
+state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 638), toggleWorkspaceSync)
 
 -- Confirm privileged actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 620), 14)
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 642), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 712), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 642), togglePrivilegedActionConfirmation)
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 712), togglePrivilegedActionConfirmation)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 12)
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 760), 12)
 settingsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 end
 
@@ -869,6 +886,188 @@ state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection 
 state.ui.treeBox.TextEditable = false
 state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 566), true)
 state.ui.logBox.TextEditable = false
+end
+
+local function buildPlaceSetupPage()
+-- Place Setup page state
+local placeSetupServices = {
+	ServerScriptService = true,
+	ServerStorage = true,
+	ReplicatedStorage = true,
+	ReplicatedFirst = false,
+	StarterGui = true,
+	StarterPlayer = true,
+	Workspace = false
+}
+local placeSetupIncludeBase = true
+local serviceCheckboxes = {}
+
+local function updateCheckboxStyle(button, enabled, serviceName)
+	if enabled then
+		button.Text = "☑ " .. serviceName
+		setButtonStyle(button, "primary")
+	else
+		button.Text = "☐ " .. serviceName
+		setButtonStyle(button, "secondary")
+	end
+end
+
+local function updateBaseToggleStyle(button, enabled)
+	button.Text = enabled and "Enabled" or "Disabled"
+	setButtonStyle(button, enabled and "primary" or "secondary")
+end
+
+-- Header
+local setupHeader = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12))
+local setupBackButton = makeButton(setupHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 18), function()
+	showView("settings")
+end)
+setButtonStyle(setupBackButton, "secondary")
+local setupTitle = makeTextLabel(setupHeader, "Place Setup", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(110, 18), 22)
+setupTitle.Font = Enum.Font.GothamBold
+
+-- Place info card
+local placeInfoCard = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 70), UDim2.fromOffset(10, 92))
+local placeIdLabel = makeTextLabel(placeInfoCard, "Place ID: " .. tostring(game.PlaceId), UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 14), 14)
+placeIdLabel.Font = Enum.Font.Code
+local placeNameLabel = makeTextLabel(placeInfoCard, "Place: " .. currentPlaceName(), UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 38), 13)
+placeNameLabel.TextColor3 = Color3.fromRGB(139, 148, 158)
+
+-- Form card
+local formCard = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 140), UDim2.fromOffset(10, 174))
+local nameTitle = makeTextLabel(formCard, "Project name", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 14), 14)
+nameTitle.Font = Enum.Font.GothamSemibold
+state.ui.placeSetupNameBox = makeTextBox(formCard, currentPlaceName(), UDim2.new(1, -32, 0, 30), UDim2.fromOffset(16, 36), false)
+state.ui.placeSetupNameBox.TextYAlignment = Enum.TextYAlignment.Center
+state.ui.placeSetupNameBox.Text = currentPlaceName()
+local placeIdTitle = makeTextLabel(formCard, "Place ID(s)", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 76), 14)
+placeIdTitle.Font = Enum.Font.GothamSemibold
+state.ui.placeSetupIdBox = makeTextBox(formCard, tostring(game.PlaceId), UDim2.new(1, -32, 0, 30), UDim2.fromOffset(16, 98), false)
+state.ui.placeSetupIdBox.TextYAlignment = Enum.TextYAlignment.Center
+state.ui.placeSetupIdBox.Text = tostring(game.PlaceId)
+
+-- Service selection card
+local serviceCard = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 248), UDim2.fromOffset(10, 326))
+local serviceTitle = makeTextLabel(serviceCard, "Exclusive folders", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 10), 14)
+serviceTitle.Font = Enum.Font.GothamSemibold
+local serviceHint = makeTextLabel(serviceCard, "Select which services get exclusive folders for this place.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 30), 12)
+serviceHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+
+local serviceNames = { "ServerScriptService", "ServerStorage", "ReplicatedStorage", "ReplicatedFirst", "StarterGui", "StarterPlayer", "Workspace" }
+local serviceY = 54
+for i, serviceName in ipairs(serviceNames) do
+	local col = ((i - 1) % 2)
+	local row = math.floor((i - 1) / 2)
+	local xPos = 16 + col * 200
+	local yPos = serviceY + row * 30
+	local enabled = placeSetupServices[serviceName] == true
+	local label = enabled and ("☑ " .. serviceName) or ("☐ " .. serviceName)
+	local btn = makeButton(serviceCard, label, UDim2.fromOffset(190, 26), UDim2.fromOffset(xPos, yPos), function()
+		placeSetupServices[serviceName] = not placeSetupServices[serviceName]
+		updateCheckboxStyle(btn, placeSetupServices[serviceName], serviceName)
+	end)
+	btn.TextSize = 11
+	btn.Font = Enum.Font.GothamMedium
+	updateCheckboxStyle(btn, enabled, serviceName)
+	serviceCheckboxes[serviceName] = btn
+end
+
+-- Include base toggle
+local baseY = serviceY + math.ceil(#serviceNames / 2) * 30 + 8
+local baseTitle = makeTextLabel(serviceCard, "Include shared folders (sync/)", UDim2.new(1, -170, 0, 18), UDim2.fromOffset(16, baseY), 13)
+baseTitle.Font = Enum.Font.GothamSemibold
+local baseHint = makeTextLabel(serviceCard, "If disabled, only exclusive folders will sync for this place.", UDim2.new(1, -170, 0, 28), UDim2.fromOffset(16, baseY + 20), 11)
+baseHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+local baseToggle = makeButton(serviceCard, "Enabled", UDim2.fromOffset(120, 28), UDim2.new(1, -138, 0, baseY + 4), function()
+	placeSetupIncludeBase = not placeSetupIncludeBase
+	updateBaseToggleStyle(baseToggle, placeSetupIncludeBase)
+end)
+updateBaseToggleStyle(baseToggle, placeSetupIncludeBase)
+
+-- Status label for feedback
+state.ui.placeSetupStatus = makeTextLabel(state.ui.placeSetupPage, "", UDim2.new(1, -20, 0, 36), UDim2.fromOffset(10, 586), 12)
+state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(139, 148, 158)
+state.ui.placeSetupStatus.TextWrapped = true
+
+-- Create button
+local createButton = makeButton(state.ui.placeSetupPage, "Create Project", UDim2.new(1, -20, 0, 38), UDim2.fromOffset(10, 628), function()
+	local placeName = state.ui.placeSetupNameBox and state.ui.placeSetupNameBox.Text or ""
+	if placeName == "" then
+		placeName = currentPlaceName()
+	end
+	local placeIdText = state.ui.placeSetupIdBox and state.ui.placeSetupIdBox.Text or tostring(game.PlaceId)
+	local placeId = tonumber(placeIdText)
+	if not placeId or placeId <= 0 then
+		setTextIfPresent(state.ui.placeSetupStatus, "Invalid Place ID. Use a published place.")
+		if state.ui.placeSetupStatus then
+			state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(248, 81, 73)
+		end
+		return
+	end
+
+	-- Collect selected services
+	local selectedServices = {}
+	for _, svcName in ipairs(serviceNames) do
+		if placeSetupServices[svcName] == true then
+			table.insert(selectedServices, svcName)
+		end
+	end
+	if #selectedServices == 0 then
+		setTextIfPresent(state.ui.placeSetupStatus, "Select at least one service for exclusive folders.")
+		if state.ui.placeSetupStatus then
+			state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(248, 81, 73)
+		end
+		return
+	end
+
+	setTextIfPresent(state.ui.placeSetupStatus, "Creating project...")
+	if state.ui.placeSetupStatus then
+		state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(210, 153, 34)
+	end
+
+	local ok, response = request("POST", "/projects/place-setup", {
+		placeId = placeId,
+		placeName = placeName,
+		exclusiveServices = selectedServices,
+		includeBase = placeSetupIncludeBase
+	})
+
+	if ok and response and response.ok then
+		setTextIfPresent(state.ui.placeSetupStatus, "Project created: " .. (response.projectId or "?"))
+		if state.ui.placeSetupStatus then
+			state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(63, 185, 80)
+		end
+		appendLog("Place project created: " .. tostring(response.projectId))
+
+		-- Auto-select the new project
+		if response.projectId then
+			state.selectedProjectId = response.projectId
+			state.selectedProjectName = placeName
+			saveSettings()
+			updateProjectTargetSummary()
+		end
+
+		-- Refresh and go back after a short delay
+		pcall(fetchProjectsCatalog)
+		task.delay(1.5, function()
+			openHomeView()
+		end)
+	else
+		local errMsg = "Failed to create project."
+		if type(response) == "string" then
+			errMsg = response
+		elseif type(response) == "table" and response.error then
+			errMsg = response.error
+		end
+		setTextIfPresent(state.ui.placeSetupStatus, errMsg)
+		if state.ui.placeSetupStatus then
+			state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(248, 81, 73)
+		end
+		appendLog("Place project creation failed: " .. tostring(errMsg))
+	end
+end)
+createButton.Font = Enum.Font.GothamSemibold
+createButton.TextSize = 14
 end
 
 local function buildConnectionPromptOverlay(root)
@@ -1020,6 +1219,7 @@ local function createPluginUi()
 	buildHomePage()
 	buildSettingsPage()
 	buildAdvancedPage()
+	buildPlaceSetupPage()
 	buildConnectionPromptOverlay(root)
 	buildPrivilegedActionConfirmationOverlay(root)
 	buildDiffOverlay(root)
