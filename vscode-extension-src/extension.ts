@@ -2841,10 +2841,6 @@ async function configurePlaceSyncFromSidebar(options: { requirePendingSetup?: bo
       sourceStates
     );
     if (exclusiveMountIds === null) return;
-    if (exclusiveMountIds.length === 0) {
-      vscode.window.showErrorMessage("Select at least one exclusive folder for this place.");
-      return;
-    }
     const keepUnknowns = await pickKeepUnknowns(true, "Configure Place Sync: Keep Unmapped Instances");
     if (keepUnknowns === null) return;
 
@@ -2922,10 +2918,6 @@ async function applyPlaceSyncFromSidebarMessage(message) {
   const baseMountIds = normalizePlaceSyncMessageMountIds(message.baseMountIds);
   const exclusiveMountIds = normalizePlaceSyncMessageMountIds(message.exclusiveMountIds);
   const keepUnknowns = message.keepUnknowns === true;
-
-  if (exclusiveMountIds.length === 0) {
-    throw new Error("Select at least one exclusive folder for this place.");
-  }
 
   if (message.mode === "create") {
     const placeId = Number(message.placeId || 0);
