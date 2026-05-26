@@ -1188,6 +1188,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
             ? `Current place ${activeSession.placeName || activeSession.projectName || "Studio"} (${activeSession.placeId || 0}).`
             : "Create and edit place project mappings."),
         actions: [
+          createSidebarAction("Create Place Project", "amarillo.createPlaceProject", "primary"),
           createSidebarAction("Edit Place IDs", "amarillo.editPlaceIds")
         ]
       },
@@ -2665,9 +2666,14 @@ function buildSidebarPlaceSyncState({ running, workspaceMatches, pendingPlaceSet
 
   if (projectList.length === 0) {
     return {
-      enabled: false,
+      enabled: true,
+      mode: "create",
       title: "Place Sync",
-      description: projectsError || "No Amarillo projects were found in this workspace."
+      description: "Create a place project mapping to configure place sync.",
+      mountOptions: PLACE_SYNC_MOUNT_OPTIONS,
+      create: buildPlaceSyncCreateContext(null, null),
+      projects: [],
+      projectsError: projectsError || null
     };
   }
 
@@ -2799,18 +2805,20 @@ async function configurePlaceSyncFromSidebar(options: { requirePendingSetup?: bo
   const projectsPayload = await requestJson<Record<string, any>>("GET", "/projects", undefined, { timeout: 5000 });
   const projects = Array.isArray(projectsPayload.projects) ? projectsPayload.projects : [];
   const pending = health.pendingPlaceSetup as any;
-  if (pending && pending.placeId) {
+  const isCreatingNew = (pending && pending.placeId) || options.requirePendingSetup;
+
+  if (isCreatingNew) {
     const placeName = await vscode.window.showInputBox({
       title: "Configure Place Sync: Project Name",
       prompt: "Choose a name for this place project.",
-      value: pending.placeName || `Place ${pending.placeId}`
+      value: pending?.placeName || ""
     });
     if (placeName === undefined) return;
 
     const placeIdInput = await vscode.window.showInputBox({
       title: "Configure Place Sync: Place ID",
       prompt: "Roblox Place ID for this project.",
-      value: String(pending.placeId),
+      value: pending?.placeId ? String(pending.placeId) : "",
       validateInput(value) {
         const id = Number(value);
         if (!value.trim() || !Number.isInteger(id) || id <= 0) {
@@ -2855,11 +2863,6 @@ async function configurePlaceSyncFromSidebar(options: { requirePendingSetup?: bo
     log(`Configured place sync by creating ${response.projectId || response.projectPath || "unknown"} for place ${placeId}.`);
     refreshSidebar();
     vscode.window.showInformationMessage(`Configured Amarillo place sync for ${placeName}. Reconnect the Roblox Studio plugin to sync.`);
-    return;
-  }
-
-  if (options.requirePendingSetup) {
-    vscode.window.showInformationMessage("No new published place is waiting for setup.");
     return;
   }
 
