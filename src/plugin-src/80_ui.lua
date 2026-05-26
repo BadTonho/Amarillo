@@ -900,6 +900,7 @@ local placeSetupServices = {
 	Workspace = false
 }
 local placeSetupIncludeBase = true
+local placeSetupKeepUnknowns = true
 local serviceCheckboxes = {}
 
 local function updateCheckboxStyle(button, enabled, serviceName)
@@ -947,7 +948,7 @@ state.ui.placeSetupIdBox.TextYAlignment = Enum.TextYAlignment.Center
 state.ui.placeSetupIdBox.Text = tostring(game.PlaceId)
 
 -- Service selection card
-local serviceCard = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 248), UDim2.fromOffset(10, 326))
+local serviceCard = makeCard(state.ui.placeSetupPage, UDim2.new(1, -20, 0, 306), UDim2.fromOffset(10, 326))
 local serviceTitle = makeTextLabel(serviceCard, "Exclusive folders", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 10), 14)
 serviceTitle.Font = Enum.Font.GothamSemibold
 local serviceHint = makeTextLabel(serviceCard, "Select which services get exclusive folders for this place.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 30), 12)
@@ -984,13 +985,25 @@ local baseToggle = makeButton(serviceCard, "Enabled", UDim2.fromOffset(120, 28),
 end)
 updateBaseToggleStyle(baseToggle, placeSetupIncludeBase)
 
+-- Keep Unknowns toggle
+local keepUnknownsY = baseY + 56
+local keepUnknownsTitle = makeTextLabel(serviceCard, "Keep unmapped instances (keepUnknowns)", UDim2.new(1, -170, 0, 18), UDim2.fromOffset(16, keepUnknownsY), 13)
+keepUnknownsTitle.Font = Enum.Font.GothamSemibold
+local keepUnknownsHint = makeTextLabel(serviceCard, "If enabled, Studio-only instances will be kept instead of deleted.", UDim2.new(1, -170, 0, 28), UDim2.fromOffset(16, keepUnknownsY + 20), 11)
+keepUnknownsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+local keepUnknownsToggle = makeButton(serviceCard, "Enabled", UDim2.fromOffset(120, 28), UDim2.new(1, -138, 0, keepUnknownsY + 4), function()
+	placeSetupKeepUnknowns = not placeSetupKeepUnknowns
+	updateBaseToggleStyle(keepUnknownsToggle, placeSetupKeepUnknowns)
+end)
+updateBaseToggleStyle(keepUnknownsToggle, placeSetupKeepUnknowns)
+
 -- Status label for feedback
-state.ui.placeSetupStatus = makeTextLabel(state.ui.placeSetupPage, "", UDim2.new(1, -20, 0, 36), UDim2.fromOffset(10, 586), 12)
+state.ui.placeSetupStatus = makeTextLabel(state.ui.placeSetupPage, "", UDim2.new(1, -20, 0, 36), UDim2.fromOffset(10, 644), 12)
 state.ui.placeSetupStatus.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.placeSetupStatus.TextWrapped = true
 
 -- Create button
-local createButton = makeButton(state.ui.placeSetupPage, "Create Project", UDim2.new(1, -20, 0, 38), UDim2.fromOffset(10, 628), function()
+local createButton = makeButton(state.ui.placeSetupPage, "Create Project", UDim2.new(1, -20, 0, 38), UDim2.fromOffset(10, 686), function()
 	local placeName = state.ui.placeSetupNameBox and state.ui.placeSetupNameBox.Text or ""
 	if placeName == "" then
 		placeName = currentPlaceName()
@@ -1029,7 +1042,8 @@ local createButton = makeButton(state.ui.placeSetupPage, "Create Project", UDim2
 		placeId = placeId,
 		placeName = placeName,
 		exclusiveServices = selectedServices,
-		includeBase = placeSetupIncludeBase
+		includeBase = placeSetupIncludeBase,
+		keepUnknowns = placeSetupKeepUnknowns
 	})
 
 	if ok and response and response.ok then

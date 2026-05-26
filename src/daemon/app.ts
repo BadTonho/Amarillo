@@ -148,6 +148,7 @@ const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
 const DEFAULT_PRIVILEGED_ACTION_CONFIRMATION = true;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
+const PLACE_SYNC_BASE_DISABLED_PATH_KEY = "$amarilloDisabledPath";
 const DEFAULT_PLACE_PROJECT_TREE = {
   "$className": "DataModel",
   Workspace: { "$path": "sync/Workspace" },
@@ -160,15 +161,16 @@ const DEFAULT_PLACE_PROJECT_TREE = {
     StarterPlayerScripts: { "$path": "sync/StarterPlayer/StarterPlayerScripts" }
   }
 };
-const STANDARD_PLACE_EXCLUSIVE_MOUNTS = [
-  { segments: ["Workspace"], sharedPath: "sync/Workspace", exclusivePath: "Workspace" },
-  { segments: ["ReplicatedStorage"], sharedPath: "sync/ReplicatedStorage", exclusivePath: "ReplicatedStorage" },
-  { segments: ["ServerScriptService"], sharedPath: "sync/ServerScriptService", exclusivePath: "ServerScriptService" },
-  { segments: ["ServerStorage"], sharedPath: "sync/ServerStorage", exclusivePath: "ServerStorage" },
-  { segments: ["StarterGui"], sharedPath: "sync/StarterGui", exclusivePath: "StarterGui" },
-  { segments: ["StarterPlayer", "StarterCharacterScripts"], sharedPath: "sync/StarterPlayer/StarterCharacterScripts", exclusivePath: "StarterPlayer/StarterCharacterScripts" },
-  { segments: ["StarterPlayer", "StarterPlayerScripts"], sharedPath: "sync/StarterPlayer/StarterPlayerScripts", exclusivePath: "StarterPlayer/StarterPlayerScripts" }
+const PLACE_SYNC_MOUNTS = [
+  { id: "Workspace", label: "Workspace", segments: ["Workspace"], sharedPath: "sync/Workspace", exclusivePath: "Workspace" },
+  { id: "ReplicatedStorage", label: "ReplicatedStorage", segments: ["ReplicatedStorage"], sharedPath: "sync/ReplicatedStorage", exclusivePath: "ReplicatedStorage" },
+  { id: "ServerScriptService", label: "ServerScriptService", segments: ["ServerScriptService"], sharedPath: "sync/ServerScriptService", exclusivePath: "ServerScriptService" },
+  { id: "ServerStorage", label: "ServerStorage", segments: ["ServerStorage"], sharedPath: "sync/ServerStorage", exclusivePath: "ServerStorage" },
+  { id: "StarterGui", label: "StarterGui", segments: ["StarterGui"], sharedPath: "sync/StarterGui", exclusivePath: "StarterGui" },
+  { id: "StarterPlayer.StarterCharacterScripts", label: "StarterCharacterScripts", segments: ["StarterPlayer", "StarterCharacterScripts"], sharedPath: "sync/StarterPlayer/StarterCharacterScripts", exclusivePath: "StarterPlayer/StarterCharacterScripts" },
+  { id: "StarterPlayer.StarterPlayerScripts", label: "StarterPlayerScripts", segments: ["StarterPlayer", "StarterPlayerScripts"], sharedPath: "sync/StarterPlayer/StarterPlayerScripts", exclusivePath: "StarterPlayer/StarterPlayerScripts" }
 ];
+const STANDARD_PLACE_EXCLUSIVE_MOUNTS = PLACE_SYNC_MOUNTS;
 
 function cloneJson(value) {
   if (Array.isArray(value)) {
@@ -221,66 +223,267 @@ function normalizePlaceIds(value) {
   return ids;
 }
 
-function ensureTreeNode(root, segments, sharedPath) {
+function objectHasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function allPlaceSyncMountIds() {
+  return new Set(PLACE_SYNC_MOUNTS.map((mount) => mount.id));
+}
+
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  return value
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function placeSyncMountIdSetFromArray(value) {
+  const values = normalizeStringArray(value);
+  if (!values) {
+    return null;
+  }
+  const ids = new Set();
+  for (const rawValue of values) {
+    for (const mount of PLACE_SYNC_MOUNTS) {
+      const aliases = [
+        mount.id,
+        mount.label,
+        mount.segments[0],
+        mount.exclusivePath
+      ];
+      if (aliases.includes(rawValue)) {
+        ids.add(mount.id);
+      }
+    }
+  }
+  return ids;
+}
+
+function resolveExclusiveMountIds(options: Record<string, unknown> = {}) {
+  if (objectHasOwn(options, "exclusiveMountIds")) {
+    return placeSyncMountIdSetFromArray(options.exclusiveMountIds) || new Set();
+  }
+  if (objectHasOwn(options, "exclusiveServices")) {
+    return placeSyncMountIdSetFromArray(options.exclusiveServices) || new Set();
+  }
+  return allPlaceSyncMountIds();
+}
+
+function resolveBaseMountIds(options: Record<string, unknown> = {}) {
+  if (objectHasOwn(options, "baseMountIds")) {
+    return placeSyncMountIdSetFromArray(options.baseMountIds) || new Set();
+  }
+  if (options.includeBase === false) {
+    return new Set();
+  }
+  return allPlaceSyncMountIds();
+}
+
+function getTreeNode(root, segments, create = false) {
   let node = root;
   for (let index = 0; index < segments.length; index++) {
     const segment = segments[index];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      return null;
+    }
     if (!node[segment] || typeof node[segment] !== "object" || Array.isArray(node[segment])) {
+      if (!create) {
+        return null;
+      }
       node[segment] = {};
     }
     node = node[segment];
-    if (index === segments.length - 1 && typeof node.$path !== "string") {
-      node.$path = sharedPath;
-    }
   }
   return node;
 }
 
-function addExclusivePlaceMounts(tree, placeSlug, exclusiveServices = null) {
-  const exclusiveNodeName = `Exclusivo${placeSlug}`;
+function ensureTreeNode(root, segments, sharedPath = null) {
+  const node = getTreeNode(root, segments, true);
+  if (node && typeof sharedPath === "string" && typeof node.$path !== "string") {
+    node.$path = sharedPath;
+  }
+  return node;
+}
+
+function findExistingExclusiveNodeName(tree) {
+  const counts = new Map();
+  for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
+    const leaf = getTreeNode(tree, mount.segments, false);
+    if (!leaf) {
+      continue;
+    }
+    for (const [key, value] of Object.entries(leaf)) {
+      if (key.startsWith("Exclusivo") && value && typeof value === "object" && !Array.isArray(value)) {
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+  }
+  return Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0]?.[0] || null;
+}
+
+function removeGeneratedExclusiveChildren(leaf) {
+  if (!leaf || typeof leaf !== "object") {
+    return;
+  }
+  for (const key of Object.keys(leaf)) {
+    if (key.startsWith("Exclusivo")) {
+      delete leaf[key];
+    }
+  }
+}
+
+function pruneEmptyTreeNodes(node, isRoot = true) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) {
+    return false;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key.startsWith("$") || !value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+    if (pruneEmptyTreeNodes(value, false)) {
+      delete node[key];
+    }
+  }
+  if (isRoot) {
+    return false;
+  }
+  return Object.keys(node).length === 0;
+}
+
+function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown> = {}) {
+  if (!tree || typeof tree !== "object" || Array.isArray(tree)) {
+    tree = {};
+  }
+  const exclusiveMountIds = resolveExclusiveMountIds(options);
+  const baseMountIds = resolveBaseMountIds(options);
+  const requestedExclusiveNodeName = typeof options.exclusiveNodeName === "string" && options.exclusiveNodeName.trim()
+    ? options.exclusiveNodeName.trim()
+    : null;
+  const exclusiveNodeName = requestedExclusiveNodeName || findExistingExclusiveNodeName(tree) || `Exclusivo${placeSlug}`;
   if (!tree.$className) {
     tree.$className = "DataModel";
   }
-  const filterSet = Array.isArray(exclusiveServices) && exclusiveServices.length > 0
-    ? new Set(exclusiveServices.map((s) => String(s)))
-    : null;
+
   for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
-    const topService = mount.segments[0];
-    if (filterSet && !filterSet.has(topService)) {
+    const wantsBase = baseMountIds.has(mount.id);
+    const wantsExclusive = exclusiveMountIds.has(mount.id);
+    const leaf = getTreeNode(tree, mount.segments, wantsBase || wantsExclusive);
+    if (!leaf) {
       continue;
     }
-    const leaf = ensureTreeNode(tree, mount.segments, mount.sharedPath);
-    leaf[exclusiveNodeName] = {
-      "$path": `${placeSlug}/exclusive/${mount.exclusivePath}`
-    };
+
+    if (wantsBase) {
+      if (typeof leaf.$path !== "string") {
+        leaf.$path = typeof leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] === "string"
+          ? leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY]
+          : mount.sharedPath;
+      }
+      delete leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY];
+    } else if (typeof leaf.$path === "string") {
+      leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] = leaf.$path;
+      delete leaf.$path;
+    }
+
+    if (wantsExclusive) {
+      const existingExclusiveName = Object.keys(leaf).find((key) => key.startsWith("Exclusivo"));
+      const targetExclusiveName = existingExclusiveName || exclusiveNodeName;
+      for (const key of Object.keys(leaf)) {
+        if (key.startsWith("Exclusivo") && key !== targetExclusiveName) {
+          delete leaf[key];
+        }
+      }
+      if (!leaf[targetExclusiveName] || typeof leaf[targetExclusiveName] !== "object" || Array.isArray(leaf[targetExclusiveName])) {
+        leaf[targetExclusiveName] = {};
+      }
+      if (typeof leaf[targetExclusiveName].$path !== "string") {
+        leaf[targetExclusiveName].$path = `${placeSlug}/exclusive/${mount.exclusivePath}`;
+      }
+    } else {
+      removeGeneratedExclusiveChildren(leaf);
+    }
+  }
+  pruneEmptyTreeNodes(tree);
+  return tree;
+}
+
+function addExclusivePlaceMounts(tree, placeSlug, exclusiveServices = null) {
+  return configurePlaceSyncTree(tree, placeSlug, { exclusiveServices });
+}
+
+function stripBaseSyncPaths(tree: any) {
+  for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
+    const leaf = getTreeNode(tree, mount.segments, false);
+    if (leaf && typeof leaf.$path === "string") {
+      leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] = leaf.$path;
+      delete leaf.$path;
+    }
+  }
+  pruneEmptyTreeNodes(tree);
+  return tree;
+}
+
+function setKeepUnknowns(tree: any, enabled) {
+  if (!tree || typeof tree !== "object" || Array.isArray(tree)) {
+    return tree;
+  }
+  if (enabled && typeof tree.$path === "string") {
+    tree.$keepUnknowns = true;
+  } else if (!enabled && objectHasOwn(tree, "$keepUnknowns")) {
+    delete tree.$keepUnknowns;
+  }
+  for (const value of Object.values(tree)) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      setKeepUnknowns(value, enabled);
+    }
   }
   return tree;
 }
 
-function stripBaseSyncPaths(tree: any) {
-  if (!tree || typeof tree !== "object") {
-    return tree;
-  }
-  for (const [key, val] of Object.entries(tree)) {
-    if (key.startsWith("$")) {
-      continue;
-    }
-    const value = val as any;
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      if (typeof value.$path === "string" && value.$path.startsWith("sync/")) {
-        delete value.$path;
-      }
-      stripBaseSyncPaths(value);
-      const remaining = Object.keys(value).filter((k) => !k.startsWith("$") || (k === "$path" && typeof value[k] === "string"));
-      if (remaining.length === 0 && !value.$path) {
-        const childKeys = Object.keys(value);
-        if (childKeys.length === 0) {
-          delete tree[key];
-        }
-      }
-    }
-  }
-  return tree;
+function applyKeepUnknowns(tree: any) {
+  return setKeepUnknowns(tree, true);
+}
+
+function segmentsEqual(left, right) {
+  return Array.isArray(left)
+    && Array.isArray(right)
+    && left.length === right.length
+    && left.every((segment, index) => segment === right[index]);
+}
+
+function segmentsStartWith(value, prefix) {
+  return Array.isArray(value)
+    && Array.isArray(prefix)
+    && value.length >= prefix.length
+    && prefix.every((segment, index) => value[index] === segment);
+}
+
+function buildProjectPlaceSyncPayload(project) {
+  const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
+  return {
+    mounts: STANDARD_PLACE_EXCLUSIVE_MOUNTS.map((config) => {
+      const baseMount = mounts.find((mount) => segmentsEqual(mount.segments, config.segments)) || null;
+      const exclusiveMount = mounts.find((mount) => (
+        segmentsStartWith(mount.segments, config.segments)
+        && mount.segments.length === config.segments.length + 1
+        && String(mount.segments[mount.segments.length - 1] || "").startsWith("Exclusivo")
+      )) || null;
+      return {
+        id: config.id,
+        label: config.label,
+        path: config.segments.join("."),
+        sharedPath: config.sharedPath,
+        exclusivePath: config.exclusivePath,
+        baseEnabled: Boolean(baseMount),
+        baseRelativePath: baseMount?.relativePath || null,
+        exclusiveEnabled: Boolean(exclusiveMount),
+        exclusiveRelativePath: exclusiveMount?.relativePath || null,
+        keepUnknowns: baseMount?.keepUnknowns || exclusiveMount?.keepUnknowns || false
+      };
+    })
+  };
 }
 
 function createSyncState() {
@@ -2153,6 +2356,7 @@ class PluginRobloxApp {
       extendsProjectPath: project.extendsProjectPath || null,
       placeIds: project.placeIds,
       mountCount: project.mounts.length,
+      placeSync: buildProjectPlaceSyncPayload(project),
       mounts: project.mounts.map((mount) => ({
         id: mount.id,
         path: mount.segments.join("."),
@@ -2173,6 +2377,7 @@ class PluginRobloxApp {
       extendsProjectId: project.extendsProjectId || null,
       extendsProjectPath: project.extendsProjectPath || null,
       placeIds: project.placeIds,
+      placeSync: buildProjectPlaceSyncPayload(project),
       mounts: project.mounts.map((mount) => ({
         id: mount.id,
         path: mount.segments.join("."),
@@ -2231,14 +2436,19 @@ class PluginRobloxApp {
   }
 
   readRawProjectTree(project) {
+    const raw = this.readRawProject(project);
+    return raw && typeof raw === "object" && raw.tree && typeof raw.tree === "object"
+      ? cloneJson(raw.tree)
+      : null;
+  }
+
+  readRawProject(project) {
     if (!project?.projectPath || !fs.existsSync(project.projectPath)) {
       return null;
     }
     try {
       const raw = JSON.parse(fs.readFileSync(project.projectPath, "utf8"));
-      return raw && typeof raw === "object" && raw.tree && typeof raw.tree === "object"
-        ? cloneJson(raw.tree)
-        : null;
+      return raw && typeof raw === "object" ? raw : null;
     } catch (_error) {
       return null;
     }
@@ -2276,11 +2486,9 @@ class PluginRobloxApp {
     const sourceProject = this.sourceProjectForPlaceSetup();
     const baseTree = this.readRawProjectTree(sourceProject) || cloneJson(DEFAULT_PLACE_PROJECT_TREE);
     const projectFile = path.join(this.workspaceRoot, `${placeSlug}.project.json`);
-    const exclusiveServices = Array.isArray(options.exclusiveServices) ? options.exclusiveServices : null;
-    const includeBase = options.includeBase !== false;
-    let tree = addExclusivePlaceMounts(baseTree, placeSlug, exclusiveServices);
-    if (!includeBase) {
-      tree = stripBaseSyncPaths(tree);
+    let tree = configurePlaceSyncTree(baseTree, placeSlug, options);
+    if (objectHasOwn(options, "keepUnknowns")) {
+      tree = setKeepUnknowns(tree, options.keepUnknowns === true);
     }
     const projectJson = {
       name: placeName,
@@ -2302,6 +2510,48 @@ class PluginRobloxApp {
       placeId: placeIds[0],
       placeName,
       sourceProjectId: sourceProject?.id || null
+    };
+  }
+
+  updateProjectPlaceSync(projectId, options: Record<string, unknown> = {}) {
+    const project = this.getProjectById(projectId);
+    if (!project) {
+      const error = new Error(`Project '${projectId}' not found.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 404;
+      error.code = "PROJECT_NOT_FOUND";
+      throw error;
+    }
+
+    const raw = this.readRawProject(project);
+    if (!raw || typeof raw.tree !== "object") {
+      const error = new Error(`Project '${projectId}' could not be read.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 500;
+      error.code = "PROJECT_READ_FAILED";
+      throw error;
+    }
+
+    const projectName = normalizePlaceName(raw.name) || normalizePlaceName(project.name) || path.basename(project.id, ".project.json");
+    const existingExclusiveName = findExistingExclusiveNodeName(raw.tree);
+    const placeSlug = existingExclusiveName && existingExclusiveName.startsWith("Exclusivo")
+      ? existingExclusiveName.slice("Exclusivo".length)
+      : placeSlugFromName(projectName, "Place");
+    raw.tree = configurePlaceSyncTree(raw.tree, placeSlug, {
+      ...options,
+      exclusiveNodeName: existingExclusiveName || undefined
+    });
+    if (objectHasOwn(options, "keepUnknowns")) {
+      raw.tree = setKeepUnknowns(raw.tree, options.keepUnknowns === true);
+    }
+
+    fs.writeFileSync(project.projectPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    this.refreshWorkspace();
+    const refreshedProject = this.getProjectById(projectId);
+    this.ensureProjectMountDirectories(refreshedProject);
+    return {
+      ok: true,
+      project: this.projectPayload(refreshedProject),
+      projectId,
+      projectPath: path.relative(this.workspaceRoot, project.projectPath).replace(/\\/g, "/")
     };
   }
 

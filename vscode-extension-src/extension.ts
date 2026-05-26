@@ -43,6 +43,15 @@ const AMARILLO_PROTOCOL_VERSION = 2;
 const SIDEBAR_HEALTH_TIMEOUT_MS = 1200;
 const SIDEBAR_STATE_TIMEOUT_MS = 4500;
 const SOURCEMAP_ACTIVATION_DELAY_MS = 3000;
+const PLACE_SYNC_MOUNT_OPTIONS = [
+  { id: "Workspace", label: "Workspace", path: "Workspace" },
+  { id: "ReplicatedStorage", label: "ReplicatedStorage", path: "ReplicatedStorage" },
+  { id: "ServerScriptService", label: "ServerScriptService", path: "ServerScriptService" },
+  { id: "ServerStorage", label: "ServerStorage", path: "ServerStorage" },
+  { id: "StarterGui", label: "StarterGui", path: "StarterGui" },
+  { id: "StarterPlayer.StarterCharacterScripts", label: "StarterCharacterScripts", path: "StarterPlayer.StarterCharacterScripts" },
+  { id: "StarterPlayer.StarterPlayerScripts", label: "StarterPlayerScripts", path: "StarterPlayer.StarterPlayerScripts" }
+];
 
 // Shared API types — single source of truth for daemon ↔ extension contracts
 import type {
@@ -1063,7 +1072,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
       createSidebarFact("Place", `${pendingPlaceSetup.placeName || "Unknown"} (${pendingPlaceSetup.placeId || 0})`, "warning"),
       createSidebarFact("Project", String(pendingPlaceSetup.suggestedProjectId || "-"), "warning")
     );
-    sessionActions.unshift(createSidebarAction("Create Place Project", "amarillo.createPlaceProject", "primary"));
+    sessionActions.unshift(createSidebarAction("Configure Place Sync", "amarillo.configurePlaceSync", "primary"));
   } else if (connectionOffer) {
     sessionTone = connectionOffer.status === "declined" ? "warning" : "info";
     sessionBadge = handshakeStatusLabel(connectionOffer);
@@ -1151,7 +1160,8 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
             ? `Current place ${activeSession.placeName || activeSession.projectName || "Studio"} (${activeSession.placeId || 0}).`
             : "Create and edit place project mappings."),
         actions: [
-          createSidebarAction("Create Place Project", "amarillo.createPlaceProject", pendingPlaceSetup ? "primary" : "secondary"),
+          createSidebarAction("Configure Place Sync", "amarillo.configurePlaceSync", pendingPlaceSetup ? "primary" : "secondary"),
+          createSidebarAction("Create Place Project", "amarillo.createPlaceProject", pendingPlaceSetup ? "secondary" : "secondary"),
           createSidebarAction("Edit Place IDs", "amarillo.editPlaceIds")
         ]
       },
@@ -2505,24 +2515,263 @@ async function selectSession() {
   vscode.window.showInformationMessage(`Active session: ${session.projectName} / Place ${session.placeId || 0}`);
 }
 
-async function createPlaceProjectFromSidebar() {
+function placeSyncMountState(project) {
+  const payloadMounts = Array.isArray(project?.placeSync?.mounts) ? project.placeSync.mounts : [];
+  if (payloadMounts.length > 0) {
+    return PLACE_SYNC_MOUNT_OPTIONS.map((option) => {
+      const mount = payloadMounts.find((candidate) => candidate.id === option.id) || {};
+      return {
+        ...option,
+        baseEnabled: mount.baseEnabled === true,
+        baseRelativePath: mount.baseRelativePath || null,
+        exclusiveEnabled: mount.exclusiveEnabled === true,
+        exclusiveRelativePath: mount.exclusiveRelativePath || null,
+        keepUnknowns: mount.keepUnknowns === true
+      };
+    });
+  }
+
+  const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
+  return PLACE_SYNC_MOUNT_OPTIONS.map((option) => {
+    const baseMount = mounts.find((mount) => mount.path === option.path || mount.id === option.id) || null;
+    const exclusiveMount = mounts.find((mount) => (
+      typeof mount.path === "string"
+      && mount.path.startsWith(`${option.path}.Exclusivo`)
+    )) || null;
+    return {
+      ...option,
+      baseEnabled: Boolean(baseMount),
+      baseRelativePath: baseMount?.relativePath || null,
+      exclusiveEnabled: Boolean(exclusiveMount),
+      exclusiveRelativePath: exclusiveMount?.relativePath || null,
+      keepUnknowns: baseMount?.keepUnknowns === true || exclusiveMount?.keepUnknowns === true
+    };
+  });
+}
+
+function defaultMountIdsFromProject(project, key, fallbackIds = null) {
+  const states = placeSyncMountState(project);
+  const selected = states
+    .filter((mount) => mount[key] === true)
+    .map((mount) => mount.id);
+  if (selected.length > 0) {
+    return selected;
+  }
+  return fallbackIds || PLACE_SYNC_MOUNT_OPTIONS
+    .filter((mount) => mount.id !== "Workspace")
+    .map((mount) => mount.id);
+}
+
+function mountPathDescription(mount, mode) {
+  if (mode === "base") {
+    return mount.baseRelativePath || "will use the default shared path";
+  }
+  return mount.exclusiveRelativePath || "will use this place's exclusive folder";
+}
+
+async function pickPlaceSyncMountIds(title, placeHolder, defaultIds, mode, mountStates = null) {
+  const selected = new Set(defaultIds || []);
+  const stateById = new Map((Array.isArray(mountStates) ? mountStates : []).map((mount) => [mount.id, mount]));
+  const items = PLACE_SYNC_MOUNT_OPTIONS.map((mount) => ({
+    ...mount,
+    ...(stateById.get(mount.id) || {})
+  })).map((mount) => ({
+    label: mount.label,
+    description: mount.path,
+    detail: mountPathDescription(mount, mode),
+    picked: selected.has(mount.id),
+    mountId: mount.id
+  }));
+  const picked = await vscode.window.showQuickPick(items, {
+    title,
+    placeHolder,
+    canPickMany: true
+  });
+  if (picked === undefined) {
+    return null;
+  }
+  return picked.map((item) => item.mountId);
+}
+
+async function pickKeepUnknowns(defaultValue, title) {
+  const enabled = defaultValue !== false;
+  const choices = enabled
+    ? [
+      { label: "Yes (Recommended)", description: "Keep Studio-only instances that do not exist on disk.", value: true },
+      { label: "No", description: "Delete Studio instances that do not exist on disk.", value: false }
+    ]
+    : [
+      { label: "No (Current)", description: "Delete Studio instances that do not exist on disk.", value: false },
+      { label: "Yes", description: "Keep Studio-only instances that do not exist on disk.", value: true }
+    ];
+  const picked = await vscode.window.showQuickPick(choices, {
+    title,
+    placeHolder: "Keep Studio-only unmapped instances?"
+  });
+  return picked ? picked.value : null;
+}
+
+function sourceProjectForPlaceSync(projects, defaultProjectId = null) {
+  const defaultProject = defaultProjectId
+    ? projects.find((project) => project.id === defaultProjectId)
+    : null;
+  if (defaultProject && (!Array.isArray(defaultProject.placeIds) || defaultProject.placeIds.length === 0)) {
+    return defaultProject;
+  }
+  return projects.find((project) => !Array.isArray(project.placeIds) || project.placeIds.length === 0)
+    || defaultProject
+    || projects[0]
+    || null;
+}
+
+function activeProjectFromHealth(projects, health) {
+  const activeSession = resolveActiveSessionFromHealth({
+    sessions: Array.isArray(health?.sessions) ? health.sessions : []
+  });
+  return activeSession?.projectId
+    ? projects.find((project) => project.id === activeSession.projectId) || null
+    : null;
+}
+
+async function chooseProjectForPlaceSync(projects, health) {
+  const activeProject = activeProjectFromHealth(projects, health);
+  if (activeProject) {
+    return activeProject;
+  }
+  if (projects.length === 1) {
+    return projects[0];
+  }
+  const picked = await vscode.window.showQuickPick(
+    projects.map((project) => ({
+      label: project.name || project.id,
+      description: project.id,
+      detail: `Place IDs: ${(project.placeIds || []).join(", ") || "none"}`,
+      project
+    })),
+    { placeHolder: "Choose the place project to configure" }
+  );
+  return picked?.project || null;
+}
+
+async function configurePlaceSyncFromSidebar(options: { requirePendingSetup?: boolean } = {}) {
   const settings = getBridgeSettings();
   const health = await fetchDaemonHealth({ timeout: 2000 });
   if (!daemonMatchesWorkspace(settings, health)) {
     throw new Error("The active daemon on this port belongs to another workspace.");
   }
+  const projectsPayload = await requestJson<Record<string, any>>("GET", "/projects", undefined, { timeout: 5000 });
+  const projects = Array.isArray(projectsPayload.projects) ? projectsPayload.projects : [];
   const pending = health.pendingPlaceSetup as any;
-  if (!pending || !pending.placeId) {
+  if (pending && pending.placeId) {
+    const placeName = await vscode.window.showInputBox({
+      title: "Configure Place Sync: Project Name",
+      prompt: "Choose a name for this place project.",
+      value: pending.placeName || `Place ${pending.placeId}`
+    });
+    if (placeName === undefined) return;
+
+    const placeIdInput = await vscode.window.showInputBox({
+      title: "Configure Place Sync: Place ID",
+      prompt: "Roblox Place ID for this project.",
+      value: String(pending.placeId),
+      validateInput(value) {
+        const id = Number(value);
+        if (!value.trim() || !Number.isInteger(id) || id <= 0) {
+          return "Please enter a valid positive Roblox Place ID.";
+        }
+        return null;
+      }
+    });
+    if (placeIdInput === undefined) return;
+    const placeId = Number(placeIdInput);
+    const sourceProject = sourceProjectForPlaceSync(projects, projectsPayload.defaultProjectId || null);
+    const sourceStates = placeSyncMountState(sourceProject);
+    const baseDefaults = defaultMountIdsFromProject(sourceProject, "baseEnabled");
+    const exclusiveDefaults = defaultMountIdsFromProject(sourceProject, "exclusiveEnabled");
+    const baseMountIds = await pickPlaceSyncMountIds(
+      "Configure Place Sync: Shared Base Folders",
+      "Select shared sync/src folders to keep active for this place",
+      baseDefaults,
+      "base",
+      sourceStates
+    );
+    if (baseMountIds === null) return;
+    const exclusiveMountIds = await pickPlaceSyncMountIds(
+      "Configure Place Sync: Exclusive Folders",
+      "Select exclusive folders to create and sync for this place",
+      exclusiveDefaults,
+      "exclusive",
+      sourceStates
+    );
+    if (exclusiveMountIds === null) return;
+    if (exclusiveMountIds.length === 0) {
+      vscode.window.showErrorMessage("Select at least one exclusive folder for this place.");
+      return;
+    }
+    const keepUnknowns = await pickKeepUnknowns(true, "Configure Place Sync: Keep Unmapped Instances");
+    if (keepUnknowns === null) return;
+
+    const response = await requestJson<Record<string, any>>("POST", "/projects/place-setup", {
+      placeId,
+      placeName,
+      baseMountIds,
+      exclusiveMountIds,
+      keepUnknowns
+    }, { timeout: 10000 });
+
+    log(`Configured place sync by creating ${response.projectId || response.projectPath || "unknown"} for place ${placeId}.`);
+    refreshSidebar();
+    vscode.window.showInformationMessage(`Configured Amarillo place sync for ${placeName}. Reconnect the Roblox Studio plugin to sync.`);
+    return;
+  }
+
+  if (options.requirePendingSetup) {
     vscode.window.showInformationMessage("No new published place is waiting for setup.");
     return;
   }
-  const response = await requestJson<Record<string, any>>("POST", "/projects/place-setup", {
-    placeId: pending.placeId,
-    placeName: pending.placeName
+
+  if (projects.length === 0) {
+    vscode.window.showWarningMessage("No Amarillo projects were found in this workspace.");
+    return;
+  }
+  const project = await chooseProjectForPlaceSync(projects, health);
+  if (!project) return;
+  const states = placeSyncMountState(project);
+  const baseMountIds = await pickPlaceSyncMountIds(
+    "Configure Place Sync: Shared Base Folders",
+    "Select shared sync/src folders to keep active",
+    states.filter((mount) => mount.baseEnabled).map((mount) => mount.id),
+    "base",
+    states
+  );
+  if (baseMountIds === null) return;
+  const exclusiveMountIds = await pickPlaceSyncMountIds(
+    "Configure Place Sync: Exclusive Folders",
+    "Select exclusive folders to sync for this place",
+    states.filter((mount) => mount.exclusiveEnabled).map((mount) => mount.id),
+    "exclusive",
+    states
+  );
+  if (exclusiveMountIds === null) return;
+  const keepUnknowns = await pickKeepUnknowns(
+    states.some((mount) => mount.keepUnknowns),
+    "Configure Place Sync: Keep Unmapped Instances"
+  );
+  if (keepUnknowns === null) return;
+
+  await requestJson<Record<string, any>>("PATCH", `/projects/${encodeURIComponent(project.id)}/place-sync`, {
+    baseMountIds,
+    exclusiveMountIds,
+    keepUnknowns
   }, { timeout: 10000 });
-  log(`Created place project ${response.projectId || response.projectPath || "unknown"} for place ${pending.placeId}.`);
+
+  log(`Configured place sync for ${project.id}.`);
   refreshSidebar();
-  vscode.window.showInformationMessage(`Created Amarillo place project for ${pending.placeName || `Place ${pending.placeId}`}. Reconnect the Roblox Studio plugin to sync.`);
+  vscode.window.showInformationMessage(`Configured place sync for ${project.name || project.id}.`);
+}
+
+async function createPlaceProjectFromSidebar() {
+  await configurePlaceSyncFromSidebar({ requirePendingSetup: true });
 }
 
 function parsePlaceIdsInput(input) {
@@ -2737,6 +2986,13 @@ function activate(context) {
     vscode.commands.registerCommand("amarillo.configureCodexMcp", () => configureMcp(context)),
     vscode.commands.registerCommand("amarillo.openOutput", () => outputChannel.show(true)),
     vscode.commands.registerCommand("amarillo.refreshSidebar", () => refreshSidebar()),
+    vscode.commands.registerCommand("amarillo.configurePlaceSync", async () => {
+      try {
+        await configurePlaceSyncFromSidebar();
+      } catch (error) {
+        vscode.window.showErrorMessage(error.message);
+      }
+    }),
     vscode.commands.registerCommand("amarillo.createPlaceProject", async () => {
       try {
         await createPlaceProjectFromSidebar();
@@ -2810,6 +3066,7 @@ function activate(context) {
         { label: "$(radio-tower) Start Bridge", description: "Start sync daemon and request connection", action: "startBridge" },
         { label: "$(debug-stop) Stop Bridge", description: "Stop the sync daemon", action: "stopBridge" },
         { label: "$(plug) Select Session", description: "Choose active Studio session", action: "selectSession" },
+        { label: "$(settings-gear) Configure Place Sync", description: "Choose shared and exclusive folders for a place", action: "configurePlaceSync" },
         { label: "$(folder-library) Create Place Project", description: "Create a project for the pending Roblox place", action: "createPlaceProject" },
         { label: "$(list-ordered) Edit Place IDs", description: "Change place IDs mapped to a project", action: "editPlaceIds" },
         { label: "$(separator)", kind: vscode.QuickPickItemKind.Separator, description: "Sync" },
@@ -2843,6 +3100,7 @@ function activate(context) {
           case "startBridge": await startBridge(context); break;
           case "stopBridge": await stopBridge(); break;
           case "selectSession": await selectSession(); break;
+          case "configurePlaceSync": await configurePlaceSyncFromSidebar(); break;
           case "createPlaceProject": await createPlaceProjectFromSidebar(); break;
           case "editPlaceIds": await editPlaceIdsFromSidebar(); break;
           case "toggleAutoSync": await toggleAutoSyncToStudio(); break;
