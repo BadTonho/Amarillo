@@ -249,7 +249,7 @@ test("Roblox plugin aggregates safe-set failures for Doctor diagnostics", () => 
 test("Roblox plugin preserves nested exclusive mount containers during sync", () => {
   assert.match(pluginSource, /local function buildNestedMountChildIndex\(mounts\)/);
   assert.match(pluginSource, /local function isNestedMountChild\(indexed, parentSegments, childName\)/);
-  assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mountSegments, child\.Name\) and shouldIncludeSnapshotChild/);
+  assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mOpts\.mountSegments, child\.Name\) and shouldIncludeSnapshotChild/);
   assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mount\.segments or \{\}, child\.Name\) and not isNonSyncableInstance/);
 });
 
