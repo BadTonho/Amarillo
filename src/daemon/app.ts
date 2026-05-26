@@ -151,6 +151,7 @@ const DEFAULT_PRIVILEGED_ACTION_CONFIRMATION = true;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
 const PLACE_SYNC_BASE_DISABLED_PATH_KEY = "$amarilloDisabledPath";
+const PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY = "$amarilloDisabledExclusivePath";
 const DEFAULT_PLACE_PROJECT_TREE = {
   "$className": "DataModel",
   Workspace: { "$path": "sync/Workspace" },
@@ -310,20 +311,16 @@ function ensureTreeNode(root, segments, sharedPath = null) {
   return node;
 }
 
-function findExistingExclusiveNodeName(tree) {
-  const counts = new Map();
-  for (const mount of STANDARD_PLACE_EXCLUSIVE_MOUNTS) {
-    const leaf = getTreeNode(tree, mount.segments, false);
-    if (!leaf) {
-      continue;
-    }
-    for (const [key, value] of Object.entries(leaf)) {
-      if (key.startsWith("Exclusivo") && value && typeof value === "object" && !Array.isArray(value)) {
-        counts.set(key, (counts.get(key) || 0) + 1);
-      }
-    }
+function findExistingExclusiveNodeNameForLeaf(leaf) {
+  if (!leaf || typeof leaf !== "object" || Array.isArray(leaf)) {
+    return null;
   }
-  return Array.from(counts.entries()).sort((left, right) => right[1] - left[1])[0]?.[0] || null;
+  return Object.keys(leaf).find((key) => (
+    key.startsWith("Exclusivo")
+    && leaf[key]
+    && typeof leaf[key] === "object"
+    && !Array.isArray(leaf[key])
+  )) || null;
 }
 
 function removeGeneratedExclusiveChildren(leaf) {
@@ -335,6 +332,33 @@ function removeGeneratedExclusiveChildren(leaf) {
       delete leaf[key];
     }
   }
+}
+
+function normalizeProjectRelativePath(value) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().replace(/\\/g, "/")
+    : null;
+}
+
+function placeSyncExclusiveRelativePath(placeSlug, mount) {
+  return `${placeSlug}/exclusive/${mount.exclusivePath}`;
+}
+
+function placeSyncExclusivePathSuffix(mount) {
+  return `/exclusive/${mount.exclusivePath}`;
+}
+
+function isPlaceSyncExclusiveRelativePath(value, mount) {
+  const normalized = normalizeProjectRelativePath(value);
+  if (!normalized) {
+    return false;
+  }
+  return normalized.endsWith(placeSyncExclusivePathSuffix(mount))
+    || normalized === `exclusive/${mount.exclusivePath}`;
+}
+
+function exclusiveNodeNameForMount(mount, placeSlug) {
+  return `Exclusivo${placeSlugFromName(mount.label || mount.id || "Pasta", "Pasta")}${placeSlug}`;
 }
 
 function pruneEmptyTreeNodes(node, isRoot = true) {
@@ -361,10 +385,6 @@ function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown
   }
   const exclusiveMountIds = resolveExclusiveMountIds(options);
   const baseMountIds = resolveBaseMountIds(options);
-  const requestedExclusiveNodeName = typeof options.exclusiveNodeName === "string" && options.exclusiveNodeName.trim()
-    ? options.exclusiveNodeName.trim()
-    : null;
-  const exclusiveNodeName = requestedExclusiveNodeName || findExistingExclusiveNodeName(tree) || `Exclusivo${placeSlug}`;
   if (!tree.$className) {
     tree.$className = "DataModel";
   }
@@ -377,21 +397,34 @@ function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown
       continue;
     }
 
+    const existingExclusiveName = findExistingExclusiveNodeNameForLeaf(leaf);
+    const existingExclusiveNode = existingExclusiveName ? leaf[existingExclusiveName] : null;
+    const currentPath = normalizeProjectRelativePath(leaf.$path);
+    const disabledBasePath = normalizeProjectRelativePath(leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY]);
+    const disabledExclusivePath = normalizeProjectRelativePath(leaf[PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY]);
+    const childExclusivePath = normalizeProjectRelativePath(existingExclusiveNode?.$path);
+    const currentPathIsExclusive = isPlaceSyncExclusiveRelativePath(currentPath, mount)
+      || (disabledBasePath !== null && currentPath !== null && childExclusivePath === null);
+    const basePath = disabledBasePath
+      || (currentPath && !currentPathIsExclusive ? currentPath : null)
+      || mount.sharedPath;
+    const exclusivePath = childExclusivePath
+      || disabledExclusivePath
+      || (currentPathIsExclusive ? currentPath : null)
+      || placeSyncExclusiveRelativePath(placeSlug, mount);
+
     if (wantsBase) {
-      if (typeof leaf.$path !== "string") {
-        leaf.$path = typeof leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] === "string"
-          ? leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY]
-          : mount.sharedPath;
-      }
+      leaf.$path = basePath;
       delete leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY];
-    } else if (typeof leaf.$path === "string") {
-      leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] = leaf.$path;
-      delete leaf.$path;
+    } else {
+      leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] = basePath;
+      if (!wantsExclusive) {
+        delete leaf.$path;
+      }
     }
 
-    if (wantsExclusive) {
-      const existingExclusiveName = Object.keys(leaf).find((key) => key.startsWith("Exclusivo"));
-      const targetExclusiveName = existingExclusiveName || exclusiveNodeName;
+    if (wantsExclusive && wantsBase) {
+      const targetExclusiveName = existingExclusiveName || exclusiveNodeNameForMount(mount, placeSlug);
       for (const key of Object.keys(leaf)) {
         if (key.startsWith("Exclusivo") && key !== targetExclusiveName) {
           delete leaf[key];
@@ -400,10 +433,20 @@ function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown
       if (!leaf[targetExclusiveName] || typeof leaf[targetExclusiveName] !== "object" || Array.isArray(leaf[targetExclusiveName])) {
         leaf[targetExclusiveName] = {};
       }
-      if (typeof leaf[targetExclusiveName].$path !== "string") {
-        leaf[targetExclusiveName].$path = `${placeSlug}/exclusive/${mount.exclusivePath}`;
+      if (exclusivePath) {
+        leaf[targetExclusiveName].$path = exclusivePath;
       }
+      delete leaf[PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY];
+    } else if (wantsExclusive) {
+      if (exclusivePath) {
+        leaf.$path = exclusivePath;
+      }
+      delete leaf[PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY];
+      removeGeneratedExclusiveChildren(leaf);
     } else {
+      if (childExclusivePath || currentPathIsExclusive || disabledExclusivePath) {
+        leaf[PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY] = exclusivePath;
+      }
       removeGeneratedExclusiveChildren(leaf);
     }
   }
@@ -466,12 +509,22 @@ function buildProjectPlaceSyncPayload(project) {
   const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
   return {
     mounts: STANDARD_PLACE_EXCLUSIVE_MOUNTS.map((config) => {
-      const baseMount = mounts.find((mount) => segmentsEqual(mount.segments, config.segments)) || null;
+      const leaf = getTreeNode(project?.tree || project?.raw?.tree || {}, config.segments, false);
+      const exactMount = mounts.find((mount) => segmentsEqual(mount.segments, config.segments)) || null;
       const exclusiveMount = mounts.find((mount) => (
         segmentsStartWith(mount.segments, config.segments)
         && mount.segments.length === config.segments.length + 1
         && String(mount.segments[mount.segments.length - 1] || "").startsWith("Exclusivo")
       )) || null;
+      const directExclusiveMount = !exclusiveMount
+        && exactMount
+        && (
+          isPlaceSyncExclusiveRelativePath(exactMount.relativePath, config)
+          || (leaf && typeof leaf[PLACE_SYNC_BASE_DISABLED_PATH_KEY] === "string")
+        )
+        ? exactMount
+        : null;
+      const baseMount = directExclusiveMount ? null : exactMount;
       return {
         id: config.id,
         label: config.label,
@@ -479,10 +532,13 @@ function buildProjectPlaceSyncPayload(project) {
         sharedPath: config.sharedPath,
         exclusivePath: config.exclusivePath,
         baseEnabled: Boolean(baseMount),
-        baseRelativePath: baseMount?.relativePath || null,
-        exclusiveEnabled: Boolean(exclusiveMount),
-        exclusiveRelativePath: exclusiveMount?.relativePath || null,
-        keepUnknowns: baseMount?.keepUnknowns || exclusiveMount?.keepUnknowns || false
+        baseRelativePath: baseMount?.relativePath || normalizeProjectRelativePath(leaf?.[PLACE_SYNC_BASE_DISABLED_PATH_KEY]) || null,
+        exclusiveEnabled: Boolean(exclusiveMount || directExclusiveMount),
+        exclusiveRelativePath: exclusiveMount?.relativePath
+          || directExclusiveMount?.relativePath
+          || normalizeProjectRelativePath(leaf?.[PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY])
+          || null,
+        keepUnknowns: baseMount?.keepUnknowns || exclusiveMount?.keepUnknowns || directExclusiveMount?.keepUnknowns || false
       };
     })
   };
@@ -2659,14 +2715,8 @@ class PluginRobloxApp {
     }
 
     const projectName = normalizePlaceName(raw.name) || normalizePlaceName(project.name) || path.basename(project.id, ".project.json");
-    const existingExclusiveName = findExistingExclusiveNodeName(raw.tree);
-    const placeSlug = existingExclusiveName && existingExclusiveName.startsWith("Exclusivo")
-      ? existingExclusiveName.slice("Exclusivo".length)
-      : placeSlugFromName(projectName, "Place");
-    raw.tree = configurePlaceSyncTree(raw.tree, placeSlug, {
-      ...options,
-      exclusiveNodeName: existingExclusiveName || undefined
-    });
+    const placeSlug = placeSlugFromName(projectName, "Place");
+    raw.tree = configurePlaceSyncTree(raw.tree, placeSlug, options);
     if (objectHasOwn(options, "keepUnknowns")) {
       raw.tree = setKeepUnknowns(raw.tree, options.keepUnknowns === true);
     }
