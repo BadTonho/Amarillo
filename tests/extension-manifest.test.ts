@@ -40,3 +40,11 @@ test("Doctor command is declared", () => {
     "Expected amarillo.doctor to be contributed."
   );
 });
+
+test("Configure Place Sync command is declared", () => {
+  const commands = packageJson.contributes?.commands || [];
+  assert.ok(
+    commands.some((command) => command.command === "amarillo.configurePlaceSync"),
+    "Expected amarillo.configurePlaceSync to be contributed."
+  );
+});

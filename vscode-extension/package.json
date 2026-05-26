@@ -2,7 +2,7 @@
   "name": "amarillo-vscode",
   "displayName": "Amarillo Bridge",
   "description": "Installs the Amarillo plugin in Roblox Studio and controls the local bridge from VS Code.",
-  "version": "1.1.29",
+  "version": "1.1.31",
   "publisher": "amarillo",
   "engines": {
     "vscode": "^1.90.0"
@@ -86,6 +86,10 @@
       {
         "command": "amarillo.createPlaceProject",
         "title": "Amarillo: Create Place Project"
+      },
+      {
+        "command": "amarillo.configurePlaceSync",
+        "title": "Amarillo: Configure Place Sync"
       },
       {
         "command": "amarillo.editPlaceIds",

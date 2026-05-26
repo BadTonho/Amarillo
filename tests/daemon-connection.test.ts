@@ -328,6 +328,70 @@ test("place setup creates a place project and all base and exclusive folders", a
   assert.equal(accept.payload.session.placeName, "Namek Prime");
 });
 
+test("place setup and place sync edit select exclusive and shared base mounts by canonical id", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "src", "ServerScriptService"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "src", "ReplicatedStorage"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "src", "StarterGui"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Base.project.json"), JSON.stringify({
+    name: "Base",
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "src/ServerScriptService"
+      },
+      ReplicatedStorage: {
+        $path: "src/ReplicatedStorage"
+      },
+      StarterGui: {
+        $path: "src/StarterGui"
+      }
+    }
+  }, null, 2));
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  app.rememberPendingPlaceSetup(222333, "Arena");
+
+  const create = await invoke(app, "POST", "/projects/place-setup", {
+    placeId: 222333,
+    placeName: "Arena",
+    exclusiveMountIds: ["ServerScriptService", "StarterGui"],
+    baseMountIds: ["ServerScriptService"],
+    keepUnknowns: true
+  });
+
+  assert.equal(create.statusCode, 200);
+  const projectPath = path.join(workspace, "Arena.project.json");
+  let projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
+  assert.equal(projectJson.tree.ServerScriptService.$path, "src/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$path, "Arena/exclusive/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.$keepUnknowns, true);
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$keepUnknowns, true);
+  assert.equal(projectJson.tree.ReplicatedStorage.$path, undefined);
+  assert.equal(projectJson.tree.ReplicatedStorage.$amarilloDisabledPath, "src/ReplicatedStorage");
+  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoArena, undefined);
+  assert.equal(projectJson.tree.StarterGui.$path, undefined);
+  assert.equal(projectJson.tree.StarterGui.$amarilloDisabledPath, "src/StarterGui");
+  assert.equal(projectJson.tree.StarterGui.ExclusivoArena.$path, "Arena/exclusive/StarterGui");
+
+  const update = await invoke(app, "PATCH", `/projects/${encodeURIComponent("Arena.project.json")}/place-sync`, {
+    exclusiveMountIds: ["ServerScriptService"],
+    baseMountIds: ["ServerScriptService", "ReplicatedStorage"],
+    keepUnknowns: false
+  });
+
+  assert.equal(update.statusCode, 200);
+  projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
+  assert.equal(projectJson.tree.ServerScriptService.$path, "src/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.$keepUnknowns, undefined);
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$path, "Arena/exclusive/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$keepUnknowns, undefined);
+  assert.equal(projectJson.tree.ReplicatedStorage.$path, "src/ReplicatedStorage");
+  assert.equal(projectJson.tree.ReplicatedStorage.$amarilloDisabledPath, undefined);
+  assert.equal(projectJson.tree.StarterGui.ExclusivoArena, undefined);
+  assert.equal(projectJson.tree.StarterGui.$amarilloDisabledPath, "src/StarterGui");
+});
+
 test("place IDs can be edited from the projects route", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });

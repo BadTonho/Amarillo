@@ -211,6 +211,10 @@
         "$keepUnknowns": {
           "type": "boolean",
           "description": "If true, instances not described in this tree are kept (not deleted)."
+        },
+        "$amarilloDisabledPath": {
+          "type": "string",
+          "description": "Amarillo internal path backup used when a place sync base mount is disabled and later restored."
         }
       },
       "patternProperties": {

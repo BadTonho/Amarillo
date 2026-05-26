@@ -95,6 +95,22 @@ async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
     return true;
   }
 
+  const placeSyncMatch = requestUrl.pathname.match(/^\/projects\/(.+)\/place-sync$/);
+  if (request.method === "PATCH" && placeSyncMatch) {
+    try {
+      const projectId = decodeURIComponent(placeSyncMatch[1]);
+      const body = await readJsonBody(request);
+      jsonResponse(response, 200, app.updateProjectPlaceSync(projectId, body));
+    } catch (error) {
+      jsonResponse(response, error.statusCode || 500, {
+        ok: false,
+        code: error.code || "PLACE_SYNC_UPDATE_FAILED",
+        error: error.message
+      });
+    }
+    return true;
+  }
+
   const placeIdsMatch = requestUrl.pathname.match(/^\/projects\/(.+)\/place-ids$/);
   if (request.method === "PATCH" && placeIdsMatch) {
     try {
