@@ -24,6 +24,10 @@ id_ed25519*
 !examples/roblox-workspace/.pluginroblox.json
 /.vscode/settings.json
 
+# Machine-specific bridge configuration with sensitive tokens and paths
+# NEVER commit .amarillo/mcp-local.json - contains installed extension path and bridge token
+.amarillo/mcp-local.json
+
 # Generated runtime and package artifacts
 dist/
 .extension-build/
@@ -39,6 +43,7 @@ scripts/**/*.js
 debug.log
 sourcemap.json
 .amarillo/
+REPORT_*.md
 RELATORIO_*.md
 coverage/
 .nyc_output/
