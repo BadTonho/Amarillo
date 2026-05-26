@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.34"
+local PLUGIN_VERSION = "1.1.35"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -1689,6 +1689,9 @@ end
 local function resolveMountContainer(segments)
 	local current = game
 	for index, segment in ipairs(segments) do
+		if string.sub(segment, 1, 9) == "Exclusivo" then
+			break
+		end
 		if index == 1 then
 			local ok, service = pcall(function()
 				return game:GetService(segment)
@@ -1759,7 +1762,11 @@ local function validateMountContainerRecovery(segments)
 
 	local current = root
 	for index = 2, #segments do
-		local child = current:FindFirstChild(segments[index])
+		local segment = segments[index]
+		if string.sub(segment, 1, 9) == "Exclusivo" then
+			break
+		end
+		local child = current:FindFirstChild(segment)
 		if child then
 			current = child
 		else
@@ -1798,6 +1805,9 @@ local function ensureRecoverableMountContainer(segments)
 	local currentPath = tostring(segments[1])
 	for index = 2, #segments do
 		local segment = segments[index]
+		if string.sub(segment, 1, 9) == "Exclusivo" then
+			break
+		end
 		local child = current:FindFirstChild(segment)
 		currentPath = currentPath .. "." .. tostring(segment)
 		if child then
@@ -1884,6 +1894,8 @@ local function snapshotCurrentProject(options)
 	for _, mount in ipairs(referenceSnapshot and referenceSnapshot.mounts or {}) do
 		cachedMounts[mount.id] = mount
 	end
+	local containerGroups = {}
+	local containerOrder = {}
 	for _, mount in ipairs(state.project.mounts or {}) do
 		if not isMountSyncEnabled(mount) then
 			continue
@@ -1891,22 +1903,79 @@ local function snapshotCurrentProject(options)
 		local mountSegments = string.split(mount.path, ".")
 		local container = resolveMountContainer(mountSegments)
 		if container then
-			local children = {}
+			if not containerGroups[container] then
+				containerGroups[container] = {}
+				table.insert(containerOrder, container)
+			end
+			table.insert(containerGroups[container], { mount = mount, mountSegments = mountSegments })
+		end
+	end
+
+	for _, container in ipairs(containerOrder) do
+		local group = containerGroups[container]
+		local combinedMountOptions = {}
+		local mountResults = {}
+
+		for _, item in ipairs(group) do
+			local mount = item.mount
 			local desiredMount = cachedMounts[mount.id]
 			local desiredChildIndex = indexDesiredChildren(desiredMount and desiredMount.children or nil)
-			local nameCounts = childNameCounts(container)
-			for _, child in ipairs(container:GetChildren()) do
-				if (nameCounts[child.Name] or 0) > 1 then
-					ensureAmarilloId(child)
-				end
-				local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
-				if not isNestedMountChild(nestedMountChildIndex, mountSegments, child.Name) and shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredMount or mount, options) then
-					local childSnapshot = snapshotNode(child, openDocumentSources, desiredChild, options)
-					if childSnapshot then
-						table.insert(children, childSnapshot)
+			
+			combinedMountOptions[mount.id] = {
+				desiredMount = desiredMount or mount,
+				desiredChildIndex = desiredChildIndex,
+				mountSegments = item.mountSegments
+			}
+			mountResults[mount.id] = {}
+		end
+
+		local nameCounts = childNameCounts(container)
+		for _, child in ipairs(container:GetChildren()) do
+			if (nameCounts[child.Name] or 0) > 1 then
+				ensureAmarilloId(child)
+			end
+			local matchedMountId = nil
+			local childSnapshot = nil
+			local bestDesiredChild = nil
+			
+			-- Pass 1: Find if any mount explicitly claims this child
+			for _, item in ipairs(group) do
+				local mount = item.mount
+				local mOpts = combinedMountOptions[mount.id]
+				local desiredChild = findDesiredChildForInstance(child, mOpts.desiredChildIndex)
+				if desiredChild and not isNestedMountChild(nestedMountChildIndex, mOpts.mountSegments, child.Name) then
+					if shouldIncludeSnapshotChild(child, mOpts.desiredChildIndex, desiredChild, mOpts.desiredMount, options) then
+						matchedMountId = mount.id
+						bestDesiredChild = desiredChild
+						break
 					end
 				end
 			end
+
+			-- Pass 2: If no mount claimed it, find the first mount that accepts unknown children
+			if not matchedMountId then
+				for _, item in ipairs(group) do
+					local mount = item.mount
+					local mOpts = combinedMountOptions[mount.id]
+					if not isNestedMountChild(nestedMountChildIndex, mOpts.mountSegments, child.Name) and shouldIncludeSnapshotChild(child, mOpts.desiredChildIndex, nil, mOpts.desiredMount, options) then
+						matchedMountId = mount.id
+						bestDesiredChild = nil
+						break
+					end
+				end
+			end
+
+			if matchedMountId then
+				childSnapshot = snapshotNode(child, openDocumentSources, bestDesiredChild, options)
+				if childSnapshot then
+					table.insert(mountResults[matchedMountId], childSnapshot)
+				end
+			end
+		end
+
+		for _, item in ipairs(group) do
+			local mount = item.mount
+			local children = mountResults[mount.id]
 			table.sort(children, function(left, right)
 				local leftKey = tostring(left.name or "") .. "\0" .. tostring(left.className or "") .. "\0" .. tostring(left.amarilloId or "")
 				local rightKey = tostring(right.name or "") .. "\0" .. tostring(right.className or "") .. "\0" .. tostring(right.amarilloId or "")
