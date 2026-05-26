@@ -292,8 +292,8 @@ test("place setup creates a place project and all base and exclusive folders", a
   const projectPath = path.join(workspace, "NamekPrime.project.json");
   const projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
   assert.deepEqual(projectJson.place_ids, [987654]);
-  assert.equal(projectJson.tree.Workspace.ExclusivoNamekPrime.$path, "NamekPrime/exclusive/Workspace");
-  assert.equal(projectJson.tree.StarterPlayer.StarterPlayerScripts.ExclusivoNamekPrime.$path, "NamekPrime/exclusive/StarterPlayer/StarterPlayerScripts");
+  assert.equal(projectJson.tree.Workspace.ExclusivoWorkspaceNamekPrime.$path, "NamekPrime/exclusive/Workspace");
+  assert.equal(projectJson.tree.StarterPlayer.StarterPlayerScripts.ExclusivoStarterPlayerScriptsNamekPrime.$path, "NamekPrime/exclusive/StarterPlayer/StarterPlayerScripts");
 
   for (const relativePath of [
     "sync/ReplicatedStorage",
@@ -364,15 +364,22 @@ test("place setup and place sync edit select exclusive and shared base mounts by
   const projectPath = path.join(workspace, "Arena.project.json");
   let projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
   assert.equal(projectJson.tree.ServerScriptService.$path, "src/ServerScriptService");
-  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$path, "Arena/exclusive/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoServerScriptServiceArena.$path, "Arena/exclusive/ServerScriptService");
   assert.equal(projectJson.tree.ServerScriptService.$keepUnknowns, true);
-  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$keepUnknowns, true);
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoServerScriptServiceArena.$keepUnknowns, true);
   assert.equal(projectJson.tree.ReplicatedStorage.$path, undefined);
   assert.equal(projectJson.tree.ReplicatedStorage.$amarilloDisabledPath, "src/ReplicatedStorage");
-  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoArena, undefined);
-  assert.equal(projectJson.tree.StarterGui.$path, undefined);
+  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoReplicatedStorageArena, undefined);
+  assert.equal(projectJson.tree.StarterGui.$path, "Arena/exclusive/StarterGui");
   assert.equal(projectJson.tree.StarterGui.$amarilloDisabledPath, "src/StarterGui");
-  assert.equal(projectJson.tree.StarterGui.ExclusivoArena.$path, "Arena/exclusive/StarterGui");
+  assert.equal(projectJson.tree.StarterGui.ExclusivoStarterGuiArena, undefined);
+  assert.equal(projectJson.tree.StarterGui.$keepUnknowns, true);
+
+  const createdPlaceSync = create.payload.project.placeSync.mounts;
+  assert.equal(createdPlaceSync.find((mount) => mount.id === "ServerScriptService").baseEnabled, true);
+  assert.equal(createdPlaceSync.find((mount) => mount.id === "ServerScriptService").exclusiveEnabled, true);
+  assert.equal(createdPlaceSync.find((mount) => mount.id === "StarterGui").baseEnabled, false);
+  assert.equal(createdPlaceSync.find((mount) => mount.id === "StarterGui").exclusiveEnabled, true);
 
   const update = await invoke(app, "PATCH", `/projects/${encodeURIComponent("Arena.project.json")}/place-sync`, {
     exclusiveMountIds: ["ServerScriptService"],
@@ -384,13 +391,15 @@ test("place setup and place sync edit select exclusive and shared base mounts by
   projectJson = JSON.parse(fs.readFileSync(projectPath, "utf8"));
   assert.equal(projectJson.tree.ServerScriptService.$path, "src/ServerScriptService");
   assert.equal(projectJson.tree.ServerScriptService.$keepUnknowns, undefined);
-  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$path, "Arena/exclusive/ServerScriptService");
-  assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$keepUnknowns, undefined);
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoServerScriptServiceArena.$path, "Arena/exclusive/ServerScriptService");
+  assert.equal(projectJson.tree.ServerScriptService.ExclusivoServerScriptServiceArena.$keepUnknowns, undefined);
   assert.equal(projectJson.tree.ReplicatedStorage.$path, "src/ReplicatedStorage");
   assert.equal(projectJson.tree.ReplicatedStorage.$amarilloDisabledPath, undefined);
-  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoArena, undefined);
-  assert.equal(projectJson.tree.StarterGui.ExclusivoArena, undefined);
+  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoReplicatedStorageArena, undefined);
+  assert.equal(projectJson.tree.StarterGui.ExclusivoStarterGuiArena, undefined);
   assert.equal(projectJson.tree.StarterGui.$amarilloDisabledPath, "src/StarterGui");
+  assert.equal(projectJson.tree.StarterGui.$amarilloDisabledExclusivePath, "Arena/exclusive/StarterGui");
+  assert.equal(projectJson.tree.StarterGui.$path, undefined);
 });
 
 test("place IDs can be edited from the projects route", async () => {
@@ -444,6 +453,12 @@ test("workspace refresh materializes missing mount folders", () => {
   assert.equal(fs.existsSync(path.join(workspace, "sync/StarterPlayer/StarterPlayerScripts")), true);
   assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/Workspace")), false);
   assert.equal(fs.existsSync(path.join(workspace, "Namek/exclusive/StarterPlayer/StarterPlayerScripts")), true);
+
+  const projectPayload = app.listProjects().find((project) => project.id === "Namek.project.json");
+  const starterScriptsSync = projectPayload.placeSync.mounts.find((mount) => mount.id === "StarterPlayer.StarterPlayerScripts");
+  assert.equal(starterScriptsSync.baseEnabled, true);
+  assert.equal(starterScriptsSync.exclusiveEnabled, true);
+  assert.equal(starterScriptsSync.exclusiveRelativePath, "Namek/exclusive/StarterPlayer/StarterPlayerScripts");
 });
 
 test("HTTP connection accept blocks old plugins that do not report a version", async () => {

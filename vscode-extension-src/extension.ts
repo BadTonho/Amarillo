@@ -2564,18 +2564,28 @@ function placeSyncMountState(project) {
 
   const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
   return PLACE_SYNC_MOUNT_OPTIONS.map((option) => {
-    const baseMount = mounts.find((mount) => mount.path === option.path || mount.id === option.id) || null;
+    const exactMount = mounts.find((mount) => mount.path === option.path || mount.id === option.id) || null;
     const exclusiveMount = mounts.find((mount) => (
       typeof mount.path === "string"
       && mount.path.startsWith(`${option.path}.Exclusivo`)
     )) || null;
+    const directExclusiveMount = !exclusiveMount
+      && exactMount
+      && typeof exactMount.relativePath === "string"
+      && (
+        exactMount.relativePath.replace(/\\/g, "/").endsWith(`/exclusive/${option.path.split(".").slice(-1)[0]}`)
+        || exactMount.relativePath.replace(/\\/g, "/") === `exclusive/${option.path.split(".").slice(-1)[0]}`
+      )
+      ? exactMount
+      : null;
+    const baseMount = directExclusiveMount ? null : exactMount;
     return {
       ...option,
       baseEnabled: Boolean(baseMount),
       baseRelativePath: baseMount?.relativePath || null,
-      exclusiveEnabled: Boolean(exclusiveMount),
-      exclusiveRelativePath: exclusiveMount?.relativePath || null,
-      keepUnknowns: baseMount?.keepUnknowns === true || exclusiveMount?.keepUnknowns === true
+      exclusiveEnabled: Boolean(exclusiveMount || directExclusiveMount),
+      exclusiveRelativePath: exclusiveMount?.relativePath || directExclusiveMount?.relativePath || null,
+      keepUnknowns: baseMount?.keepUnknowns === true || exclusiveMount?.keepUnknowns === true || directExclusiveMount?.keepUnknowns === true
     };
   });
 }
