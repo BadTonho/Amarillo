@@ -567,6 +567,79 @@ function segmentsHavePrefix(segments, prefix) {
   return prefix.every((segment, index) => segments[index] === segment);
 }
 
+function normalizeInstancePathSegmentsForMountGuard(value) {
+  const rawSegments = Array.isArray(value)
+    ? value
+    : String(value || "").split(".");
+  return rawSegments
+    .map((segment) => String(segment || "").trim())
+    .filter((segment) => segment.length > 0 && !["game", "datamodel"].includes(segment.toLowerCase()));
+}
+
+function mountSegmentsForGuard(mount) {
+  if (Array.isArray(mount?.segments)) {
+    return mount.segments.filter((segment) => typeof segment === "string" && segment.length > 0);
+  }
+  if (typeof mount?.path === "string") {
+    return mount.path.split(".").filter(Boolean);
+  }
+  if (typeof mount?.id === "string") {
+    return mount.id.split(".").filter(Boolean);
+  }
+  return [];
+}
+
+function activeSyncMountSegments(project, syncTargets) {
+  const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
+  return mounts
+    .filter((mount) => isMountSyncEnabled(mount, syncTargets))
+    .map((mount) => mountSegmentsForGuard(mount))
+    .filter((segments) => segments.length > 0);
+}
+
+function instancePathLabel(segments) {
+  return segments.length > 0 ? `game.${segments.join(".")}` : "game";
+}
+
+function targetSegmentsForDestructiveCommand(type, payload: any = {}) {
+  if (type === "modify_property" || type === "delete_instance") {
+    return normalizeInstancePathSegmentsForMountGuard(payload.path);
+  }
+  if (type === "create_instance") {
+    const parentSegments = normalizeInstancePathSegmentsForMountGuard(payload.parentPath);
+    const instanceName = typeof payload.name === "string" && payload.name.length > 0
+      ? payload.name
+      : (typeof payload.className === "string" ? payload.className : "");
+    return instanceName ? parentSegments.concat(instanceName) : parentSegments;
+  }
+  return null;
+}
+
+function validateDestructiveCommandSyncMount(project, session, type, payload: any, syncTargets) {
+  const targetSegments = targetSegmentsForDestructiveCommand(type, payload);
+  if (!targetSegments) {
+    return { allowed: true };
+  }
+
+  const activeMounts = activeSyncMountSegments(project, syncTargets);
+  if (activeMounts.some((mountSegments) => segmentsHavePrefix(targetSegments, mountSegments))) {
+    return { allowed: true };
+  }
+
+  const activeMountLabels = activeMounts.map(instancePathLabel);
+  const projectLabel = project?.name || project?.id || session?.projectId || "current project";
+  const targetLabel = instancePathLabel(targetSegments);
+  const mountList = activeMountLabels.length > 0 ? activeMountLabels.join(", ") : "none";
+  return {
+    allowed: false,
+    blocked: true,
+    reasonCode: "OUTSIDE_SYNC_MOUNT",
+    message: `${type} blocked: target path '${targetLabel}' is outside the active sync mounts for project '${projectLabel}'. Active mounts: ${mountList}.`,
+    targetPath: targetLabel,
+    activeMounts: activeMountLabels
+  };
+}
+
 function findSnapshotNode(snapshot, instanceSegments) {
   if (!snapshot || !Array.isArray(snapshot.mounts) || !Array.isArray(instanceSegments)) {
     return null;
@@ -3926,6 +3999,28 @@ class PluginRobloxApp {
         confirmed: false,
         reasonCode: policy.reasonCode,
         sessionId: session.id
+      };
+    }
+    const project = this.getProjectById(session.projectId);
+    const mountPolicy = validateDestructiveCommandSyncMount(project, session, type, payload, this.syncTargetsForSession(session));
+    if (!mountPolicy.allowed) {
+      logSync("destructive_command_blocked", {
+        sessionId,
+        type,
+        reason: mountPolicy.reasonCode,
+        targetPath: mountPolicy.targetPath,
+        activeMounts: mountPolicy.activeMounts
+      });
+      return {
+        ok: false,
+        error: mountPolicy.message,
+        blocked: true,
+        declined: false,
+        confirmed: false,
+        reasonCode: mountPolicy.reasonCode,
+        sessionId: session.id,
+        targetPath: mountPolicy.targetPath,
+        activeMounts: mountPolicy.activeMounts
       };
     }
     const result = await this.enqueueCommand(sessionId, type, payload, true);
