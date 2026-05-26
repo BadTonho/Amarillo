@@ -52,6 +52,10 @@ const PLACE_SYNC_MOUNT_OPTIONS = [
   { id: "StarterPlayer.StarterCharacterScripts", label: "StarterCharacterScripts", path: "StarterPlayer.StarterCharacterScripts" },
   { id: "StarterPlayer.StarterPlayerScripts", label: "StarterPlayerScripts", path: "StarterPlayer.StarterPlayerScripts" }
 ];
+const PLACE_SYNC_DEFAULT_BASE_MOUNT_IDS = PLACE_SYNC_MOUNT_OPTIONS.map((mount) => mount.id);
+const PLACE_SYNC_DEFAULT_EXCLUSIVE_MOUNT_IDS = PLACE_SYNC_MOUNT_OPTIONS
+  .filter((mount) => mount.id !== "Workspace")
+  .map((mount) => mount.id);
 
 // Shared API types — single source of truth for daemon ↔ extension contracts
 import type {
@@ -104,6 +108,8 @@ interface SidebarRuntimeState {
   health?: BridgeHealthPayload | null;
   healthError?: string | null;
   healthDurationMs?: number;
+  projectsPayload?: any;
+  projectsError?: string | null;
   activity?: ActivityEntryPayload[];
   activityError?: string | null;
 }
@@ -881,6 +887,8 @@ async function readSidebarRuntimeState(): Promise<SidebarRuntimeState> {
     health: null,
     healthError: null,
     healthDurationMs: 0,
+    projectsPayload: null,
+    projectsError: null,
     activity: [],
     activityError: null
   };
@@ -906,6 +914,13 @@ async function readSidebarRuntimeState(): Promise<SidebarRuntimeState> {
   }
 
   if (runtimeState.health?.ok && daemonMatchesWorkspace(settings, runtimeState.health)) {
+    try {
+      runtimeState.projectsPayload = await requestJson<Record<string, any>>("GET", "/projects", undefined, { timeout: 2500 });
+    } catch (error) {
+      runtimeState.projectsError = sidebarErrorMessage(error);
+      log(`Sidebar projects failed: ${runtimeState.projectsError}`);
+    }
+
     try {
       runtimeState.activity = await fetchRecentActivity(10);
     } catch (error) {
@@ -955,7 +970,12 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   if (sidebarRuntime.activityError) {
     workspaceNotes.push(`Sync history failed: ${sidebarRuntime.activityError}`);
   }
+  if (sidebarRuntime.projectsError) {
+    workspaceNotes.push(`Project list failed: ${sidebarRuntime.projectsError}`);
+  }
   const activityEntries = Array.isArray(sidebarRuntime.activity) ? sidebarRuntime.activity : [];
+  const projectsPayload = sidebarRuntime.projectsPayload || {};
+  const projects = workspaceMatches && Array.isArray(projectsPayload.projects) ? projectsPayload.projects : [];
 
   let statusTone = "neutral";
   if (running && activeSession && workspaceMatches) {
@@ -1072,7 +1092,6 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
       createSidebarFact("Place", `${pendingPlaceSetup.placeName || "Unknown"} (${pendingPlaceSetup.placeId || 0})`, "warning"),
       createSidebarFact("Project", String(pendingPlaceSetup.suggestedProjectId || "-"), "warning")
     );
-    sessionActions.unshift(createSidebarAction("Configure Place Sync", "amarillo.configurePlaceSync", "primary"));
   } else if (connectionOffer) {
     sessionTone = connectionOffer.status === "declined" ? "warning" : "info";
     sessionBadge = handshakeStatusLabel(connectionOffer);
@@ -1151,6 +1170,15 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
       facts: sessionFacts,
       actions: sessionActions
     },
+    placeSync: buildSidebarPlaceSyncState({
+      running,
+      workspaceMatches,
+      pendingPlaceSetup,
+      projects,
+      projectsPayload,
+      projectsError: sidebarRuntime.projectsError || null,
+      health
+    }),
     sections: [
       {
         title: "Places",
@@ -1160,8 +1188,6 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
             ? `Current place ${activeSession.placeName || activeSession.projectName || "Studio"} (${activeSession.placeId || 0}).`
             : "Create and edit place project mappings."),
         actions: [
-          createSidebarAction("Configure Place Sync", "amarillo.configurePlaceSync", pendingPlaceSetup ? "primary" : "secondary"),
-          createSidebarAction("Create Place Project", "amarillo.createPlaceProject", pendingPlaceSetup ? "secondary" : "secondary"),
           createSidebarAction("Edit Place IDs", "amarillo.editPlaceIds")
         ]
       },
@@ -1899,6 +1925,10 @@ class AmarilloSidebarProvider {
         }
         return;
       }
+      if (message.type === "placeSyncApply") {
+        await applyPlaceSyncFromSidebarMessage(message);
+        return;
+      }
       if (message.type !== "command" || typeof message.command !== "string") {
         return;
       }
@@ -2549,6 +2579,113 @@ function placeSyncMountState(project) {
   });
 }
 
+function placeSyncProjectLabel(project) {
+  if (!project) {
+    return "No project";
+  }
+  const placeIds = Array.isArray(project.placeIds) && project.placeIds.length > 0
+    ? ` - Place ${project.placeIds.join(", ")}`
+    : "";
+  return `${project.name || project.id}${placeIds}`;
+}
+
+function placeSyncSameIds(left = [], right = []) {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === rightSet.size && Array.from(leftSet).every((id) => rightSet.has(id));
+}
+
+function selectedPlaceSyncMountIds(states, key) {
+  return (Array.isArray(states) ? states : [])
+    .filter((mount) => mount[key] === true)
+    .map((mount) => mount.id);
+}
+
+function buildPlaceSyncProjectContext(project) {
+  const states = placeSyncMountState(project);
+  const baseMountIds = selectedPlaceSyncMountIds(states, "baseEnabled");
+  const exclusiveMountIds = selectedPlaceSyncMountIds(states, "exclusiveEnabled");
+  return {
+    id: project?.id || "",
+    name: project?.name || project?.id || "Project",
+    label: placeSyncProjectLabel(project),
+    placeIds: Array.isArray(project?.placeIds) ? project.placeIds : [],
+    baseMountIds,
+    exclusiveMountIds,
+    defaultBaseMountIds: PLACE_SYNC_DEFAULT_BASE_MOUNT_IDS,
+    defaultExclusiveMountIds: PLACE_SYNC_DEFAULT_EXCLUSIVE_MOUNT_IDS,
+    baseUseDefault: placeSyncSameIds(baseMountIds, PLACE_SYNC_DEFAULT_BASE_MOUNT_IDS),
+    exclusiveUseDefault: placeSyncSameIds(exclusiveMountIds, PLACE_SYNC_DEFAULT_EXCLUSIVE_MOUNT_IDS),
+    keepUnknowns: states.some((mount) => mount.keepUnknowns),
+    mounts: states
+  };
+}
+
+function buildPlaceSyncCreateContext(pendingPlaceSetup, sourceProject) {
+  const sourceStates = placeSyncMountState(sourceProject);
+  const sourceBaseMountIds = selectedPlaceSyncMountIds(sourceStates, "baseEnabled");
+  return {
+    placeId: Number(pendingPlaceSetup?.placeId || 0),
+    placeName: String(pendingPlaceSetup?.placeName || `Place ${pendingPlaceSetup?.placeId || 0}`),
+    sourceProjectLabel: sourceProject ? placeSyncProjectLabel(sourceProject) : "Default mount layout",
+    baseMountIds: sourceBaseMountIds.length > 0 ? sourceBaseMountIds : PLACE_SYNC_DEFAULT_BASE_MOUNT_IDS,
+    exclusiveMountIds: PLACE_SYNC_DEFAULT_EXCLUSIVE_MOUNT_IDS,
+    defaultBaseMountIds: PLACE_SYNC_DEFAULT_BASE_MOUNT_IDS,
+    defaultExclusiveMountIds: PLACE_SYNC_DEFAULT_EXCLUSIVE_MOUNT_IDS,
+    baseUseDefault: true,
+    exclusiveUseDefault: true,
+    keepUnknowns: true,
+    mounts: sourceStates
+  };
+}
+
+function buildSidebarPlaceSyncState({ running, workspaceMatches, pendingPlaceSetup, projects, projectsPayload, projectsError, health }) {
+  if (!running || !workspaceMatches) {
+    return {
+      enabled: false,
+      title: "Place Sync",
+      description: "Start the bridge for this workspace to configure place sync."
+    };
+  }
+
+  const projectList = Array.isArray(projects) ? projects : [];
+  if (pendingPlaceSetup?.placeId) {
+    const sourceProject = sourceProjectForPlaceSync(projectList, projectsPayload?.defaultProjectId || null);
+    return {
+      enabled: true,
+      mode: "create",
+      title: "Place Sync",
+      description: `Setup ${pendingPlaceSetup.placeName || "this place"} (${pendingPlaceSetup.placeId}).`,
+      mountOptions: PLACE_SYNC_MOUNT_OPTIONS,
+      create: buildPlaceSyncCreateContext(pendingPlaceSetup, sourceProject),
+      projects: projectList.map(buildPlaceSyncProjectContext),
+      projectsError: projectsError || null
+    };
+  }
+
+  if (projectList.length === 0) {
+    return {
+      enabled: false,
+      title: "Place Sync",
+      description: projectsError || "No Amarillo projects were found in this workspace."
+    };
+  }
+
+  const activeProject = activeProjectFromHealth(projectList, health)
+    || projectList.find((project) => Array.isArray(project.placeIds) && project.placeIds.length > 0)
+    || projectList[0];
+  return {
+    enabled: true,
+    mode: "edit",
+    title: "Place Sync",
+    description: "Choose shared and exclusive folders for the selected place project.",
+    mountOptions: PLACE_SYNC_MOUNT_OPTIONS,
+    selectedProjectId: activeProject?.id || projectList[0]?.id || "",
+    projects: projectList.map(buildPlaceSyncProjectContext),
+    projectsError: projectsError || null
+  };
+}
+
 function defaultMountIdsFromProject(project, key, fallbackIds = null) {
   const states = placeSyncMountState(project);
   const selected = states
@@ -2772,6 +2909,55 @@ async function configurePlaceSyncFromSidebar(options: { requirePendingSetup?: bo
 
 async function createPlaceProjectFromSidebar() {
   await configurePlaceSyncFromSidebar({ requirePendingSetup: true });
+}
+
+function normalizePlaceSyncMessageMountIds(value) {
+  const validIds = new Set(PLACE_SYNC_MOUNT_OPTIONS.map((mount) => mount.id));
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map((item) => String(item || "")).filter((id) => validIds.has(id))))
+    : [];
+}
+
+async function applyPlaceSyncFromSidebarMessage(message) {
+  const baseMountIds = normalizePlaceSyncMessageMountIds(message.baseMountIds);
+  const exclusiveMountIds = normalizePlaceSyncMessageMountIds(message.exclusiveMountIds);
+  const keepUnknowns = message.keepUnknowns === true;
+
+  if (exclusiveMountIds.length === 0) {
+    throw new Error("Select at least one exclusive folder for this place.");
+  }
+
+  if (message.mode === "create") {
+    const placeId = Number(message.placeId || 0);
+    const placeName = String(message.placeName || "").trim() || `Place ${placeId}`;
+    if (!Number.isInteger(placeId) || placeId <= 0) {
+      throw new Error("Enter a valid positive Roblox Place ID.");
+    }
+    const response = await requestJson<Record<string, any>>("POST", "/projects/place-setup", {
+      placeId,
+      placeName,
+      baseMountIds,
+      exclusiveMountIds,
+      keepUnknowns
+    }, { timeout: 10000 });
+    log(`Configured inline place sync by creating ${response.projectId || response.projectPath || "unknown"} for place ${placeId}.`);
+    refreshSidebar();
+    vscode.window.showInformationMessage(`Configured Amarillo place sync for ${placeName}. Reconnect the Roblox Studio plugin to sync.`);
+    return;
+  }
+
+  const projectId = String(message.projectId || "").trim();
+  if (!projectId) {
+    throw new Error("Choose a place project before applying place sync.");
+  }
+  await requestJson<Record<string, any>>("PATCH", `/projects/${encodeURIComponent(projectId)}/place-sync`, {
+    baseMountIds,
+    exclusiveMountIds,
+    keepUnknowns
+  }, { timeout: 10000 });
+  log(`Configured inline place sync for ${projectId}.`);
+  refreshSidebar();
+  vscode.window.showInformationMessage("Configured place sync.");
 }
 
 function parsePlaceIdsInput(input) {
