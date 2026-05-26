@@ -388,6 +388,7 @@ test("place setup and place sync edit select exclusive and shared base mounts by
   assert.equal(projectJson.tree.ServerScriptService.ExclusivoArena.$keepUnknowns, undefined);
   assert.equal(projectJson.tree.ReplicatedStorage.$path, "src/ReplicatedStorage");
   assert.equal(projectJson.tree.ReplicatedStorage.$amarilloDisabledPath, undefined);
+  assert.equal(projectJson.tree.ReplicatedStorage.ExclusivoArena, undefined);
   assert.equal(projectJson.tree.StarterGui.ExclusivoArena, undefined);
   assert.equal(projectJson.tree.StarterGui.$amarilloDisabledPath, "src/StarterGui");
 });

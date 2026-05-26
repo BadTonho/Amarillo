@@ -264,6 +264,32 @@ test("Roblox plugin preserves nested exclusive mount containers during sync", ()
   assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mount\.segments or \{\}, child\.Name\) and not isNonSyncableInstance/);
 });
 
+test("Roblox plugin resolves exclusive mount folders as real Studio containers", () => {
+  const resolveStart = pluginSource.indexOf("local function resolveMountContainer(segments)");
+  const resolveEnd = pluginSource.indexOf("local function mountPathLabel(segments)", resolveStart);
+  const resolveSource = pluginSource.slice(resolveStart, resolveEnd);
+  assert.ok(resolveStart >= 0, "expected resolveMountContainer helper");
+  assert.ok(resolveEnd > resolveStart, "expected resolveMountContainer helper end");
+  assert.doesNotMatch(resolveSource, /string\.sub\(segment, 1, 9\) == "Exclusivo"[\s\S]{0,80}break/);
+  assert.match(resolveSource, /current = current and current:FindFirstChild\(segment\)/);
+
+  const validateStart = pluginSource.indexOf("local function validateMountContainerRecovery(segments)");
+  const validateEnd = pluginSource.indexOf("local function ensureRecoverableMountContainer(segments)", validateStart);
+  const validateSource = pluginSource.slice(validateStart, validateEnd);
+  assert.ok(validateStart >= 0, "expected validateMountContainerRecovery helper");
+  assert.ok(validateEnd > validateStart, "expected validateMountContainerRecovery helper end");
+  assert.doesNotMatch(validateSource, /string\.sub\(segment, 1, 9\) == "Exclusivo"[\s\S]{0,80}break/);
+  assert.match(validateSource, /local child = current:FindFirstChild\(segment\)/);
+
+  const ensureStart = pluginSource.indexOf("local function ensureRecoverableMountContainer(segments)");
+  const ensureEnd = pluginSource.indexOf("local function preflightProjectMounts(projectSnapshot)", ensureStart);
+  const ensureSource = pluginSource.slice(ensureStart, ensureEnd);
+  assert.ok(ensureStart >= 0, "expected ensureRecoverableMountContainer helper");
+  assert.ok(ensureEnd > ensureStart, "expected ensureRecoverableMountContainer helper end");
+  assert.doesNotMatch(ensureSource, /string\.sub\(segment, 1, 9\) == "Exclusivo"[\s\S]{0,80}break/);
+  assert.match(ensureSource, /safeSetProperty\(folder, "Name", segment, "mount recovery name"\)/);
+});
+
 test("Roblox plugin verifies apply snapshots against the applied tree without preserved Studio-only nodes", () => {
   assert.match(pluginSource, /local shouldDestroyUnexpectedChild = nil/);
   assert.match(pluginSource, /local function isOpaqueModelInstance\(instance\)/);

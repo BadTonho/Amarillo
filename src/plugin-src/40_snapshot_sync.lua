@@ -406,9 +406,6 @@ end
 local function resolveMountContainer(segments)
 	local current = game
 	for index, segment in ipairs(segments) do
-		if string.sub(segment, 1, 9) == "Exclusivo" then
-			break
-		end
 		if index == 1 then
 			local ok, service = pcall(function()
 				return game:GetService(segment)
@@ -480,9 +477,6 @@ local function validateMountContainerRecovery(segments)
 	local current = root
 	for index = 2, #segments do
 		local segment = segments[index]
-		if string.sub(segment, 1, 9) == "Exclusivo" then
-			break
-		end
 		local child = current:FindFirstChild(segment)
 		if child then
 			current = child
@@ -522,9 +516,6 @@ local function ensureRecoverableMountContainer(segments)
 	local currentPath = tostring(segments[1])
 	for index = 2, #segments do
 		local segment = segments[index]
-		if string.sub(segment, 1, 9) == "Exclusivo" then
-			break
-		end
 		local child = current:FindFirstChild(segment)
 		currentPath = currentPath .. "." .. tostring(segment)
 		if child then
