@@ -164,8 +164,26 @@ local function appendLog(message)
 end
 
 local function updateStatus(text)
-	setTextIfPresent(state.ui.statusLabel, "Status: " .. text)
-	setTextIfPresent(state.ui.advancedStatusLabel, "Status: " .. text)
+	local displayText = "Status: " .. text
+	setTextIfPresent(state.ui.statusLabel, displayText)
+	setTextIfPresent(state.ui.advancedStatusLabel, displayText)
+
+	local color = Color3.fromRGB(139, 148, 158) -- Default neutral VS Code description grey
+	local textLower = string.lower(text)
+	if textLower == "connected" or textLower == "ready" then
+		color = Color3.fromRGB(63, 185, 80) -- Green
+	elseif string.find(textLower, "syncing") or string.find(textLower, "waiting") or string.find(textLower, "reconnecting") then
+		color = Color3.fromRGB(210, 153, 34) -- Yellow
+	elseif string.find(textLower, "error") or string.find(textLower, "offline") or string.find(textLower, "disconnected") or string.find(textLower, "invalid") or string.find(textLower, "blocked") then
+		color = Color3.fromRGB(248, 81, 73) -- Red
+	end
+
+	if state.ui.statusLabel then
+		state.ui.statusLabel.TextColor3 = color
+	end
+	if state.ui.advancedStatusLabel then
+		state.ui.advancedStatusLabel.TextColor3 = color
+	end
 end
 
 local function updateProject(text)
