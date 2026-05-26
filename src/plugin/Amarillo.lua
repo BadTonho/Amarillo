@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.27"
+local PLUGIN_VERSION = "1.1.28"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -307,8 +307,26 @@ local function appendLog(message)
 end
 
 local function updateStatus(text)
-	setTextIfPresent(state.ui.statusLabel, "Status: " .. text)
-	setTextIfPresent(state.ui.advancedStatusLabel, "Status: " .. text)
+	local displayText = "Status: " .. text
+	setTextIfPresent(state.ui.statusLabel, displayText)
+	setTextIfPresent(state.ui.advancedStatusLabel, displayText)
+
+	local color = Color3.fromRGB(139, 148, 158) -- Default neutral VS Code description grey
+	local textLower = string.lower(text)
+	if textLower == "connected" or textLower == "ready" then
+		color = Color3.fromRGB(63, 185, 80) -- Green
+	elseif string.find(textLower, "syncing") or string.find(textLower, "waiting") or string.find(textLower, "reconnecting") then
+		color = Color3.fromRGB(210, 153, 34) -- Yellow
+	elseif string.find(textLower, "error") or string.find(textLower, "offline") or string.find(textLower, "disconnected") or string.find(textLower, "invalid") or string.find(textLower, "blocked") then
+		color = Color3.fromRGB(248, 81, 73) -- Red
+	end
+
+	if state.ui.statusLabel then
+		state.ui.statusLabel.TextColor3 = color
+	end
+	if state.ui.advancedStatusLabel then
+		state.ui.advancedStatusLabel.TextColor3 = color
+	end
 end
 
 local function updateProject(text)
@@ -3849,14 +3867,28 @@ local function pollCommands()
 	end
 end
 
+local function addCorner(instance, radius)
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = radius or UDim.new(0, 8)
+	safeSetParent(corner, instance, "UI corner parent")
+end
+
+local function addStroke(instance, color, thickness)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color or Color3.fromRGB(60, 60, 60)
+	stroke.Thickness = thickness or 1
+	stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	safeSetParent(stroke, instance, "UI stroke parent")
+end
+
 local function makeTextLabel(parent, text, size, position, textSize)
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
-	label.TextColor3 = Color3.fromRGB(230, 230, 235)
-	label.Font = Enum.Font.Code
+	label.TextColor3 = Color3.fromRGB(204, 204, 204)
+	label.Font = Enum.Font.GothamMedium
 	label.TextXAlignment = Enum.TextXAlignment.Left
 	label.TextYAlignment = Enum.TextYAlignment.Top
-	label.TextSize = textSize or 14
+	label.TextSize = textSize or 12
 	label.TextWrapped = true
 	label.Text = text
 	label.Size = size
@@ -3865,25 +3897,20 @@ local function makeTextLabel(parent, text, size, position, textSize)
 	return label
 end
 
-local function addCorner(instance, radius)
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = radius or UDim.new(0, 8)
-	safeSetParent(corner, instance, "UI corner parent")
-end
-
 local function makeButton(parent, text, size, position, callback)
 	local button = Instance.new("TextButton")
 	button.Text = text
 	button.Font = Enum.Font.GothamSemibold
-	button.TextSize = 13
-	button.TextColor3 = Color3.fromRGB(250, 250, 250)
-	button.BackgroundColor3 = Color3.fromRGB(39, 88, 123)
+	button.TextSize = 12
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.BackgroundColor3 = Color3.fromRGB(9, 105, 218)
 	button.BorderSizePixel = 0
 	button.AutoButtonColor = true
 	button.Size = size
 	button.Position = position
 	safeSetParent(button, parent, "UI button parent")
-	addCorner(button)
+	addCorner(button, UDim.new(0, 6))
+	addStroke(button, Color3.fromRGB(60, 60, 60), 1)
 	button.MouseButton1Click:Connect(callback)
 	return button
 end
@@ -3897,38 +3924,41 @@ local function makeTextBox(parent, placeholder, size, position, multiline)
 	box.TextXAlignment = Enum.TextXAlignment.Left
 	box.TextYAlignment = Enum.TextYAlignment.Top
 	box.Font = Enum.Font.Code
-	box.TextSize = 13
-	box.TextColor3 = Color3.fromRGB(240, 240, 240)
-	box.BackgroundColor3 = Color3.fromRGB(26, 29, 34)
+	box.TextSize = 12
+	box.TextColor3 = Color3.fromRGB(230, 230, 230)
+	box.PlaceholderColor3 = Color3.fromRGB(110, 115, 125)
+	box.BackgroundColor3 = Color3.fromRGB(31, 31, 31)
 	box.BorderSizePixel = 0
 	box.Size = size
 	box.Position = position
 	safeSetParent(box, parent, "UI text box parent")
-	addCorner(box)
+	addCorner(box, UDim.new(0, 6))
+	addStroke(box, Color3.fromRGB(60, 60, 60), 1)
 	return box
 end
 
 local function makeCard(parent, size, position, color)
 	local card = Instance.new("Frame")
-	card.BackgroundColor3 = color or Color3.fromRGB(24, 27, 33)
+	card.BackgroundColor3 = color or Color3.fromRGB(37, 37, 38)
 	card.BorderSizePixel = 0
 	card.Size = size
 	card.Position = position
 	safeSetParent(card, parent, "UI card parent")
-	addCorner(card, UDim.new(0, 12))
+	addCorner(card, UDim.new(0, 8))
+	addStroke(card, Color3.fromRGB(60, 60, 60), 1)
 	return card
 end
 
 local function setButtonStyle(button, styleName)
 	if styleName == "secondary" then
-		button.BackgroundColor3 = Color3.fromRGB(34, 38, 46)
-		button.TextColor3 = Color3.fromRGB(223, 226, 232)
+		button.BackgroundColor3 = Color3.fromRGB(48, 54, 61)
+		button.TextColor3 = Color3.fromRGB(201, 209, 217)
 	elseif styleName == "ghost" then
-		button.BackgroundColor3 = Color3.fromRGB(22, 25, 30)
-		button.TextColor3 = Color3.fromRGB(182, 188, 198)
+		button.BackgroundColor3 = Color3.fromRGB(33, 38, 45)
+		button.TextColor3 = Color3.fromRGB(139, 148, 158)
 	else
-		button.BackgroundColor3 = Color3.fromRGB(39, 88, 123)
-		button.TextColor3 = Color3.fromRGB(250, 250, 250)
+		button.BackgroundColor3 = Color3.fromRGB(9, 105, 218)
+		button.TextColor3 = Color3.fromRGB(255, 255, 255)
 	end
 end
 
@@ -4155,7 +4185,7 @@ local function buildPluginShell()
 	widget.Title = "Amarillo Bridge"
 
 	local root = Instance.new("Frame")
-	root.BackgroundColor3 = Color3.fromRGB(16, 18, 23)
+	root.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 	root.BorderSizePixel = 0
 	root.Size = UDim2.fromScale(1, 1)
 	safeSetParent(root, widget, "UI root parent")
@@ -4181,11 +4211,11 @@ local function buildPluginShell()
 end
 
 local function buildHomePage()
-local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
+local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12))
 local homeTitle = makeTextLabel(homeHero, "Amarillo", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
 local homeSubtitle = makeTextLabel(homeHero, "Bridge Studio <-> Workspace", UDim2.new(1, -120, 0, 18), UDim2.fromOffset(16, 46), 13)
-homeSubtitle.TextColor3 = Color3.fromRGB(166, 172, 184)
+homeSubtitle.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.endpointLabel = makeTextLabel(homeHero, "", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 82), 16)
 state.ui.endpointLabel.Font = Enum.Font.Code
 local settingsButton = makeButton(homeHero, "Settings", UDim2.fromOffset(92, 30), UDim2.fromOffset(336, 16), openSettingsView)
@@ -4194,15 +4224,15 @@ local advancedButton = makeButton(homeHero, "Advanced", UDim2.fromOffset(92, 30)
 setButtonStyle(advancedButton, "ghost")
 state.ui.statusLabel = makeTextLabel(homeHero, "Status: disconnected", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 116), 14)
 
-local homeSummary = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 104), UDim2.fromOffset(10, 182), Color3.fromRGB(24, 27, 33))
+local homeSummary = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 104), UDim2.fromOffset(10, 182))
 state.ui.projectLabel = makeTextLabel(homeSummary, "Workspace: -", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 16), 14)
 state.ui.sessionLabel = makeTextLabel(homeSummary, "Session: -", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 40), 14)
 state.ui.queueLabel = makeTextLabel(homeSummary, "Queue: -", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(16, 66), 14)
 state.ui.conflictLabel = makeTextLabel(homeSummary, "Conflicts: 0", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(210, 66), 14)
 state.ui.targetProjectLabel = makeTextLabel(homeSummary, "Target project: Auto", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 86), 13)
-state.ui.targetProjectLabel.TextColor3 = Color3.fromRGB(166, 172, 184)
+state.ui.targetProjectLabel.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-local homeActions = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 144), UDim2.fromOffset(10, 300), Color3.fromRGB(24, 27, 33))
+local homeActions = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 144), UDim2.fromOffset(10, 300))
 local connectButton = makeButton(homeActions, "Connect", UDim2.fromOffset(136, 36), UDim2.fromOffset(16, 18), connectSession)
 local disconnectButton = makeButton(homeActions, "Disconnect", UDim2.fromOffset(136, 36), UDim2.fromOffset(160, 18), disconnectSession)
 setButtonStyle(disconnectButton, "secondary")
@@ -4210,26 +4240,26 @@ local sendButton = makeButton(homeActions, "Receive from PC", UDim2.fromOffset(2
 local receiveButton = makeButton(homeActions, "Send to PC", UDim2.fromOffset(200, 36), UDim2.fromOffset(224, 72), manualPush)
 setButtonStyle(receiveButton, "secondary")
 local homeHint = makeTextLabel(homeActions, "Use Advanced for tree, selection, playtest, and Luau.", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 118), 12)
-homeHint.TextColor3 = Color3.fromRGB(152, 158, 168)
+homeHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-local homeSafety = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 74), UDim2.fromOffset(10, 456), Color3.fromRGB(24, 27, 33))
+local homeSafety = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 74), UDim2.fromOffset(10, 456))
 local homeConfirmTitle = makeTextLabel(homeSafety, "Privileged action confirmation", UDim2.new(1, -170, 0, 18), UDim2.fromOffset(16, 12), 14)
 homeConfirmTitle.Font = Enum.Font.GothamSemibold
 local homeConfirmHint = makeTextLabel(homeSafety, "Prompts before run_code and destructive API actions.", UDim2.new(1, -170, 0, 32), UDim2.fromOffset(16, 36), 12)
-homeConfirmHint.TextColor3 = Color3.fromRGB(152, 158, 168)
+homeConfirmHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.homeConfirmPropToggle = makeButton(homeSafety, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(132, 32), UDim2.new(1, -148, 0, 20), togglePrivilegedActionConfirmation)
 end
 
 local function buildSettingsPage()
-local settingsHeader = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
+local settingsHeader = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12))
 local settingsBackButton = makeButton(settingsHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 18), openHomeView)
 setButtonStyle(settingsBackButton, "secondary")
 local settingsTitle = makeTextLabel(settingsHeader, "Settings", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(110, 18), 22)
 settingsTitle.Font = Enum.Font.GothamBold
 
-local settingsCard = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 438), UDim2.fromOffset(10, 96), Color3.fromRGB(24, 27, 33))
+local settingsCard = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 438), UDim2.fromOffset(10, 96))
 state.ui.settingsEndpointLabel = makeTextLabel(settingsCard, "Current: -", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 16), 14)
-state.ui.settingsEndpointLabel.TextColor3 = Color3.fromRGB(170, 176, 188)
+state.ui.settingsEndpointLabel.TextColor3 = Color3.fromRGB(139, 148, 158)
 local settingsHostTitle = makeTextLabel(settingsCard, "Host", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 50), 14)
 settingsHostTitle.Font = Enum.Font.GothamSemibold
 state.ui.settingsHostBox = makeTextBox(settingsCard, "127.0.0.1", UDim2.new(1, -32, 0, 34), UDim2.fromOffset(16, 74), false)
@@ -4239,13 +4269,13 @@ settingsPortTitle.Font = Enum.Font.GothamSemibold
 state.ui.settingsPortBox = makeTextBox(settingsCard, "8323", UDim2.new(1, -32, 0, 34), UDim2.fromOffset(16, 144), false)
 state.ui.settingsPortBox.TextYAlignment = Enum.TextYAlignment.Center
 state.ui.settingsProjectLabel = makeTextLabel(settingsCard, "Target project: Auto", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 192), 14)
-state.ui.settingsProjectLabel.TextColor3 = Color3.fromRGB(170, 176, 188)
+state.ui.settingsProjectLabel.TextColor3 = Color3.fromRGB(139, 148, 158)
 local settingsProjectsTitle = makeTextLabel(settingsCard, "Project for this place", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 220), 14)
 settingsProjectsTitle.Font = Enum.Font.GothamSemibold
 state.ui.settingsProjectsHint = makeTextLabel(settingsCard, "Auto uses placeId/default. Choose a project when the place is not mapped.", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 244), 12)
-state.ui.settingsProjectsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+state.ui.settingsProjectsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.projectListCanvas = Instance.new("ScrollingFrame")
-state.ui.projectListCanvas.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
+state.ui.projectListCanvas.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 state.ui.projectListCanvas.BorderSizePixel = 0
 state.ui.projectListCanvas.ScrollBarThickness = 6
 state.ui.projectListCanvas.AutomaticCanvasSize = Enum.AutomaticSize.None
@@ -4278,23 +4308,23 @@ local saveSettingsButton = makeButton(settingsCard, "Save", UDim2.fromOffset(120
 local workspaceSyncTitle = makeTextLabel(state.ui.settingsPage, "Workspace sync", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 546), 14)
 workspaceSyncTitle.Font = Enum.Font.GothamSemibold
 local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, Workspace is ignored in both sync directions.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 568), 12)
-workspaceSyncHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+workspaceSyncHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 568), toggleWorkspaceSync)
 
 -- Confirm privileged actions toggle
 local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 620), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
 local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 642), 12)
-confirmPropHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+confirmPropHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 
 state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 642), togglePrivilegedActionConfirmation)
 
 local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 12)
-settingsHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+settingsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 end
 
 local function buildAdvancedPage()
-local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12), Color3.fromRGB(20, 24, 31))
+local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12))
 local advancedBackButton = makeButton(advancedHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 20), openHomeView)
 setButtonStyle(advancedBackButton, "secondary")
 local advancedSettingsButton = makeButton(advancedHeader, "Settings", UDim2.fromOffset(86, 30), UDim2.fromOffset(354, 20), openSettingsView)
@@ -4302,16 +4332,16 @@ setButtonStyle(advancedSettingsButton, "ghost")
 local advancedTitle = makeTextLabel(advancedHeader, "Advanced", UDim2.new(1, -200, 0, 26), UDim2.fromOffset(112, 12), 22)
 advancedTitle.Font = Enum.Font.GothamBold
 local advancedSubtitle = makeTextLabel(advancedHeader, "Inspection and playtest tools", UDim2.new(1, -200, 0, 16), UDim2.fromOffset(112, 40), 12)
-advancedSubtitle.TextColor3 = Color3.fromRGB(166, 172, 184)
+advancedSubtitle.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-local advancedSummary = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 110), UDim2.fromOffset(10, 94), Color3.fromRGB(24, 27, 33))
+local advancedSummary = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 110), UDim2.fromOffset(10, 94))
 state.ui.advancedStatusLabel = makeTextLabel(advancedSummary, "Status: disconnected", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 14), 13)
 state.ui.advancedProjectLabel = makeTextLabel(advancedSummary, "Workspace: -", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 36), 13)
 state.ui.advancedSessionLabel = makeTextLabel(advancedSummary, "Session: -", UDim2.new(1, -32, 0, 18), UDim2.fromOffset(16, 58), 13)
 state.ui.advancedQueueLabel = makeTextLabel(advancedSummary, "Queue: -", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(16, 80), 13)
 state.ui.advancedConflictLabel = makeTextLabel(advancedSummary, "Conflicts: 0", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(210, 80), 13)
 
-local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 214), Color3.fromRGB(24, 27, 33))
+local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 214))
 local previewTreeButton = makeButton(advancedActions, "Preview Tree", UDim2.fromOffset(100, 30), UDim2.fromOffset(16, 16), refreshTreePreview)
 local selectionButton = makeButton(advancedActions, "Selection", UDim2.fromOffset(92, 30), UDim2.fromOffset(124, 16), manualSelection)
 setButtonStyle(selectionButton, "secondary")
@@ -4344,7 +4374,7 @@ state.ui.connectionPromptOverlay.Visible = false
 state.ui.connectionPromptOverlay.ZIndex = 20
 safeSetParent(state.ui.connectionPromptOverlay, root, "UI connection prompt parent")
 
-local connectionPromptCard = makeCard(state.ui.connectionPromptOverlay, UDim2.new(1, -48, 0, 220), UDim2.fromOffset(24, 170), Color3.fromRGB(24, 27, 33))
+local connectionPromptCard = makeCard(state.ui.connectionPromptOverlay, UDim2.new(1, -48, 0, 220), UDim2.fromOffset(24, 170))
 connectionPromptCard.ZIndex = 21
 state.ui.connectionPromptTitle = makeTextLabel(connectionPromptCard, "New VS Code connection", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 22)
 state.ui.connectionPromptTitle.Font = Enum.Font.GothamBold
@@ -4352,7 +4382,7 @@ state.ui.connectionPromptTitle.ZIndex = 22
 state.ui.connectionPromptBody = makeTextLabel(connectionPromptCard, "The plugin detected a connection request.", UDim2.new(1, -32, 0, 42), UDim2.fromOffset(16, 54), 14)
 state.ui.connectionPromptBody.ZIndex = 22
 state.ui.connectionPromptHint = makeTextLabel(connectionPromptCard, "Accept to choose the initial source of truth.", UDim2.new(1, -32, 0, 36), UDim2.fromOffset(16, 98), 12)
-state.ui.connectionPromptHint.TextColor3 = Color3.fromRGB(166, 172, 184)
+state.ui.connectionPromptHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.connectionPromptHint.ZIndex = 22
 
 state.ui.connectionPromptAccept = makeButton(connectionPromptCard, "Accept", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 164), confirmPendingConnection)
@@ -4380,7 +4410,7 @@ state.ui.propertyConfirmOverlay.Visible = false
 state.ui.propertyConfirmOverlay.ZIndex = 30
 safeSetParent(state.ui.propertyConfirmOverlay, root, "UI property confirm parent")
 
-local propertyConfirmCard = makeCard(state.ui.propertyConfirmOverlay, UDim2.new(1, -48, 0, 250), UDim2.fromOffset(24, 150), Color3.fromRGB(24, 27, 33))
+local propertyConfirmCard = makeCard(state.ui.propertyConfirmOverlay, UDim2.new(1, -48, 0, 250), UDim2.fromOffset(24, 150))
 propertyConfirmCard.ZIndex = 31
 
 state.ui.propertyConfirmTitle = makeTextLabel(propertyConfirmCard, "Confirm Privileged Action", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
@@ -4394,15 +4424,15 @@ propertyConfirmIcon.ZIndex = 32
 
 state.ui.propertyConfirmBody = makeTextLabel(propertyConfirmCard, "Target: ?", UDim2.new(1, -32, 0, 42), UDim2.fromOffset(16, 54), 14)
 state.ui.propertyConfirmBody.ZIndex = 32
-state.ui.propertyConfirmBody.TextColor3 = Color3.fromRGB(200, 205, 215)
+state.ui.propertyConfirmBody.TextColor3 = Color3.fromRGB(204, 204, 204)
 
 state.ui.propertyConfirmDetail = makeTextLabel(propertyConfirmCard, "Details: ?", UDim2.new(1, -32, 0, 60), UDim2.fromOffset(16, 100), 13)
 state.ui.propertyConfirmDetail.ZIndex = 32
-state.ui.propertyConfirmDetail.TextColor3 = Color3.fromRGB(166, 172, 184)
+state.ui.propertyConfirmDetail.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.propertyConfirmDetail.Font = Enum.Font.Code
 
 local propertyConfirmHint = makeTextLabel(propertyConfirmCard, "Accept to apply the action or decline to cancel.", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 168), 11)
-propertyConfirmHint.TextColor3 = Color3.fromRGB(140, 146, 156)
+propertyConfirmHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 propertyConfirmHint.ZIndex = 32
 
 local propertyAcceptBtn = makeButton(propertyConfirmCard, "Accept", UDim2.fromOffset(132, 36), UDim2.fromOffset(16, 198), acceptDestructiveAction)
@@ -4423,7 +4453,7 @@ state.ui.diffOverlay.Visible = false
 state.ui.diffOverlay.ZIndex = 40
 safeSetParent(state.ui.diffOverlay, root, "UI diff overlay parent")
 
-local diffCard = makeCard(state.ui.diffOverlay, UDim2.new(1, -48, 0, 400), UDim2.fromOffset(24, 80), Color3.fromRGB(24, 27, 33))
+local diffCard = makeCard(state.ui.diffOverlay, UDim2.new(1, -48, 0, 400), UDim2.fromOffset(24, 80))
 diffCard.ZIndex = 41
 
 local diffTitle = makeTextLabel(diffCard, "Review Changes", UDim2.new(1, -32, 0, 28), UDim2.fromOffset(16, 16), 20)
@@ -4431,11 +4461,11 @@ diffTitle.Font = Enum.Font.GothamBold
 diffTitle.ZIndex = 42
 
 local diffHint = makeTextLabel(diffCard, "The following changes will occur after connecting:", UDim2.new(1, -32, 0, 20), UDim2.fromOffset(16, 44), 12)
-diffHint.TextColor3 = Color3.fromRGB(156, 162, 172)
+diffHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 diffHint.ZIndex = 42
 
 state.ui.diffListCanvas = Instance.new("ScrollingFrame")
-state.ui.diffListCanvas.BackgroundColor3 = Color3.fromRGB(18, 20, 25)
+state.ui.diffListCanvas.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 state.ui.diffListCanvas.BorderSizePixel = 0
 state.ui.diffListCanvas.ScrollBarThickness = 6
 state.ui.diffListCanvas.Size = UDim2.new(1, -32, 0, 260)

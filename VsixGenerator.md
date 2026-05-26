@@ -13,13 +13,13 @@ cd .\amarillo
 Optional: set a new release version. This updates `amarillo-version.json`, root `package.json`, `package-lock.json`, the VS Code extension manifest, the daemon version, and the Roblox Studio plugin version. Legacy direct-runtime `.vscode/mcp.json` files are updated best-effort, but the current MCP flow uses a portable bootstrap instead:
 
 ```powershell
-npm.cmd run version:set -- 1.1.27
+npm.cmd run version:set -- 1.1.28
 ```
 
 Generate the VSIX:
 
 ```powershell
-npm.cmd run package:vsix
+pa
 ```
 
 `package:vsix` runs `version:sync` and `build` automatically. `version:sync` updates the plugin source fragment in `src/plugin-src/`, and `build` regenerates the committed `src/plugin/Amarillo.lua` before packaging. The TypeScript source in `src/daemon`, `src/mcp-proxy`, and `vscode-extension-src` is compiled before packaging, and the VSIX is written to `dist/`. The packaged runtime includes generated JavaScript and the generated single-file Roblox plugin; the packager also fails if it finds local machine references such as `C:\Users\...`, editor extension paths, or `rbx-studio-mcp.exe`.
