@@ -251,6 +251,16 @@ local function handleCommand(command)
 			})
 			return
 		end
+		local duplicateMessage = command.payload and duplicateMountRootGuardMessage("apply_file_patch", command.payload.path)
+		if duplicateMessage then
+			postCommandResult(command.id, false, {
+				error = duplicateMessage,
+				blocked = true,
+				reasonCode = "DUPLICATE_MOUNT_ROOT"
+			})
+			appendLog(duplicateMessage)
+			return
+		end
 		state.isApplyingRemote = true
 		state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
 		local appliedSnapshot = nil

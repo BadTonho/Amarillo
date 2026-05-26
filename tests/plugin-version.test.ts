@@ -141,6 +141,17 @@ test("Roblox plugin blocks path-based destructive actions outside active sync mo
   assert.match(pluginSource, /postOutsideSyncMountResult\(command, "delete_instance", targetSegments\)/);
 });
 
+test("Roblox plugin blocks duplicate exclusive mount roots before mutations", () => {
+  assert.match(pluginSource, /local function duplicateMountRootIssueForPath\(pathSegments\)/);
+  assert.match(pluginSource, /local function duplicateMountRootIssueForSnapshot\(projectSnapshot\)/);
+  assert.match(pluginSource, /reasonCode = "DUPLICATE_MOUNT_ROOT"/);
+  assert.match(pluginSource, /postDuplicateMountRootResult\(command, "modify_property", targetSegments\)/);
+  assert.match(pluginSource, /postDuplicateMountRootResult\(command, "create_instance", targetSegments\)/);
+  assert.match(pluginSource, /postDuplicateMountRootResult\(command, "delete_instance", targetSegments\)/);
+  assert.match(pluginSource, /duplicateMountRootGuardMessage\("apply_file_patch", command\.payload\.path\)/);
+  assert.match(pluginSource, /duplicateMountRootIssueForSnapshot\(projectSnapshot\)/);
+});
+
 test("Roblox plugin reuses the serialized snapshot body for automatic snapshot cache checks", () => {
   assert.match(pluginSource, /lastSnapshotBodyJson = nil/);
   assert.match(pluginSource, /local bodyJson = HttpService:JSONEncode\(bodyTable\)/);

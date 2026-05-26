@@ -26,6 +26,18 @@ local function postOutsideSyncMountResult(command, actionName, pathSegments)
 	appendLog(message)
 end
 
+local function postDuplicateMountRootResult(command, actionName, pathSegments)
+	local message = duplicateMountRootGuardMessage(actionName, pathSegments)
+	postCommandResult(command.id, false, {
+		error = message,
+		blocked = true,
+		declined = false,
+		confirmed = false,
+		reasonCode = "DUPLICATE_MOUNT_ROOT"
+	})
+	appendLog(message)
+end
+
 executeModifyProperty = function(command)
 	local instance = resolveInstanceByPath(command.payload.path)
 	if not instance then
@@ -43,6 +55,10 @@ executeModifyProperty = function(command)
 	local targetSegments = getInstancePathSegments(instance)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "modify_property", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "modify_property", targetSegments)
 		return
 	end
 
@@ -120,6 +136,10 @@ executeCreateInstance = function(command)
 	table.insert(targetSegments, instanceName)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "create_instance", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "create_instance", targetSegments)
 		return
 	end
 
@@ -204,6 +224,10 @@ executeDeleteInstance = function(command)
 	local targetSegments = getInstancePathSegments(instance)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "delete_instance", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "delete_instance", targetSegments)
 		return
 	end
 

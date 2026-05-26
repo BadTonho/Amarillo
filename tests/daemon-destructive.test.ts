@@ -36,6 +36,36 @@ function createWorkspaceWithExclusiveReplicatedStorageMount() {
   return workspace;
 }
 
+function createWorkspaceWithExclusiveLoadingScreenMounts() {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "LoadingScreen", "exclusive", "StarterGui"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "LoadingScreen", "exclusive", "StarterPlayer", "StarterPlayerScripts"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "LoadingScreen.project.json"), JSON.stringify({
+    name: "LoadingScreen",
+    place_ids: [94245376988608],
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $amarilloDisabledPath: "sync/StarterGui",
+        ExclusivoLoadingScreen: {
+          $path: "LoadingScreen/exclusive/StarterGui",
+          $keepUnknowns: true
+        }
+      },
+      StarterPlayer: {
+        StarterPlayerScripts: {
+          $amarilloDisabledPath: "sync/StarterPlayer/StarterPlayerScripts",
+          ExclusivoLoadingScreen: {
+            $path: "LoadingScreen/exclusive/StarterPlayer/StarterPlayerScripts",
+            $keepUnknowns: true
+          }
+        }
+      }
+    }
+  }, null, 2));
+  return workspace;
+}
+
 test("runStudioCode removes success text from the error field", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
@@ -273,6 +303,67 @@ test("path-based destructive actions are blocked outside active project mounts",
     ok: true,
     result: "Instance created successfully",
     fullName: "ReplicatedStorage.ExclusivoLoadingScreen.InsideMount",
+    confirmed: true
+  });
+
+  const allowedResult = await allowedPromise;
+  assert.equal(allowedResult.ok, true);
+  assert.equal(allowedResult.blocked, false);
+});
+
+test("path-based destructive actions are blocked for duplicate exclusive mount roots", async () => {
+  const workspace = createWorkspaceWithExclusiveLoadingScreenMounts();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(94245376988608, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  const blockedCreate = await app.enqueueDestructiveCommand(session.id, "create_instance", {
+    parentPath: "game.StarterGui.ExclusivoLoadingScreen",
+    className: "Folder",
+    name: "ExclusivoLoadingScreen",
+    properties: {}
+  });
+  assert.equal(blockedCreate.ok, false);
+  assert.equal(blockedCreate.blocked, true);
+  assert.equal(blockedCreate.reasonCode, "DUPLICATE_MOUNT_ROOT");
+  assert.match(blockedCreate.error, /game\.StarterGui\.ExclusivoLoadingScreen\.ExclusivoLoadingScreen/);
+  assert.match(blockedCreate.error, /game\.StarterGui\.ExclusivoLoadingScreen/);
+  assert.equal(session.pendingCommands.length, 0);
+
+  const blockedModify = await app.enqueueDestructiveCommand(session.id, "modify_property", {
+    path: "game.StarterGui.ExclusivoLoadingScreen.ExclusivoLoadingScreen",
+    property: "Name",
+    value: "StillDuplicate"
+  });
+  assert.equal(blockedModify.blocked, true);
+  assert.equal(blockedModify.reasonCode, "DUPLICATE_MOUNT_ROOT");
+  assert.equal(session.pendingCommands.length, 0);
+
+  const blockedDelete = await app.enqueueDestructiveCommand(session.id, "delete_instance", {
+    path: "game.StarterGui.ExclusivoLoadingScreen.ExclusivoLoadingScreen"
+  });
+  assert.equal(blockedDelete.blocked, true);
+  assert.equal(blockedDelete.reasonCode, "DUPLICATE_MOUNT_ROOT");
+  assert.equal(session.pendingCommands.length, 0);
+
+  const allowedPromise = app.enqueueDestructiveCommand(session.id, "create_instance", {
+    parentPath: "game.StarterGui.ExclusivoLoadingScreen",
+    className: "ScreenGui",
+    name: "Loading",
+    properties: {}
+  });
+  await wait(10);
+
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  assert.equal(dequeued.commands[0].type, "create_instance");
+  assert.equal(dequeued.commands[0].payload.name, "Loading");
+
+  app.completeCommand(session.id, dequeued.commands[0].id, {
+    ok: true,
+    result: "Instance created successfully",
+    fullName: "StarterGui.ExclusivoLoadingScreen.Loading",
     confirmed: true
   });
 

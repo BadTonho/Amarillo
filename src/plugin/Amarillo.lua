@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.35"
+local PLUGIN_VERSION = "1.1.36"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -306,6 +306,35 @@ end
 local function syncMountGuardMessage(actionName, pathSegments)
 	local segments = normalizeInstancePathSegments(pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. instancePathLabelFromSegments(segments) .. "' is outside the active sync mounts for this project. Active mounts: " .. activeSyncMountLabels() .. "."
+end
+
+local function duplicateMountRootIssueForPath(pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	if #segments == 0 then
+		return nil
+	end
+	for _, mountSegments in ipairs(activeSyncMountSegments()) do
+		if #mountSegments > 1 and pathSegmentsHavePrefix(segments, mountSegments) then
+			local duplicateName = mountSegments[#mountSegments]
+			if #segments > #mountSegments and segments[#mountSegments + 1] == duplicateName then
+				return {
+					reasonCode = "DUPLICATE_MOUNT_ROOT",
+					targetPath = instancePathLabelFromSegments(segments),
+					expectedMountPath = instancePathLabelFromSegments(mountSegments),
+					duplicateName = duplicateName
+				}
+			end
+		end
+	end
+	return nil
+end
+
+local function duplicateMountRootGuardMessage(actionName, pathSegments)
+	local issue = duplicateMountRootIssueForPath(pathSegments)
+	if not issue then
+		return nil
+	end
+	return tostring(actionName) .. " blocked: target path '" .. issue.targetPath .. "' would create or mutate duplicate mount root '" .. tostring(issue.duplicateName) .. "' inside active mount '" .. issue.expectedMountPath .. "'. Put children directly under '" .. issue.expectedMountPath .. "' instead."
 end
 
 local function filterSnapshotForSync(snapshot)
@@ -1497,6 +1526,34 @@ local function isNestedMountChild(indexed, parentSegments, childName)
 	return bucket and bucket[childName] == true
 end
 
+local function duplicateMountRootIssueForSnapshot(projectSnapshot)
+	for _, mount in ipairs(projectSnapshot and projectSnapshot.mounts or {}) do
+		local segments = mount.segments
+		if (not segments or #segments == 0) and type(mount.path) == "string" then
+			segments = string.split(mount.path, ".")
+		end
+		if type(segments) == "table" and #segments > 1 then
+			local duplicateName = segments[#segments]
+			for _, child in ipairs(mount.children or {}) do
+				if child and child.name == duplicateName then
+					local expectedMountPath = instancePathLabelFromSegments(segments)
+					return {
+						reasonCode = "DUPLICATE_MOUNT_ROOT",
+						targetPath = expectedMountPath .. "." .. duplicateName,
+						expectedMountPath = expectedMountPath,
+						duplicateName = duplicateName
+					}
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function duplicateMountRootSnapshotMessage(issue)
+	return "Project tree contains duplicate mount root '" .. tostring(issue.duplicateName) .. "' at '" .. tostring(issue.targetPath) .. "'. Put children directly under '" .. tostring(issue.expectedMountPath) .. "' instead."
+end
+
 local function findDesiredChildForInstance(instance, desiredChildIndex)
 	local instanceId = getAmarilloId(instance)
 	if instanceId and desiredChildIndex and desiredChildIndex._byId and desiredChildIndex._byId[instanceId] then
@@ -2283,6 +2340,10 @@ local function applyProjectSnapshot(projectSnapshot, command)
 		return false, "Snapshot vazio"
 	end
 	projectSnapshot = filterSnapshotForSync(projectSnapshot)
+	local duplicateIssue = duplicateMountRootIssueForSnapshot(projectSnapshot)
+	if duplicateIssue then
+		return false, duplicateMountRootSnapshotMessage(duplicateIssue)
+	end
 
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
@@ -2603,6 +2664,16 @@ local function handleCommand(command)
 				snapshot = snapshotCurrentProject(),
 				skipped = true
 			})
+			return
+		end
+		local duplicateMessage = command.payload and duplicateMountRootGuardMessage("apply_file_patch", command.payload.path)
+		if duplicateMessage then
+			postCommandResult(command.id, false, {
+				error = duplicateMessage,
+				blocked = true,
+				reasonCode = "DUPLICATE_MOUNT_ROOT"
+			})
+			appendLog(duplicateMessage)
 			return
 		end
 		state.isApplyingRemote = true
@@ -3230,6 +3301,18 @@ local function postOutsideSyncMountResult(command, actionName, pathSegments)
 	appendLog(message)
 end
 
+local function postDuplicateMountRootResult(command, actionName, pathSegments)
+	local message = duplicateMountRootGuardMessage(actionName, pathSegments)
+	postCommandResult(command.id, false, {
+		error = message,
+		blocked = true,
+		declined = false,
+		confirmed = false,
+		reasonCode = "DUPLICATE_MOUNT_ROOT"
+	})
+	appendLog(message)
+end
+
 executeModifyProperty = function(command)
 	local instance = resolveInstanceByPath(command.payload.path)
 	if not instance then
@@ -3247,6 +3330,10 @@ executeModifyProperty = function(command)
 	local targetSegments = getInstancePathSegments(instance)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "modify_property", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "modify_property", targetSegments)
 		return
 	end
 
@@ -3324,6 +3411,10 @@ executeCreateInstance = function(command)
 	table.insert(targetSegments, instanceName)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "create_instance", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "create_instance", targetSegments)
 		return
 	end
 
@@ -3408,6 +3499,10 @@ executeDeleteInstance = function(command)
 	local targetSegments = getInstancePathSegments(instance)
 	if not isPathInsideActiveSyncMount(targetSegments) then
 		postOutsideSyncMountResult(command, "delete_instance", targetSegments)
+		return
+	end
+	if duplicateMountRootIssueForPath(targetSegments) then
+		postDuplicateMountRootResult(command, "delete_instance", targetSegments)
 		return
 	end
 

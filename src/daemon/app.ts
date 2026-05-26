@@ -37,11 +37,13 @@ const { once } = require("node:events");
 const { performance } = require("node:perf_hooks");
 const {
   loadWorkspaceProjectCatalog,
+  findDuplicateMountRootPathIssue,
   moveOrphanScriptMetaForFile,
   readLocalProjectState,
   readLocalProjectStateAsync,
   readWorkspaceConfig,
   resolveProjectSelectionForPlace,
+  validateProjectSnapshotMounts,
   validateProjectTreeFiles,
   writeStudioProjectState,
   writeStudioProjectStateAsync
@@ -622,7 +624,24 @@ function validateDestructiveCommandSyncMount(project, session, type, payload: an
   }
 
   const activeMounts = activeSyncMountSegments(project, syncTargets);
-  if (activeMounts.some((mountSegments) => segmentsHavePrefix(targetSegments, mountSegments))) {
+  const isInsideActiveMount = activeMounts.some((mountSegments) => segmentsHavePrefix(targetSegments, mountSegments));
+  if (isInsideActiveMount) {
+    const duplicateMountIssue = findDuplicateMountRootPathIssue(
+      filterProjectBySyncTargets(project, normalizeSyncTargets(syncTargets)),
+      targetSegments
+    );
+    if (duplicateMountIssue) {
+      const targetLabel = instancePathLabel(targetSegments);
+      return {
+        allowed: false,
+        blocked: true,
+        reasonCode: "DUPLICATE_MOUNT_ROOT",
+        message: `${type} blocked: target path '${targetLabel}' would create or mutate duplicate mount root '${duplicateMountIssue.fileName}' inside active mount '${duplicateMountIssue.expectedMountPath}'. Put children directly under '${duplicateMountIssue.expectedMountPath}' instead.`,
+        targetPath: targetLabel,
+        expectedMountPath: duplicateMountIssue.expectedMountPath,
+        mountId: duplicateMountIssue.mountId
+      };
+    }
     return { allowed: true };
   }
 
@@ -2157,6 +2176,19 @@ class PluginRobloxApp {
       });
       return;
     }
+    const duplicateMountIssue = findDuplicateMountRootPathIssue(
+      this.projectForSync(project, this.syncTargetsForSession(session)),
+      instanceSegments
+    );
+    if (duplicateMountIssue) {
+      this.projectTreeInvalidError(session, [duplicateMountIssue], { commandType: "apply_file_patch" });
+      logSync("enqueue_apply_file_patch_blocked", {
+        sessionId: session.id,
+        reason: "duplicate_mount_root",
+        path: instanceSegments.join(".")
+      });
+      return;
+    }
     const patchKey = instanceSegments.join(".");
     session.filePatchBatch.set(patchKey, {
       project,
@@ -2241,6 +2273,18 @@ class PluginRobloxApp {
       return null;
     }
     return resolved;
+  }
+
+  duplicateMountRootIssueForWorkspacePath(session, project, mount, filePath) {
+    const relative = path.relative(mount.absolutePath, filePath).replace(/\\/g, "/");
+    const parts = relative.split("/").filter(Boolean);
+    if (parts.length === 0) {
+      return null;
+    }
+    return findDuplicateMountRootPathIssue(
+      this.projectForSync(project, this.syncTargetsForSession(session)),
+      mount.segments.concat(parts)
+    );
   }
 
   handleWorkspaceFileEvents(events = []) {
@@ -2351,6 +2395,17 @@ class PluginRobloxApp {
       if (!isMountSyncEnabled(mount, this.syncTargetsForSession(session))) {
         logSync("disk_file_change_sync_target_disabled", {
           sessionId: session.id,
+          path: normalizedChangedPath,
+          mountId: mount.id
+        });
+        continue;
+      }
+      const duplicateMountIssue = this.duplicateMountRootIssueForWorkspacePath(session, project, mount, normalizedChangedPath);
+      if (duplicateMountIssue) {
+        this.projectTreeInvalidError(session, [duplicateMountIssue], { commandType: "workspace_watcher" });
+        logSync("disk_file_change_blocked", {
+          sessionId: session.id,
+          reason: "duplicate_mount_root",
           path: normalizedChangedPath,
           mountId: mount.id
         });
@@ -3107,23 +3162,31 @@ class PluginRobloxApp {
     });
   }
 
-  projectTreeInvalidError(session, issues) {
+  projectTreeInvalidError(session, issues, options: any = {}) {
     const normalizedIssues = (issues || []).slice(0, 10).map((issue) => ({
       code: issue.code || "PROJECT_TREE_INVALID",
+      mountId: issue.mountId || null,
+      path: issue.path || null,
+      expectedMountPath: issue.expectedMountPath || null,
       relativePath: issue.relativePath || null,
       fileName: issue.fileName || null,
       suggestedFileName: issue.suggestedFileName || null,
       message: issue.message || null
     }));
     const first = normalizedIssues[0] || {};
-    const pathLabel = first.relativePath || first.fileName || "unknown";
-    const suggestion = first.suggestedFileName
-      ? `Rename '${first.fileName}' to '${first.suggestedFileName}', or represent that script as a folder with an init script if the dot is part of the intended instance name.`
-      : "Rename the ambiguous script file before syncing, or represent it as a folder with an init script if the dot is part of the intended instance name.";
-    const message = `Project tree contains an ambiguous script filename: ${pathLabel}. Rename it before syncing.`;
+    const pathLabel = first.path || first.relativePath || first.fileName || "unknown";
+    const isDuplicateMountRoot = first.code === "DUPLICATE_MOUNT_ROOT";
+    const suggestion = isDuplicateMountRoot
+      ? `Move the contents out of '${pathLabel}' and place them directly under '${first.expectedMountPath || "the active mount"}'. Amarillo will not auto-delete the duplicate folder.`
+      : (first.suggestedFileName
+        ? `Rename '${first.fileName}' to '${first.suggestedFileName}', or represent that script as a folder with an init script if the dot is part of the intended instance name.`
+        : "Rename the ambiguous script file before syncing, or represent it as a folder with an init script if the dot is part of the intended instance name.");
+    const message = isDuplicateMountRoot
+      ? `Project tree contains a duplicate mount root: ${pathLabel}. Remove the nested mount-name folder before syncing.`
+      : `Project tree contains an ambiguous script filename: ${pathLabel}. Rename it before syncing.`;
     this.markSyncDegraded(session, message, {
       code: "PROJECT-TREE-INVALID",
-      commandType: "apply_project_tree",
+      commandType: options.commandType || "apply_project_tree",
       path: pathLabel,
       issues: normalizedIssues,
       issueCount: (issues || []).length,
@@ -3142,6 +3205,18 @@ class PluginRobloxApp {
       return null;
     }
     return this.projectTreeInvalidError(session, issues);
+  }
+
+  blockInvalidProjectSnapshot(session, project, snapshot, commandType = "apply_project_tree") {
+    const syncTargets = this.syncTargetsForSession(session);
+    const issues = validateProjectSnapshotMounts(
+      this.projectForSync(project, syncTargets),
+      this.snapshotForSync(snapshot, syncTargets)
+    );
+    if (issues.length === 0) {
+      return null;
+    }
+    return this.projectTreeInvalidError(session, issues, { commandType });
   }
 
   scheduleFilePatchVerificationFallback(session, command, commandId, observedHash, instanceSegments) {
@@ -3350,6 +3425,24 @@ class PluginRobloxApp {
       });
       return Promise.resolve({ ok: true, skipped: true, reason: "sync_target_disabled" });
     }
+    if (type === "apply_file_patch" && Array.isArray(payload?.path)) {
+      const project = this.getProjectById(session.projectId);
+      const duplicateMountIssue = project
+        ? findDuplicateMountRootPathIssue(this.projectForSync(project, syncTargets), payload.path)
+        : null;
+      if (duplicateMountIssue) {
+        const error = this.projectTreeInvalidError(session, [duplicateMountIssue], { commandType: "apply_file_patch" });
+        return waitForResult
+          ? Promise.reject(error)
+          : Promise.resolve({
+              ok: false,
+              blocked: true,
+              code: error.code,
+              reasonCode: "DUPLICATE_MOUNT_ROOT",
+              error: error.message
+            });
+      }
+    }
     if (type === "apply_project_tree") {
       const project = this.getProjectById(session.projectId);
       if (project) {
@@ -3358,6 +3451,12 @@ class PluginRobloxApp {
           return waitForResult
             ? Promise.reject(invalidProjectTree)
             : Promise.resolve({ ok: false, blocked: true, code: invalidProjectTree.code, error: invalidProjectTree.message });
+        }
+        const invalidProjectSnapshot = this.blockInvalidProjectSnapshot(session, project, payload?.project, "apply_project_tree");
+        if (invalidProjectSnapshot) {
+          return waitForResult
+            ? Promise.reject(invalidProjectSnapshot)
+            : Promise.resolve({ ok: false, blocked: true, code: invalidProjectSnapshot.code, error: invalidProjectSnapshot.message });
         }
       }
       session.pendingCommands = session.pendingCommands.filter((command) => {
@@ -3872,6 +3971,13 @@ class PluginRobloxApp {
     }
     const syncTargets = this.syncTargetsForSession(session);
     const filteredSnapshot = this.snapshotForSync(snapshot, syncTargets);
+    const project = this.getProjectById(session.projectId);
+    if (project) {
+      const invalidSnapshot = this.blockInvalidProjectSnapshot(session, project, filteredSnapshot, "studio_snapshot");
+      if (invalidSnapshot) {
+        throw invalidSnapshot;
+      }
+    }
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     const nextHash = snapshotInfo.hash;
     const prevHash = session.lastStudioHash;
@@ -4020,7 +4126,9 @@ class PluginRobloxApp {
         reasonCode: mountPolicy.reasonCode,
         sessionId: session.id,
         targetPath: mountPolicy.targetPath,
-        activeMounts: mountPolicy.activeMounts
+        activeMounts: mountPolicy.activeMounts,
+        expectedMountPath: mountPolicy.expectedMountPath,
+        mountId: mountPolicy.mountId
       };
     }
     const result = await this.enqueueCommand(sessionId, type, payload, true);

@@ -186,6 +186,34 @@ local function isNestedMountChild(indexed, parentSegments, childName)
 	return bucket and bucket[childName] == true
 end
 
+local function duplicateMountRootIssueForSnapshot(projectSnapshot)
+	for _, mount in ipairs(projectSnapshot and projectSnapshot.mounts or {}) do
+		local segments = mount.segments
+		if (not segments or #segments == 0) and type(mount.path) == "string" then
+			segments = string.split(mount.path, ".")
+		end
+		if type(segments) == "table" and #segments > 1 then
+			local duplicateName = segments[#segments]
+			for _, child in ipairs(mount.children or {}) do
+				if child and child.name == duplicateName then
+					local expectedMountPath = instancePathLabelFromSegments(segments)
+					return {
+						reasonCode = "DUPLICATE_MOUNT_ROOT",
+						targetPath = expectedMountPath .. "." .. duplicateName,
+						expectedMountPath = expectedMountPath,
+						duplicateName = duplicateName
+					}
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function duplicateMountRootSnapshotMessage(issue)
+	return "Project tree contains duplicate mount root '" .. tostring(issue.duplicateName) .. "' at '" .. tostring(issue.targetPath) .. "'. Put children directly under '" .. tostring(issue.expectedMountPath) .. "' instead."
+end
+
 local function findDesiredChildForInstance(instance, desiredChildIndex)
 	local instanceId = getAmarilloId(instance)
 	if instanceId and desiredChildIndex and desiredChildIndex._byId and desiredChildIndex._byId[instanceId] then
@@ -972,6 +1000,10 @@ local function applyProjectSnapshot(projectSnapshot, command)
 		return false, "Snapshot vazio"
 	end
 	projectSnapshot = filterSnapshotForSync(projectSnapshot)
+	local duplicateIssue = duplicateMountRootIssueForSnapshot(projectSnapshot)
+	if duplicateIssue then
+		return false, duplicateMountRootSnapshotMessage(duplicateIssue)
+	end
 
 	state.isApplyingRemote = true
 	state.suppressPushUntil = now() + REMOTE_PUSH_SUPPRESSION_SECONDS
