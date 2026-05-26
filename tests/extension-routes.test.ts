@@ -24,6 +24,16 @@ function readGeneratedExtensionBundle() {
   ].map(readGeneratedExtensionFile).join("\n");
 }
 
+function renderGeneratedSidebarHtml(state) {
+  const { renderSidebarHtml } = require(path.join(
+    __dirname,
+    "..",
+    "vscode-extension",
+    "sidebar-render.js"
+  ));
+  return renderSidebarHtml(state);
+}
+
 test("VS Code execute code command uses the daemon exec route", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),
@@ -152,6 +162,10 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
   assert.match(extensionSource, /\/projects\/\$\{encodeURIComponent\(picked\.project\.id\)\}\/place-ids/);
   assert.match(extensionSource, /exclusiveMountIds/);
   assert.match(extensionSource, /baseMountIds/);
+  assert.match(extensionSource, /message\.type === "placeSyncApply"/);
+  assert.match(extensionSource, /applyPlaceSyncFromSidebarMessage\(message\)/);
+  assert.match(extensionSource, /placeId,\s+placeName,\s+baseMountIds,\s+exclusiveMountIds,\s+keepUnknowns/s);
+  assert.match(extensionSource, /baseMountIds,\s+exclusiveMountIds,\s+keepUnknowns\s+\}, \{ timeout: 10000 \}\)/s);
   assert.match(extensionSource, /Auto Sync: On/);
   assert.match(extensionSource, /Auto Sync: Off/);
   assert.match(extensionSource, /Confirm Actions: On/);
@@ -172,6 +186,156 @@ test("sidebar exposes Auto Sync toggle and visual sync history actions", () => {
   assert.match(packageJson, /amarillo\.createPlaceProject/);
   assert.match(packageJson, /amarillo\.editPlaceIds/);
   assert.match(packageJson, /amarillo\.privilegedActionConfirmation/);
+});
+
+test("sidebar renders inline Place Sync controls and apply message", () => {
+  const html = renderGeneratedSidebarHtml({
+    status: {
+      title: "Bridge online",
+      tone: "success",
+      endpoint: "127.0.0.1:8323",
+      workspace: "Game",
+      notes: []
+    },
+    session: {
+      title: "Studio Session",
+      tone: "success",
+      badge: "ready",
+      message: "Ready.",
+      facts: [],
+      actions: []
+    },
+    placeSync: {
+      enabled: true,
+      mode: "edit",
+      title: "Place Sync",
+      description: "Choose shared and exclusive folders for the selected place project.",
+      mountOptions: [
+        { id: "ReplicatedStorage", label: "ReplicatedStorage", path: "ReplicatedStorage" },
+        { id: "ServerScriptService", label: "ServerScriptService", path: "ServerScriptService" }
+      ],
+      selectedProjectId: "Arena.project.json",
+      projects: [
+        {
+          id: "Arena.project.json",
+          name: "Arena",
+          label: "Arena - Place 123",
+          baseMountIds: ["ReplicatedStorage"],
+          exclusiveMountIds: ["ServerScriptService"],
+          defaultBaseMountIds: ["ReplicatedStorage", "ServerScriptService"],
+          defaultExclusiveMountIds: ["ReplicatedStorage", "ServerScriptService"],
+          baseUseDefault: false,
+          exclusiveUseDefault: false,
+          keepUnknowns: true,
+          mounts: [
+            {
+              id: "ReplicatedStorage",
+              label: "ReplicatedStorage",
+              baseRelativePath: "sync/ReplicatedStorage",
+              exclusiveRelativePath: "places/Arena/ReplicatedStorage",
+              baseEnabled: true,
+              exclusiveEnabled: false
+            },
+            {
+              id: "ServerScriptService",
+              label: "ServerScriptService",
+              baseRelativePath: "src/server",
+              exclusiveRelativePath: "places/Arena/ServerScriptService",
+              baseEnabled: false,
+              exclusiveEnabled: true
+            }
+          ]
+        }
+      ]
+    },
+    sections: [],
+    history: { entries: [] }
+  });
+
+  assert.match(html, /data-place-sync-form/);
+  assert.match(html, /data-place-sync-mode="edit"/);
+  assert.match(html, /data-place-sync-project/);
+  assert.match(html, /data-place-sync-master="base"/);
+  assert.match(html, /data-place-sync-master="exclusive"/);
+  assert.match(html, /Sync shared sync\/src folders/);
+  assert.match(html, /Sync exclusive place folders/);
+  assert.match(html, /data-place-sync-list="base"/);
+  assert.match(html, /data-place-sync-list="exclusive"/);
+  assert.match(html, /data-place-sync-kind="base"/);
+  assert.match(html, /data-place-sync-kind="exclusive"/);
+  assert.match(html, /data-place-sync-mount="ReplicatedStorage"/);
+  assert.match(html, /sync\/ReplicatedStorage/);
+  assert.match(html, /src\/server/);
+  assert.match(html, /places\/Arena\/ServerScriptService/);
+  assert.match(html, /type: "placeSyncApply"/);
+  assert.match(html, /placeSyncPayloadIds\(form, context, "base"\)/);
+  assert.match(html, /placeSyncPayloadIds\(form, context, "exclusive"\)/);
+  assert.match(html, /baseMountIds,\s+exclusiveMountIds,\s+keepUnknowns/s);
+});
+
+test("sidebar renders pending Place Sync create fields inline", () => {
+  const html = renderGeneratedSidebarHtml({
+    status: {
+      title: "Bridge online",
+      tone: "warning",
+      endpoint: "127.0.0.1:8323",
+      workspace: "Game",
+      notes: []
+    },
+    session: {
+      title: "Studio Session",
+      tone: "warning",
+      badge: "Place setup",
+      message: "Setup required.",
+      facts: [],
+      actions: []
+    },
+    placeSync: {
+      enabled: true,
+      mode: "create",
+      title: "Place Sync",
+      description: "Setup Test Place (456).",
+      mountOptions: [
+        { id: "ReplicatedStorage", label: "ReplicatedStorage", path: "ReplicatedStorage" }
+      ],
+      create: {
+        placeId: 456,
+        placeName: "Test Place",
+        sourceProjectLabel: "Base Project",
+        baseMountIds: ["ReplicatedStorage"],
+        exclusiveMountIds: ["ReplicatedStorage"],
+        defaultBaseMountIds: ["ReplicatedStorage"],
+        defaultExclusiveMountIds: ["ReplicatedStorage"],
+        baseUseDefault: true,
+        exclusiveUseDefault: true,
+        keepUnknowns: true,
+        mounts: [
+          {
+            id: "ReplicatedStorage",
+            label: "ReplicatedStorage",
+            baseRelativePath: "sync/ReplicatedStorage",
+            exclusiveRelativePath: "places/Test/ReplicatedStorage",
+            baseEnabled: true,
+            exclusiveEnabled: true
+          }
+        ]
+      },
+      projects: []
+    },
+    sections: [],
+    history: { entries: [] }
+  });
+
+  assert.match(html, /data-place-sync-mode="create"/);
+  assert.match(html, /data-place-sync-place-name/);
+  assert.match(html, /value="Test Place"/);
+  assert.match(html, /data-place-sync-place-id/);
+  assert.match(html, /value="456"/);
+  assert.match(html, /Source: Base Project/);
+  assert.match(html, /data-place-sync-master="base" checked/);
+  assert.match(html, /data-place-sync-master="exclusive" checked/);
+  assert.match(html, /data-place-sync-list="base" hidden/);
+  assert.match(html, /data-place-sync-list="exclusive" hidden/);
 });
 
 test("activation sourcemap check is delayed and respects autoGenerateSourcemap", () => {

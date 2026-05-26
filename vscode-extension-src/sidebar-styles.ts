@@ -323,6 +323,123 @@ const SIDEBAR_CSS = `
         border-color: var(--tone-info);
       }
 
+      .place-sync-card {
+        text-align: left;
+      }
+
+      .place-sync-card .section-heading {
+        justify-items: start;
+      }
+
+      .place-sync-form {
+        margin-top: 12px;
+        display: grid;
+        gap: 12px;
+      }
+
+      .place-sync-fields {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(auto-fit, minmax(126px, 1fr));
+      }
+
+      .place-sync-fields label,
+      .place-sync-select-row {
+        display: grid;
+        gap: 5px;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0;
+      }
+
+      .place-sync-fields input,
+      .place-sync-select-row select {
+        width: 100%;
+        min-height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 7px 8px;
+        color: var(--foreground);
+        background: var(--surface);
+        font: inherit;
+        font-size: 12px;
+      }
+
+      .place-sync-note,
+      .place-sync-status {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+      }
+
+      .place-sync-status {
+        padding: 8px;
+        border: 1px solid var(--tone-warning);
+        border-radius: 8px;
+        color: var(--tone-warning);
+        background: var(--tone-warning-bg);
+      }
+
+      .place-sync-group {
+        display: grid;
+        gap: 8px;
+      }
+
+      .place-sync-toggle,
+      .place-sync-check {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 8px;
+        align-items: start;
+        color: var(--foreground);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+
+      .place-sync-toggle {
+        font-weight: 700;
+      }
+
+      .place-sync-toggle input,
+      .place-sync-check input {
+        margin: 1px 0 0;
+      }
+
+      .place-sync-list {
+        display: grid;
+        gap: 7px;
+        padding: 10px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--surface);
+      }
+
+      .place-sync-list[hidden] {
+        display: none;
+      }
+
+      .place-sync-check strong,
+      .place-sync-check small {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+
+      .place-sync-check strong {
+        color: var(--foreground);
+        font-size: 12px;
+      }
+
+      .place-sync-check small {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .place-sync-apply {
+        width: 100%;
+      }
+
       .history-card {
         text-align: left;
       }
