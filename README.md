@@ -6,19 +6,21 @@ This repository contains the **source code for the bridge and the VS Code extens
 
 ## Components
 
-- `src/daemon/` and `src/mcp-proxy/`: canonical TypeScript source for the HTTP daemon and MCP proxy. The generated `.js` files in these folders are build artifacts.
+- `src/daemon/` and `src/mcp-proxy/`: canonical TypeScript source for the HTTP daemon and MCP proxy with core services initialization. The generated `.js` files in these folders are build artifacts.
 - `vscode-extension-src/`: canonical TypeScript source for the VS Code extension.
-- `src/plugin-src/`: canonical ordered Luau fragments for the Roblox Studio plugin.
+- `src/plugin-src/`: canonical ordered Luau fragments for the Roblox Studio plugin with comprehensive bootstrapping and status management.
 - `src/plugin/Amarillo.lua`: generated, committed single-file Roblox Studio plugin consumed by Studio, the extension, and VSIX packaging.
 - `src/daemon/**/*.js`, `src/mcp-proxy/**/*.js`, `vscode-extension/*.js`, `tests/*.js`, and `scripts/*.js`: generated JavaScript artifacts created by the TypeScript build.
 - `tests/`: canonical TypeScript tests for project parsing, bootstrap, diagnostics, VSIX packaging, and MCP proxy behavior.
 
 ## Current Architecture
 
-- A single authoritative daemon serves both the Studio plugin and the VS Code extension.
+- A single authoritative daemon serves both the Studio plugin and the VS Code extension with comprehensive core services.
 - The editor MCP does not start a second competing bridge.
 - `Amarillo: Start Bridge` ensures the local bridge is running and writes or updates the portable workspace MCP files so the AI client can talk to the existing daemon through the `stdio -> HTTP` proxy.
 - `Amarillo: Configure MCP for Workspace` and `Amarillo: Configure Codex MCP` regenerate the workspace MCP files and try to register the portable bootstrap with Codex CLI.
+- Place-based synchronization with mount validation ensures safe destructive operations and maintains data integrity.
+- Snapshot normalization and property defaulting provide reliable synchronization verification across different instance types.
 - The default port for the whole stack is `8323`.
 
 ## Recommended User Flow
@@ -29,13 +31,42 @@ This repository contains the **source code for the bridge and the VS Code extens
 4. In Roblox Studio, open the `Amarillo` plugin and click `Connect`.
 5. Use `Send Files to Studio`, `Receive Files from Studio`, and the MCP tools as needed.
 
+### Plugin Capabilities
+
+The Amarillo plugin can:
+
+**Core Functionality:**
+- Bi-directional file synchronization between VS Code and Roblox Studio
+- Real-time plugin connection status management and diagnostics
+- Support for multi-place projects with automatic place detection by `placeId`
+
+**Synchronization Features:**
+- **Place Sync Monitoring**: Track and monitor synchronization status across multiple places
+- **Sync Mount Validation**: Safe destructive operations with validation to prevent data loss
+- **Workspace Sync Targets**: Manage and configure which parts of the workspace sync to Studio
+- **Snapshot Normalization**: Automatic normalization of instance snapshots for consistent verification
+- **Property Defaulting**: Intelligent property handling with proper Roblox property serialization
+
+**Diagnostics & Introspection:**
+- Health checks and connection diagnostics
+- Instance tree inspection and search
+- Property examination and modification
+- Script and instance classification analysis
+
+**Advanced Operations:**
+- Execute Luau code in Studio (with confirmation prompts for safety)
+- Run playtests directly from VS Code
+- Create, modify, and delete instances
+- Insert models from the Roblox marketplace
+
 ## Place-Based Derived Projects
 
-Amarillo supports a `base project + derived projects` model inside the same workspace:
+Amarillo supports a `base project + derived projects` model inside the same workspace with automatic place detection and synchronized targets:
 
 - use `abstract: true` in a base `.project.json` to declare shared mounts and rules;
 - use `extends` in place-specific projects so they inherit the base and only add exclusive folders;
-- resolution stays automatic by `placeId`, so each Studio reconnection picks the correct derived project without requiring another VS Code window.
+- resolution stays automatic by `placeId`, so each Studio reconnection picks the correct derived project without requiring another VS Code window;
+- each derived place can have its own sync targets configuration for fine-grained control over what gets synchronized.
 
 Short example:
 
@@ -68,19 +99,42 @@ With this layout, the shared folder is mounted into every derived place, while e
 
 ## Using the MCP Tooling
 
+The Amarillo plugin exposes a complete MCP (Model Context Protocol) interface for AI clients and external tools.
+
+**Configuration & Setup:**
 - Running `Amarillo: Start Bridge` also writes or updates `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` in the open workspace.
 - The machine-specific secret state is written to `.amarillo/mcp-local.json`; do not commit this file.
 - If your AI or MCP client was already open, reopen the session so it reloads the workspace MCP servers.
 - `Amarillo: Configure MCP for Workspace` and `Amarillo: Configure Codex MCP` try `codex mcp add amarillo -- node "<workspace>/.vscode/amarillo-mcp-bootstrap.cjs" --workspace "<workspace>"` automatically, and offer the same command to copy if Codex CLI is unavailable or registration fails.
 
-Example requests for an AI client:
+**Available MCP Tools:**
 
-- `health`
-- `list_projects`
-- `get_tree`
-- `run_code` (privileged; may require plugin confirmation)
-- `push_changes`
-- `pull_changes`
+*Synchronization & Core Operations:*
+- `health` - Check bridge and plugin health status
+- `list_projects` - List all available Roblox projects
+- `set_active_project` - Switch the active project for synchronization
+- `get_tree` - Get the current instance tree structure
+- `get_selection` - Get currently selected instances in Studio
+- `push_changes` - Send files from VS Code to Roblox Studio
+- `pull_changes` - Receive files from Roblox Studio to VS Code
+- `start_playtest` - Start a playtest session
+- `stop_playtest` - Stop the active playtest
+
+*Introspection & Diagnostics:*
+- `inspect_instance` - Get detailed information about an instance
+- `get_properties` - Retrieve all readable properties of an instance
+- `get_descendants` - Get child instances with optional filtering
+- `search_instances` - Search for instances by name or class name
+- `get_services` - List available Roblox services
+- `get_instance_info` - Get comprehensive instance information
+- `get_output_log` - Retrieve recent Studio output log entries
+
+*Privileged Operations (may require confirmation):*
+- `run_code` - Execute Luau code in the Studio environment
+- `modify_property` - Change an instance property or attribute
+- `create_instance` - Create new instances
+- `delete_instance` - Remove instances from the tree
+- `insert_model` - Insert models from the Roblox marketplace
 
 ## Recommended Development Flow For This Repo
 
@@ -130,14 +184,6 @@ Available local tasks:
 - `Amarillo Dev: Start Example Daemon`
 - `Amarillo Dev: Healthcheck Example`
 
-## MCP
-
-Available tools:
-
-- read and sync: `health`, `list_projects`, `set_active_project`, `get_tree`, `get_selection`, `inspect_instance`, `push_changes`, `pull_changes`, `start_playtest`, `stop_playtest`
-- introspection: `get_properties`, `get_descendants`, `search_instances`, `get_services`, `get_instance_info`, `get_output_log`
-- privileged operations: `run_code`, `modify_property`, `create_instance`, `delete_instance`, `insert_model`
-
 ## Tests
 
 ```powershell
@@ -166,6 +212,8 @@ The final file will be created in `dist/`. Packaging includes only the generated
 
 - The project is still `Windows-first`.
 - The Studio plugin runtime remains a single generated file to make installation and reload simpler.
-- Property sync is still extensible for new `className`s and serialized types.
+- Property sync is extensible for new `className`s and serialized types with proper Roblox property serialization.
+- Synchronization includes snapshot normalization and property defaulting for reliable verification across instance types.
+- Sync mount validation prevents accidental data loss during destructive operations by validating targets before sync.
 - `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed, inherited, and enforced by the Studio-to-disk writer.
 - Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).
