@@ -17,6 +17,24 @@ const {
   findSnapshotNodeByPath
 } = require("./helpers/daemon-workspace");
 
+function createWorkspaceWithExclusiveReplicatedStorageMount() {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "LoadingScreen", "exclusive", "ReplicatedStorage"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "LoadingScreen.project.json"), JSON.stringify({
+    name: "LoadingScreen",
+    place_ids: [94245376988608],
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $amarilloDisabledPath: "sync/ReplicatedStorage",
+        ExclusivoLoadingScreen: {
+          $path: "LoadingScreen/exclusive/ReplicatedStorage"
+        }
+      }
+    }
+  }, null, 2));
+  return workspace;
+}
 
 test("runStudioCode removes success text from the error field", async () => {
   const workspace = createWorkspaceWithProject();
@@ -199,6 +217,68 @@ test("destructive session routes block on session health gates", async () => {
     assert.equal(response.payload.result.blocked, true);
     assert.equal(response.payload.result.reasonCode, testCase.reasonCode);
   }
+});
+
+test("path-based destructive actions are blocked outside active project mounts", async () => {
+  const workspace = createWorkspaceWithExclusiveReplicatedStorageMount();
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(94245376988608, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  const blockedCreate = await app.enqueueDestructiveCommand(session.id, "create_instance", {
+    parentPath: "game.ReplicatedStorage",
+    className: "ModuleScript",
+    name: "ModuleScript",
+    properties: {}
+  });
+
+  assert.equal(blockedCreate.ok, false);
+  assert.equal(blockedCreate.blocked, true);
+  assert.equal(blockedCreate.reasonCode, "OUTSIDE_SYNC_MOUNT");
+  assert.match(blockedCreate.error, /game\.ReplicatedStorage\.ModuleScript/);
+  assert.match(blockedCreate.error, /game\.ReplicatedStorage\.ExclusivoLoadingScreen/);
+  assert.equal(session.pendingCommands.length, 0);
+
+  const blockedModify = await app.enqueueDestructiveCommand(session.id, "modify_property", {
+    path: "game.ReplicatedStorage.ModuleScript",
+    property: "Name",
+    value: "StillOutside"
+  });
+  assert.equal(blockedModify.blocked, true);
+  assert.equal(blockedModify.reasonCode, "OUTSIDE_SYNC_MOUNT");
+  assert.equal(session.pendingCommands.length, 0);
+
+  const blockedDelete = await app.enqueueDestructiveCommand(session.id, "delete_instance", {
+    path: "game.ReplicatedStorage.ModuleScript"
+  });
+  assert.equal(blockedDelete.blocked, true);
+  assert.equal(blockedDelete.reasonCode, "OUTSIDE_SYNC_MOUNT");
+  assert.equal(session.pendingCommands.length, 0);
+
+  const allowedPromise = app.enqueueDestructiveCommand(session.id, "create_instance", {
+    parentPath: "game.ReplicatedStorage.ExclusivoLoadingScreen",
+    className: "ModuleScript",
+    name: "InsideMount",
+    properties: {}
+  });
+  await wait(10);
+
+  const dequeued = app.dequeueCommands(session.id);
+  assert.equal(dequeued.commands.length, 1);
+  assert.equal(dequeued.commands[0].type, "create_instance");
+  assert.equal(dequeued.commands[0].payload.parentPath, "game.ReplicatedStorage.ExclusivoLoadingScreen");
+
+  app.completeCommand(session.id, dequeued.commands[0].id, {
+    ok: true,
+    result: "Instance created successfully",
+    fullName: "ReplicatedStorage.ExclusivoLoadingScreen.InsideMount",
+    confirmed: true
+  });
+
+  const allowedResult = await allowedPromise;
+  assert.equal(allowedResult.ok, true);
+  assert.equal(allowedResult.blocked, false);
 });
 
 test("destructive confirmation pending is surfaced in health", async () => {

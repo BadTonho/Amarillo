@@ -14,6 +14,18 @@ local function formatValueForDisplay(value)
 	return tostring(value)
 end
 
+local function postOutsideSyncMountResult(command, actionName, pathSegments)
+	local message = syncMountGuardMessage(actionName, pathSegments)
+	postCommandResult(command.id, false, {
+		error = message,
+		blocked = true,
+		declined = false,
+		confirmed = false,
+		reasonCode = "OUTSIDE_SYNC_MOUNT"
+	})
+	appendLog(message)
+end
+
 executeModifyProperty = function(command)
 	local instance = resolveInstanceByPath(command.payload.path)
 	if not instance then
@@ -25,6 +37,12 @@ executeModifyProperty = function(command)
 			reasonCode = "INSTANCE_NOT_FOUND"
 		})
 		appendLog("modify_property falhou: caminho invalido.")
+		return
+	end
+
+	local targetSegments = getInstancePathSegments(instance)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "modify_property", targetSegments)
 		return
 	end
 
@@ -98,6 +116,13 @@ executeCreateInstance = function(command)
 
 	local className = command.payload.className
 	local instanceName = command.payload.name or className
+	local targetSegments = getInstancePathSegments(parent)
+	table.insert(targetSegments, instanceName)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "create_instance", targetSegments)
+		return
+	end
+
 	local okStartWaypoint, startWaypointErr = pcall(function()
 		ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
 	end)
@@ -173,6 +198,12 @@ executeDeleteInstance = function(command)
 			reasonCode = "INSTANCE_NOT_FOUND"
 		})
 		appendLog("delete_instance falhou: caminho invalido.")
+		return
+	end
+
+	local targetSegments = getInstancePathSegments(instance)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "delete_instance", targetSegments)
 		return
 	end
 

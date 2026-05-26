@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.32"
+local PLUGIN_VERSION = "1.1.34"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -226,6 +226,86 @@ local function isMountSyncEnabled(value)
 		return state.syncTargets and state.syncTargets.Workspace == true or false
 	end
 	return true
+end
+
+local function pathSegmentsHavePrefix(segments, prefix)
+	if type(segments) ~= "table" or type(prefix) ~= "table" or #prefix > #segments then
+		return false
+	end
+	for index, segment in ipairs(prefix) do
+		if segments[index] ~= segment then
+			return false
+		end
+	end
+	return true
+end
+
+local function normalizeInstancePathSegments(value)
+	local segments = {}
+	local sourceSegments = {}
+	if type(value) == "table" then
+		sourceSegments = value
+	elseif type(value) == "string" then
+		sourceSegments = string.split(value, ".")
+	end
+	for _, segment in ipairs(sourceSegments) do
+		if type(segment) == "string" and segment ~= "" then
+			local lower = string.lower(segment)
+			if lower ~= "game" and lower ~= "datamodel" then
+				table.insert(segments, segment)
+			end
+		end
+	end
+	return segments
+end
+
+local function activeSyncMountSegments()
+	local mounts = {}
+	for _, mount in ipairs(state.project and state.project.mounts or {}) do
+		if isMountSyncEnabled(mount) then
+			local segments = normalizeInstancePathSegments(mountSegmentsFrom(mount))
+			if #segments > 0 then
+				table.insert(mounts, segments)
+			end
+		end
+	end
+	return mounts
+end
+
+local function instancePathLabelFromSegments(segments)
+	if type(segments) ~= "table" or #segments == 0 then
+		return "game"
+	end
+	return "game." .. table.concat(segments, ".")
+end
+
+local function activeSyncMountLabels()
+	local labels = {}
+	for _, segments in ipairs(activeSyncMountSegments()) do
+		table.insert(labels, instancePathLabelFromSegments(segments))
+	end
+	if #labels == 0 then
+		return "none"
+	end
+	return table.concat(labels, ", ")
+end
+
+local function isPathInsideActiveSyncMount(pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	if #segments == 0 then
+		return false
+	end
+	for _, mountSegments in ipairs(activeSyncMountSegments()) do
+		if pathSegmentsHavePrefix(segments, mountSegments) then
+			return true
+		end
+	end
+	return false
+end
+
+local function syncMountGuardMessage(actionName, pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	return tostring(actionName) .. " blocked: target path '" .. instancePathLabelFromSegments(segments) .. "' is outside the active sync mounts for this project. Active mounts: " .. activeSyncMountLabels() .. "."
 end
 
 local function filterSnapshotForSync(snapshot)
@@ -3069,6 +3149,18 @@ local function formatValueForDisplay(value)
 	return tostring(value)
 end
 
+local function postOutsideSyncMountResult(command, actionName, pathSegments)
+	local message = syncMountGuardMessage(actionName, pathSegments)
+	postCommandResult(command.id, false, {
+		error = message,
+		blocked = true,
+		declined = false,
+		confirmed = false,
+		reasonCode = "OUTSIDE_SYNC_MOUNT"
+	})
+	appendLog(message)
+end
+
 executeModifyProperty = function(command)
 	local instance = resolveInstanceByPath(command.payload.path)
 	if not instance then
@@ -3080,6 +3172,12 @@ executeModifyProperty = function(command)
 			reasonCode = "INSTANCE_NOT_FOUND"
 		})
 		appendLog("modify_property falhou: caminho invalido.")
+		return
+	end
+
+	local targetSegments = getInstancePathSegments(instance)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "modify_property", targetSegments)
 		return
 	end
 
@@ -3153,6 +3251,13 @@ executeCreateInstance = function(command)
 
 	local className = command.payload.className
 	local instanceName = command.payload.name or className
+	local targetSegments = getInstancePathSegments(parent)
+	table.insert(targetSegments, instanceName)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "create_instance", targetSegments)
+		return
+	end
+
 	local okStartWaypoint, startWaypointErr = pcall(function()
 		ChangeHistoryService:SetWaypoint("MCP create instance: " .. className)
 	end)
@@ -3228,6 +3333,12 @@ executeDeleteInstance = function(command)
 			reasonCode = "INSTANCE_NOT_FOUND"
 		})
 		appendLog("delete_instance falhou: caminho invalido.")
+		return
+	end
+
+	local targetSegments = getInstancePathSegments(instance)
+	if not isPathInsideActiveSyncMount(targetSegments) then
+		postOutsideSyncMountResult(command, "delete_instance", targetSegments)
 		return
 	end
 

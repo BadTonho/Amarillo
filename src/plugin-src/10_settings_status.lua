@@ -85,6 +85,86 @@ local function isMountSyncEnabled(value)
 	return true
 end
 
+local function pathSegmentsHavePrefix(segments, prefix)
+	if type(segments) ~= "table" or type(prefix) ~= "table" or #prefix > #segments then
+		return false
+	end
+	for index, segment in ipairs(prefix) do
+		if segments[index] ~= segment then
+			return false
+		end
+	end
+	return true
+end
+
+local function normalizeInstancePathSegments(value)
+	local segments = {}
+	local sourceSegments = {}
+	if type(value) == "table" then
+		sourceSegments = value
+	elseif type(value) == "string" then
+		sourceSegments = string.split(value, ".")
+	end
+	for _, segment in ipairs(sourceSegments) do
+		if type(segment) == "string" and segment ~= "" then
+			local lower = string.lower(segment)
+			if lower ~= "game" and lower ~= "datamodel" then
+				table.insert(segments, segment)
+			end
+		end
+	end
+	return segments
+end
+
+local function activeSyncMountSegments()
+	local mounts = {}
+	for _, mount in ipairs(state.project and state.project.mounts or {}) do
+		if isMountSyncEnabled(mount) then
+			local segments = normalizeInstancePathSegments(mountSegmentsFrom(mount))
+			if #segments > 0 then
+				table.insert(mounts, segments)
+			end
+		end
+	end
+	return mounts
+end
+
+local function instancePathLabelFromSegments(segments)
+	if type(segments) ~= "table" or #segments == 0 then
+		return "game"
+	end
+	return "game." .. table.concat(segments, ".")
+end
+
+local function activeSyncMountLabels()
+	local labels = {}
+	for _, segments in ipairs(activeSyncMountSegments()) do
+		table.insert(labels, instancePathLabelFromSegments(segments))
+	end
+	if #labels == 0 then
+		return "none"
+	end
+	return table.concat(labels, ", ")
+end
+
+local function isPathInsideActiveSyncMount(pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	if #segments == 0 then
+		return false
+	end
+	for _, mountSegments in ipairs(activeSyncMountSegments()) do
+		if pathSegmentsHavePrefix(segments, mountSegments) then
+			return true
+		end
+	end
+	return false
+end
+
+local function syncMountGuardMessage(actionName, pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	return tostring(actionName) .. " blocked: target path '" .. instancePathLabelFromSegments(segments) .. "' is outside the active sync mounts for this project. Active mounts: " .. activeSyncMountLabels() .. "."
+end
+
 local function filterSnapshotForSync(snapshot)
 	if type(snapshot) ~= "table" then
 		return {

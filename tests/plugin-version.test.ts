@@ -132,6 +132,15 @@ test("Roblox plugin does not fail create_instance after successful parenting bec
   assert.match(pluginSource, /reasonCode = ok and nil or "CREATE_FAILED"/);
 });
 
+test("Roblox plugin blocks path-based destructive actions outside active sync mounts", () => {
+  assert.match(pluginSource, /local function isPathInsideActiveSyncMount\(pathSegments\)/);
+  assert.match(pluginSource, /local function syncMountGuardMessage\(actionName, pathSegments\)/);
+  assert.match(pluginSource, /reasonCode = "OUTSIDE_SYNC_MOUNT"/);
+  assert.match(pluginSource, /postOutsideSyncMountResult\(command, "modify_property", targetSegments\)/);
+  assert.match(pluginSource, /postOutsideSyncMountResult\(command, "create_instance", targetSegments\)/);
+  assert.match(pluginSource, /postOutsideSyncMountResult\(command, "delete_instance", targetSegments\)/);
+});
+
 test("Roblox plugin reuses the serialized snapshot body for automatic snapshot cache checks", () => {
   assert.match(pluginSource, /lastSnapshotBodyJson = nil/);
   assert.match(pluginSource, /local bodyJson = HttpService:JSONEncode\(bodyTable\)/);
