@@ -165,6 +165,35 @@ local function syncMountGuardMessage(actionName, pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. instancePathLabelFromSegments(segments) .. "' is outside the active sync mounts for this project. Active mounts: " .. activeSyncMountLabels() .. "."
 end
 
+local function duplicateMountRootIssueForPath(pathSegments)
+	local segments = normalizeInstancePathSegments(pathSegments)
+	if #segments == 0 then
+		return nil
+	end
+	for _, mountSegments in ipairs(activeSyncMountSegments()) do
+		if #mountSegments > 1 and pathSegmentsHavePrefix(segments, mountSegments) then
+			local duplicateName = mountSegments[#mountSegments]
+			if #segments > #mountSegments and segments[#mountSegments + 1] == duplicateName then
+				return {
+					reasonCode = "DUPLICATE_MOUNT_ROOT",
+					targetPath = instancePathLabelFromSegments(segments),
+					expectedMountPath = instancePathLabelFromSegments(mountSegments),
+					duplicateName = duplicateName
+				}
+			end
+		end
+	end
+	return nil
+end
+
+local function duplicateMountRootGuardMessage(actionName, pathSegments)
+	local issue = duplicateMountRootIssueForPath(pathSegments)
+	if not issue then
+		return nil
+	end
+	return tostring(actionName) .. " blocked: target path '" .. issue.targetPath .. "' would create or mutate duplicate mount root '" .. tostring(issue.duplicateName) .. "' inside active mount '" .. issue.expectedMountPath .. "'. Put children directly under '" .. issue.expectedMountPath .. "' instead."
+end
+
 local function filterSnapshotForSync(snapshot)
 	if type(snapshot) ~= "table" then
 		return {

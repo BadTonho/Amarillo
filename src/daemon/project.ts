@@ -10,6 +10,7 @@ const PROJECT_SUFFIX = ".project.json";
 const META_SUFFIX = ".meta.json";
 const AMARILLO_ID_ATTRIBUTE = "AmarilloId";
 const DUPLICATE_FS_SUFFIX = ".amarillo-";
+const DUPLICATE_MOUNT_ROOT_CODE = "DUPLICATE_MOUNT_ROOT";
 
 // ===== Lightweight glob matching (no external dependency) =====
 function globToRegex(glob) {
@@ -298,6 +299,93 @@ function stripScriptSuffix(fileName) {
     .replace(/\.lua[u]?$/i, "");
 }
 
+function mountSegmentsForValidation(mount) {
+  if (Array.isArray(mount?.segments)) {
+    return mount.segments.filter((segment) => typeof segment === "string" && segment.length > 0);
+  }
+  if (typeof mount?.path === "string") {
+    return mount.path.split(".").filter(Boolean);
+  }
+  if (typeof mount?.id === "string") {
+    return mount.id.split(".").filter(Boolean);
+  }
+  return [];
+}
+
+function duplicateMountRootName(mount) {
+  const segments = mountSegmentsForValidation(mount);
+  return segments.length > 1 ? segments[segments.length - 1] : null;
+}
+
+function instancePathLabel(segments) {
+  return Array.isArray(segments) && segments.length > 0
+    ? `game.${segments.join(".")}`
+    : "game";
+}
+
+function pathSegmentsHavePrefix(segments, prefix) {
+  return Array.isArray(segments)
+    && Array.isArray(prefix)
+    && prefix.length <= segments.length
+    && prefix.every((segment, index) => segments[index] === segment);
+}
+
+function duplicateMountRootIssue(mount, options: any = {}) {
+  const segments = mountSegmentsForValidation(mount);
+  const childName = duplicateMountRootName(mount);
+  const expectedMountPath = instancePathLabel(segments);
+  const pathSegments = segments.concat(childName || []);
+  const mountId = mount?.id || segments.join(".");
+  const relativePath = options.relativePath
+    || (mount?.relativePath && childName ? normalizeSlashes(`${mount.relativePath}/${childName}`) : childName);
+  return {
+    code: DUPLICATE_MOUNT_ROOT_CODE,
+    mountId,
+    path: options.path || instancePathLabel(pathSegments),
+    expectedMountPath,
+    relativePath,
+    filePath: options.filePath || null,
+    fileName: options.fileName || childName,
+    message: `Duplicate mount root '${childName}' found inside '${expectedMountPath}'. Put children directly under '${expectedMountPath}' instead.`
+  };
+}
+
+function entryMapsToDuplicateMountRoot(mount, entry) {
+  const childName = duplicateMountRootName(mount);
+  if (!childName || !entry) {
+    return false;
+  }
+  if (entry.name === childName) {
+    return true;
+  }
+  if (entry.isFile && entry.isFile() && detectScriptFileType(entry.name)) {
+    return stripScriptSuffix(entry.name) === childName;
+  }
+  return false;
+}
+
+function findDuplicateMountRootPathIssue(project, targetSegments) {
+  const segments = Array.isArray(targetSegments)
+    ? targetSegments.filter((segment) => typeof segment === "string" && segment.length > 0)
+    : [];
+  for (const mount of project?.mounts || []) {
+    const mountSegments = mountSegmentsForValidation(mount);
+    const childName = duplicateMountRootName(mount);
+    if (!childName || !pathSegmentsHavePrefix(segments, mountSegments)) {
+      continue;
+    }
+    if (segments.length > mountSegments.length && segments[mountSegments.length] === childName) {
+      return duplicateMountRootIssue(mount, {
+        path: instancePathLabel(segments),
+        relativePath: mount.relativePath
+          ? normalizeSlashes(`${mount.relativePath}/${segments.slice(mountSegments.length).join("/")}`)
+          : segments.slice(mountSegments.length).join("/")
+      });
+    }
+  }
+  return null;
+}
+
 function normalizeResolvedPath(filePath) {
   return path.resolve(filePath).replace(/\\/g, "/");
 }
@@ -535,10 +623,53 @@ function validateProjectTreeFiles(project, options: any = {}) {
     if (!mount?.absolutePath) {
       continue;
     }
+    for (const entry of listDirectoryEntries(mount.absolutePath)) {
+      const fullPath = path.join(mount.absolutePath, entry.name);
+      const relativePath = path.relative(mount.absolutePath, fullPath).replace(/\\/g, "/");
+      if (matchesAnyGlob(relativePath, project.ignoreGlobs || [])) {
+        continue;
+      }
+      if (entryMapsToDuplicateMountRoot(mount, entry)) {
+        issues.push(duplicateMountRootIssue(mount, {
+          filePath: fullPath,
+          fileName: entry.name,
+          relativePath: mount.relativePath
+            ? normalizeSlashes(`${mount.relativePath}/${entry.name}`)
+            : entry.name
+        }));
+      }
+    }
     collectInvalidProjectTreeFilesInDir(mount.absolutePath, mount.absolutePath, {
       ignoreGlobs: project.ignoreGlobs || [],
       ...options
     }, issues);
+  }
+  return issues;
+}
+
+function validateProjectSnapshotMounts(project, snapshot, options: any = {}) {
+  const issues = [];
+  const mountMap = new Map((project?.mounts || []).map((mount) => [mount.id, mount]));
+  for (const mountSnapshot of snapshot?.mounts || []) {
+    const projectMount = mountMap.get(mountSnapshot.id);
+    const mount = projectMount || mountSnapshot;
+    const childName = duplicateMountRootName(mount);
+    if (!childName) {
+      continue;
+    }
+    for (const child of mountSnapshot.children || []) {
+      if (child?.name !== childName) {
+        continue;
+      }
+      issues.push(duplicateMountRootIssue(mount, {
+        path: instancePathLabel(mountSegmentsForValidation(mount).concat(childName)),
+        relativePath: mount.relativePath
+          ? normalizeSlashes(`${mount.relativePath}/${childName}`)
+          : childName,
+        fileName: childName,
+        ...options
+      }));
+    }
   }
   return issues;
 }
@@ -2119,6 +2250,8 @@ module.exports = {
   buildNodeFromDirectory,
   buildNodeFromFile,
   detectScriptFileType,
+  DUPLICATE_MOUNT_ROOT_CODE,
+  findDuplicateMountRootPathIssue,
   loadWorkspaceProjectCatalog: projectResolver.loadWorkspaceProjectCatalog,
   loadWorkspaceProjects: projectResolver.loadWorkspaceProjects,
   matchesAnyGlob,
@@ -2132,6 +2265,7 @@ module.exports = {
   readWorkspaceConfig: projectResolver.readWorkspaceConfig,
   resolveProjectSelectionForPlace: projectResolver.resolveProjectSelectionForPlace,
   resolveProjectForPlace: projectResolver.resolveProjectForPlace,
+  validateProjectSnapshotMounts,
   validateProjectTreeFiles,
   writeStudioProjectState,
   writeStudioProjectStateAsync,

@@ -34,6 +34,36 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function createWorkspaceWithExclusiveLoadingScreenMounts() {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "LoadingScreen", "exclusive", "StarterGui"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "LoadingScreen", "exclusive", "StarterPlayer", "StarterPlayerScripts"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "LoadingScreen.project.json"), JSON.stringify({
+    name: "LoadingScreen",
+    place_ids: [94245376988608],
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $amarilloDisabledPath: "sync/StarterGui",
+        ExclusivoLoadingScreen: {
+          $path: "LoadingScreen/exclusive/StarterGui",
+          $keepUnknowns: true
+        }
+      },
+      StarterPlayer: {
+        StarterPlayerScripts: {
+          $amarilloDisabledPath: "sync/StarterPlayer/StarterPlayerScripts",
+          ExclusivoLoadingScreen: {
+            $path: "LoadingScreen/exclusive/StarterPlayer/StarterPlayerScripts",
+            $keepUnknowns: true
+          }
+        }
+      }
+    }
+  }, null, 2));
+  return workspace;
+}
+
 function createWorkspaceWithWorkspaceMount() {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService"), { recursive: true });
@@ -570,6 +600,93 @@ test("Studio truth writes the initial snapshot to disk and marks the session rea
     fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "utf8"),
     /return 42/
   );
+});
+
+test("duplicate exclusive mount root in local tree blocks apply_project_tree", async () => {
+  const workspace = createWorkspaceWithExclusiveLoadingScreenMounts();
+  const duplicateDir = path.join(workspace, "LoadingScreen", "exclusive", "StarterGui", "ExclusivoLoadingScreen");
+  fs.mkdirSync(duplicateDir, { recursive: true });
+  fs.writeFileSync(path.join(duplicateDir, "Nested.client.luau"), "return nil", "utf8");
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(94245376988608, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  const project = app.getProjectById(session.projectId);
+  const result = await app.enqueueCommand(session.id, "apply_project_tree", {
+    project: readLocalProjectState(project),
+    reason: "workspace_changed"
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.blocked, true);
+  assert.equal(result.code, "PROJECT-TREE-INVALID");
+  assert.match(result.error, /duplicate mount root/i);
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(app.ensureSessionSyncState(session).state, "degraded");
+});
+
+test("workspace watcher blocks duplicate exclusive mount root paths instead of queuing sync", async () => {
+  const workspace = createWorkspaceWithExclusiveLoadingScreenMounts();
+  const duplicateDir = path.join(workspace, "LoadingScreen", "exclusive", "StarterGui", "ExclusivoLoadingScreen");
+  fs.mkdirSync(duplicateDir, { recursive: true });
+  const duplicateFile = path.join(duplicateDir, "Nested.client.luau");
+  fs.writeFileSync(duplicateFile, "return nil", "utf8");
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(94245376988608, null, { connectionState: "ready", truthSource: "pc" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  app.onWorkspaceFileChanged(duplicateFile);
+  await wait(350);
+
+  assert.equal(session.pendingCommands.length, 0);
+  assert.equal(app.ensureSessionSyncState(session).state, "degraded");
+  assert.match(app.ensureSessionSyncState(session).degradedReason, /duplicate mount root/i);
+});
+
+test("Studio snapshots with duplicate exclusive mount roots are blocked before disk write", async () => {
+  const workspace = createWorkspaceWithExclusiveLoadingScreenMounts();
+  const duplicateDir = path.join(workspace, "LoadingScreen", "exclusive", "StarterGui", "ExclusivoLoadingScreen");
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(94245376988608, null, { connectionState: "ready", truthSource: "studio" });
+  session.lastStudioSeenAt = new Date().toISOString();
+
+  assert.throws(() => {
+    app.updateStudioSnapshot(session.id, {
+      mounts: [
+        {
+          id: "StarterGui.ExclusivoLoadingScreen",
+          segments: ["StarterGui", "ExclusivoLoadingScreen"],
+          children: [
+            {
+              name: "ExclusivoLoadingScreen",
+              className: "Folder",
+              children: [
+                {
+                  name: "Loading",
+                  className: "ScreenGui",
+                  children: []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }, "initial_accept");
+  }, (error) => {
+    assert.equal(error.code, "PROJECT-TREE-INVALID");
+    assert.match(error.message, /duplicate mount root/i);
+    return true;
+  });
+
+  await app.drainPendingStudioWrites();
+  assert.equal(fs.existsSync(duplicateDir), false);
+  assert.equal(app.ensureSessionSyncState(session).state, "degraded");
 });
 
 test("shared and exclusive files target only the derived sessions that include them", async () => {
