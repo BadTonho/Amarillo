@@ -400,10 +400,6 @@ ${SIDEBAR_CSS}
         }
         const baseMountIds = placeSyncPayloadIds(form, context, "base");
         const exclusiveMountIds = placeSyncPayloadIds(form, context, "exclusive");
-        if (exclusiveMountIds.length === 0) {
-          setPlaceSyncStatus(form, "Select at least one exclusive folder.");
-          return;
-        }
         setPlaceSyncStatus(form, "");
         vscode.postMessage({
           type: "placeSyncApply",
