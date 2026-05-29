@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.40"
+local PLUGIN_VERSION = "1.1.41"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -4438,7 +4438,7 @@ local toolbarButton = nil
 
 local function buildPluginShell()
 	local toolbar = plugin:CreateToolbar("Amarillo")
-	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "")
+	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxassetid://92705629884726")
 	toolbarButton.ClickableWhenViewportHidden = true
 
 	local widgetInfo = DockWidgetPluginGuiInfo.new(
