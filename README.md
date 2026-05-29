@@ -46,6 +46,8 @@ The Amarillo plugin can:
 - **Workspace Sync Targets**: Manage and configure which parts of the workspace sync to Studio
 - **Snapshot Normalization**: Automatic normalization of instance snapshots for consistent verification
 - **Property Defaulting**: Intelligent property handling with proper Roblox property serialization
+- **Dual-Hashing Protection**: Compares both a semantic hash and a raw snapshot SHA-1 hash to ensure even subtle default-valued GUI changes (like `ZIndex`) are written to disk
+- **Zero-Loss Mount Toggling**: Remembers and restores custom mount relative paths through disabled state metadata, ensuring no configuration is lost when toggling sync
 
 **Diagnostics & Introspection:**
 - Health checks and connection diagnostics
@@ -215,5 +217,7 @@ The final file will be created in `dist/`. Packaging includes only the generated
 - Property sync is extensible for new `className`s and serialized types with proper Roblox property serialization.
 - Synchronization includes snapshot normalization and property defaulting for reliable verification across instance types.
 - Sync mount validation prevents accidental data loss during destructive operations by validating targets before sync.
+- Dual-hashing change detection ensures precise disk-write skipping only when the snapshot raw contents are genuinely identical to the last synchronized state.
+- Cross-platform relative path normalization automatically cleans backslashes to forward slashes (`/`) for shared project configurations, avoiding OS conflicts.
 - `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed, inherited, and enforced by the Studio-to-disk writer.
 - Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).
