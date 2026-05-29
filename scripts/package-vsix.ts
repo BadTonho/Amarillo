@@ -160,6 +160,7 @@ function main() {
   }
   copyFile(path.join(repoRoot, "amarillo-version.json"), path.join(stagingExtension, "amarillo-version.json"));
   copyFile(path.join(extensionSource, "media", "amarillo.svg"), path.join(mediaDir, "amarillo.svg"));
+  copyFile(path.join(extensionSource, "media", "icon.png"), path.join(mediaDir, "icon.png"));
   copyFile(path.join(extensionSource, "schemas", "meta.json"), path.join(schemasDir, "meta.json"));
   copyFile(path.join(extensionSource, "schemas", "project.json"), path.join(schemasDir, "project.json"));
 
@@ -205,6 +206,7 @@ function main() {
   <Default Extension="md" ContentType="text/markdown" />
   <Default Extension="lua" ContentType="text/plain" />
   <Default Extension="svg" ContentType="image/svg+xml" />
+  <Default Extension="png" ContentType="image/png" />
 </Types>
 `;
 

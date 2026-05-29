@@ -137,6 +137,7 @@ export interface RuntimeSession {
   projectId: string;
   createdAt: string;
   lastStudioHash: string | null;
+  lastStudioRawHash: string | null;
   lastStudioSnapshot: StudioSnapshot | null;
   syncTargets: Record<string, unknown>;
   lastStudioSeenAt: string | null;

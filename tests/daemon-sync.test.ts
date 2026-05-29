@@ -1518,6 +1518,63 @@ test("unchanged Studio snapshots update cache without scheduling disk writes", a
   assert.equal(app.pendingStudioWrites.size, 0);
 });
 
+test("Studio snapshots persist raw default GUI metadata even when semantic hash is unchanged", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "StarterGui"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $path: "sync/StarterGui"
+      }
+    }
+  }, null, 2));
+
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  const { session } = app.openSession(0, null);
+  const frameMetaPath = path.join(workspace, "sync", "StarterGui", "DemoGui", "Main", "init.meta.json");
+  const baseSnapshot = {
+    mounts: [
+      {
+        id: "StarterGui",
+        segments: ["StarterGui"],
+        children: [
+          {
+            name: "DemoGui",
+            className: "ScreenGui",
+            classNameSource: "studio",
+            properties: {},
+            children: [
+              {
+                name: "Main",
+                className: "Frame",
+                classNameSource: "studio",
+                properties: {
+                  BackgroundColor3: [1, 1, 1]
+                },
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  app.updateStudioSnapshot(session.id, baseSnapshot, "auto");
+  await app.drainPendingStudioWrites(1000);
+  assert.equal(JSON.parse(fs.readFileSync(frameMetaPath, "utf8")).properties.ZIndex, undefined);
+
+  const defaultMetadataSnapshot = cloneJson(baseSnapshot);
+  defaultMetadataSnapshot.mounts[0].children[0].children[0].properties.ZIndex = 1;
+  app.updateStudioSnapshot(session.id, defaultMetadataSnapshot, "auto");
+  await app.drainPendingStudioWrites(1000);
+
+  assert.equal(JSON.parse(fs.readFileSync(frameMetaPath, "utf8")).properties.ZIndex, 1);
+});
+
 test("Studio snapshot write jobs clean up after skipped and failed writes", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });

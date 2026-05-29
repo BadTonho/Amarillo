@@ -53,7 +53,7 @@ const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { McpAuditLog } = require("./lib/mcp-audit-log");
 const { RateLimiter } = require("./lib/rate-limiter");
 const { PerfTracker } = require("./lib/perf-tracker");
-const { diffSnapshots, hashSnapshot, normalizeAndHashSnapshot } = require("./lib/snapshot-hash");
+const { diffSnapshots, hashSnapshot, normalizeAndHashSnapshot, stringifySorted } = require("./lib/snapshot-hash");
 const { ensurePluginInstructionsFile } = require("./lib/instructions");
 const { DoctorService } = require("./services/doctor-service");
 const { SessionRegistry } = require("./services/session-registry");
@@ -1165,6 +1165,10 @@ class PluginRobloxApp {
     }
   }
 
+  rawSnapshotHash(snapshot) {
+    return crypto.createHash("sha1").update(stringifySorted(snapshot || {})).digest("hex");
+  }
+
   syncTargetsForSession(session = null) {
     return normalizeSyncTargets(session?.syncTargets || this.syncTargets);
   }
@@ -1988,6 +1992,7 @@ class PluginRobloxApp {
     session.placeName = normalizePlaceName(options.placeName);
     session.createdAt = new Date().toISOString();
     session.lastStudioHash = null;
+    session.lastStudioRawHash = null;
     session.lastStudioSnapshot = null;
     session.lastStudioSeenAt = null;
     session.lastStudioContactAt = null;
@@ -2918,6 +2923,7 @@ class PluginRobloxApp {
       projectId: project.id,
       createdAt: new Date().toISOString(),
       lastStudioHash: null,
+      lastStudioRawHash: null,
       lastStudioSnapshot: null,
       lastStudioSeenAt: null,
       lastStudioContactAt: null,
@@ -3398,13 +3404,16 @@ class PluginRobloxApp {
     const filteredSnapshot = this.snapshotForSync(snapshot, this.syncTargetsForSession(session));
     const effectiveSnapshotInfo = snapshotInfo || this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     const snapshotHash = effectiveSnapshotInfo.hash;
+    const rawSnapshotHash = this.rawSnapshotHash(filteredSnapshot);
     session.lastStudioSnapshot = filteredSnapshot && typeof filteredSnapshot === "object" ? filteredSnapshot : { mounts: [] };
     session.lastStudioHash = snapshotHash;
+    session.lastStudioRawHash = rawSnapshotHash;
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_cached", {
       sessionId: session.id,
       reason,
-      snapshotHash
+      snapshotHash,
+      rawSnapshotHash
     });
     return snapshotHash;
   }
@@ -3648,20 +3657,26 @@ class PluginRobloxApp {
             : "apply_project_tree_verified";
           const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(observedSnapshot);
           const previousHash = session.lastStudioHash;
+          const previousRawHash = session.lastStudioRawHash || null;
           const observedHash = snapshotInfo.hash;
+          const observedRawHash = this.rawSnapshotHash(observedSnapshot);
           const hashChanged = observedHash !== previousHash;
+          const rawHashChanged = observedRawHash !== previousRawHash;
           logSync("studio_snapshot_received", {
             sessionId,
             reason: snapshotReason,
             snapshotSize: snapshotInfo.byteLength,
             hash: observedHash,
             hashChanged,
-            previousHash
+            previousHash,
+            rawHash: observedRawHash,
+            rawHashChanged,
+            previousRawHash
           });
           this.cacheStudioSnapshot(session, observedSnapshot, snapshotReason, snapshotInfo);
           this.ensureSessionSyncState(session).lastObservedHash = observedHash;
           const scheduleVerifiedWrite = () => {
-            if (!hashChanged) {
+            if (!hashChanged && !rawHashChanged) {
               logSync("disk_write_skipped", {
                 sessionId,
                 reason: "snapshot_unchanged",
@@ -3756,11 +3771,13 @@ class PluginRobloxApp {
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     session.lastStudioSnapshot = filteredSnapshot;
     session.lastStudioHash = snapshotInfo.hash;
+    session.lastStudioRawHash = this.rawSnapshotHash(filteredSnapshot);
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_project_apply", {
       sessionId: session.id,
       reason,
-      snapshotHash: session.lastStudioHash
+      snapshotHash: session.lastStudioHash,
+      rawSnapshotHash: session.lastStudioRawHash
     });
   }
 
@@ -3777,11 +3794,13 @@ class PluginRobloxApp {
     node.source = String(source ?? "");
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(session.lastStudioSnapshot);
     session.lastStudioHash = snapshotInfo.hash;
+    session.lastStudioRawHash = this.rawSnapshotHash(session.lastStudioSnapshot);
     session.lastStudioSeenAt = new Date().toISOString();
     logSync("studio_snapshot_assumed_from_source_patch", {
       sessionId: session.id,
       path: instanceSegments.join("."),
-      snapshotHash: session.lastStudioHash
+      snapshotHash: session.lastStudioHash,
+      rawSnapshotHash: session.lastStudioRawHash
     });
     return true;
   }
@@ -4031,19 +4050,25 @@ class PluginRobloxApp {
     const snapshotInfo = this.normalizeAndHashSnapshotWithPerf(filteredSnapshot);
     const nextHash = snapshotInfo.hash;
     const prevHash = session.lastStudioHash;
+    const nextRawHash = this.rawSnapshotHash(filteredSnapshot);
+    const prevRawHash = session.lastStudioRawHash || null;
     const hashChanged = nextHash !== prevHash;
+    const rawHashChanged = nextRawHash !== prevRawHash;
     logSync("studio_snapshot_received", {
       sessionId,
       reason,
       snapshotSize: options.requestByteLength || snapshotInfo.byteLength,
       hash: nextHash,
       hashChanged,
-      previousHash: prevHash
+      previousHash: prevHash,
+      rawHash: nextRawHash,
+      rawHashChanged,
+      previousRawHash: prevRawHash
     });
     this.cacheStudioSnapshot(session, filteredSnapshot, reason, snapshotInfo);
     this.ensureSessionSyncState(session).lastObservedHash = nextHash;
 
-    if (!hashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
+    if (!hashChanged && !rawHashChanged && reason !== "manual" && reason !== INITIAL_STUDIO_SYNC_REASON) {
       logSync("disk_write_skipped", {
         sessionId,
         reason: "snapshot_unchanged",
