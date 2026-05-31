@@ -1,10 +1,30 @@
-﻿"use strict";
+"use strict";
 
+const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { readWorkspaceConfig } = require("../daemon/project");
 const { TOOL_DEFINITIONS, listTools } = require("../daemon/mcp-tools");
 const { startStdioMcpServer, textContent } = require("../daemon/mcp-stdio");
+
+const MCP_LOCAL_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
+
+// Module-level mutable state for token auto-refresh on auth failures.
+let currentWorkspaceRoot = "";
+let currentBridgeToken: string | null = null;
+
+function readCurrentBridgeTokenFromFile(workspaceRoot) {
+  try {
+    const localStatePath = path.join(workspaceRoot, MCP_LOCAL_RELATIVE_PATH);
+    const raw = fs.readFileSync(localStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.bridgeToken === "string" && parsed.bridgeToken.trim().length > 0
+      ? parsed.bridgeToken.trim()
+      : null;
+  } catch (_error) {
+    return null;
+  }
+}
 
 function parseArgs(argv) {
   const options = {
@@ -112,11 +132,31 @@ function sessionRoute(sessionId, action, query = "") {
   return `/session/${encodedSessionId}/${action}${query}`;
 }
 
+function isAuthError(error) {
+  const message = String(error?.message || "");
+  return message.includes("HTTP 401") || message.includes("HTTP 403");
+}
+
+async function requestJsonWithTokenRefresh(baseUrl, method, route, body, bridgeToken) {
+  try {
+    return await requestJson(baseUrl, method, route, body, { bridgeToken });
+  } catch (error) {
+    if (isAuthError(error) && currentWorkspaceRoot) {
+      const freshToken = readCurrentBridgeTokenFromFile(currentWorkspaceRoot);
+      if (freshToken && freshToken !== bridgeToken) {
+        currentBridgeToken = freshToken;
+        return await requestJson(baseUrl, method, route, body, { bridgeToken: freshToken });
+      }
+    }
+    throw error;
+  }
+}
+
 async function healthPayload(baseUrl, bridgeToken) {
-  const response: any = await requestJson(baseUrl, "POST", "/mcp/call", {
+  const response: any = await requestJsonWithTokenRefresh(baseUrl, "POST", "/mcp/call", {
     name: "health",
     arguments: {}
-  }, { bridgeToken });
+  }, bridgeToken);
   return response.result || textContent(response.parsed || {});
 }
 
@@ -129,16 +169,18 @@ async function callProxyTool(baseUrl, bridgeToken, name, args) {
   if (name === "health") {
     return healthPayload(baseUrl, bridgeToken);
   }
-  const response: any = await requestJson(baseUrl, "POST", "/mcp/call", {
+  const response: any = await requestJsonWithTokenRefresh(baseUrl, "POST", "/mcp/call", {
     name,
     arguments: args || {}
-  }, { bridgeToken });
+  }, bridgeToken);
   return response.result || textContent(response.parsed || {});
 }
 
 async function main() {
   const options = resolveBridgeOptions(parseArgs(process.argv.slice(2)));
   const baseUrl = `http://${options.host}:${options.port}`;
+  currentWorkspaceRoot = options.workspaceRoot;
+  currentBridgeToken = options.bridgeToken;
 
   await startStdioMcpServer({
     serverInfo: {
@@ -146,7 +188,7 @@ async function main() {
       version: "0.1.0"
     },
     listTools,
-    handleTool: (name, args) => callProxyTool(baseUrl, options.bridgeToken, name, args)
+    handleTool: (name, args) => callProxyTool(baseUrl, currentBridgeToken, name, args)
   });
 }
 

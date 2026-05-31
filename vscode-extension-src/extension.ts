@@ -173,6 +173,22 @@ function extensionVersion(context = extensionContext) {
   return String(context?.extension?.packageJSON?.version || "unknown");
 }
 
+function recoverBridgeTokenFromLocalState() {
+  try {
+    const workspaceRoot = resolveWorkspaceRoot();
+    const localStatePath = path.join(workspaceRoot, ".amarillo", "mcp-local.json");
+    if (!syncFs.existsSync(localStatePath)) {
+      return null;
+    }
+    const raw = syncFs.readFileSync(localStatePath, "utf8");
+    const parsed = JSON.parse(raw);
+    const token = typeof parsed?.bridgeToken === "string" ? parsed.bridgeToken.trim() : "";
+    return token.length > 0 ? token : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function getOrCreateBridgeToken(context = extensionContext) {
   if (bridgeState.bridgeToken) {
     return bridgeState.bridgeToken;
@@ -180,6 +196,17 @@ function getOrCreateBridgeToken(context = extensionContext) {
   const existing = context?.workspaceState.get("amarillo.bridgeToken");
   if (typeof existing === "string" && existing.length > 0) {
     bridgeState.bridgeToken = existing;
+    return bridgeState.bridgeToken;
+  }
+  // Fallback: recover from mcp-local.json before generating a new token.
+  // This prevents token churn when workspaceState is cleared (e.g. VS Code reinstall,
+  // workspace opened from different location, or corrupted state).
+  const recovered = recoverBridgeTokenFromLocalState();
+  if (recovered) {
+    bridgeState.bridgeToken = recovered;
+    if (context) {
+      void context.workspaceState.update("amarillo.bridgeToken", recovered);
+    }
     return bridgeState.bridgeToken;
   }
   bridgeState.bridgeToken = crypto.randomBytes(24).toString("hex");
@@ -2305,8 +2332,7 @@ async function repairExistingWorkspaceMcpOnActivate(context) {
   }
 
   try {
-    const storedBridgeToken = context.workspaceState.get("amarillo.bridgeToken");
-    const currentBridgeToken = bridgeState.bridgeToken || (typeof storedBridgeToken === "string" ? storedBridgeToken : "");
+    const currentBridgeToken = getOrCreateBridgeToken(context);
     const result = await repairExistingWorkspaceMcpConfig(settings.workspaceRoot, {
       proxyEntry,
       host: settings.host,
@@ -2328,6 +2354,11 @@ async function repairExistingWorkspaceMcpOnActivate(context) {
 async function startBridge(context, options: BridgeStartOptions = {}) {
   // Auto-install the plugin before starting the bridge
   await silentPluginInstall(context);
+
+  // Write the bridge token to mcp-local.json BEFORE starting the daemon.
+  // This ensures any MCP proxy that VS Code launches automatically can read
+  // the correct token, preventing HTTP-UNAUTHORIZED race conditions.
+  const mcpSetup = await ensureWorkspaceMcp(context);
 
   const startResult = await ensureBridgeStarted(context, options);
   let daemonHealth = null;
@@ -2354,7 +2385,6 @@ async function startBridge(context, options: BridgeStartOptions = {}) {
       };
     }
   }
-  const mcpSetup = await ensureWorkspaceMcp(context);
   await saveSessionConfig();
   const offer = await requestConnectionOffer(options.requestedBy || "vscode_command");
   bridgeState.offerRequested = true;
