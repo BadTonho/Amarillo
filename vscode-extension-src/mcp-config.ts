@@ -462,6 +462,9 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
         bootstrapPath,
         localStatePath,
         visibilityPath,
+        bootstrapChanged: wroteBootstrap,
+        localStateChanged: wroteLocalState,
+        mcpConfigChanged: false,
         visibilityChanged,
         config,
         localState
@@ -475,6 +478,9 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
       bootstrapPath,
       localStatePath,
       visibilityPath,
+      bootstrapChanged: wroteBootstrap,
+      localStateChanged: wroteLocalState,
+      mcpConfigChanged: true,
       visibilityChanged,
       config,
       localState
@@ -488,6 +494,9 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
     bootstrapPath,
     localStatePath,
     visibilityPath,
+    bootstrapChanged: wroteBootstrap,
+    localStateChanged: wroteLocalState,
+    mcpConfigChanged: true,
     visibilityChanged,
     config,
     localState
@@ -508,7 +517,7 @@ async function repairExistingWorkspaceMcpConfig(workspaceRoot, options) {
     };
   }
 
-  const bridgeToken = valueOrFallback(currentLocalState?.bridgeToken, options.bridgeToken);
+  const bridgeToken = valueOrFallback(options.bridgeToken, currentLocalState?.bridgeToken);
   if (!bridgeToken) {
     return {
       status: "skipped",
