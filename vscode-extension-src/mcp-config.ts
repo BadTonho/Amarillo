@@ -12,6 +12,11 @@ const MCP_VISIBILITY_FILE_NAME = "mcp-codex-visibility.md";
 const MCP_WORKSPACE_VARIABLE = "${workspaceFolder}";
 const MCP_BOOTSTRAP_RELATIVE_PATH = `.vscode/${MCP_BOOTSTRAP_FILE_NAME}`;
 const MCP_LOCAL_RELATIVE_PATH = `.amarillo/${MCP_LOCAL_FILE_NAME}`;
+const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
+
+function mcpProxyEntryForExtensionPath(extensionPath) {
+  return extensionPath ? path.join(extensionPath, "runtime", "mcp-proxy", "index.js") : "";
+}
 
 function normalizeForMcpJson(filePath) {
   return String(filePath).replace(/\\/g, "/");
@@ -44,6 +49,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const LOCAL_STATE_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
+const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
 
 function parseArgs(argv) {
   const options = {
@@ -71,10 +77,141 @@ function readJson(filePath) {
   }
 }
 
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\\n", "utf8");
+}
+
 function fail(message) {
   process.stderr.write(\`[amarillo-mcp-bootstrap] \${message}\\n\`);
   process.stderr.write("[amarillo-mcp-bootstrap] Install the Amarillo VSIX, open this workspace in VS Code, run Amarillo: Start Bridge or Amarillo: Configure MCP for Workspace, then restart the MCP/Codex session.\\n");
   process.exit(1);
+}
+
+function mcpProxyEntryForExtensionPath(extensionPath) {
+  return extensionPath ? path.join(extensionPath, "runtime", "mcp-proxy", "index.js") : "";
+}
+
+function extensionVersionFromPath(extensionPath) {
+  const folderName = path.basename(String(extensionPath || ""));
+  return folderName.startsWith(EXTENSION_FOLDER_PREFIX)
+    ? folderName.slice(EXTENSION_FOLDER_PREFIX.length)
+    : "unknown";
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left || "0").split(".").map((part) => Number(part) || 0);
+  const rightParts = String(right || "0").split(".").map((part) => Number(part) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  return 0;
+}
+
+function defaultExtensionSearchRoots() {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  if (!home) {
+    return [];
+  }
+  return [
+    path.join(home, ".vscode", "extensions"),
+    path.join(home, ".vscode-insiders", "extensions"),
+    path.join(home, ".cursor", "extensions"),
+    path.join(home, ".windsurf", "extensions")
+  ];
+}
+
+function findNewestInstalledExtension() {
+  let best = null;
+  for (const root of defaultExtensionSearchRoots()) {
+    if (!fs.existsSync(root)) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !entry.name.startsWith(EXTENSION_FOLDER_PREFIX)) {
+        continue;
+      }
+      const extensionPath = path.join(root, entry.name);
+      const proxyEntry = mcpProxyEntryForExtensionPath(extensionPath);
+      if (!fs.existsSync(proxyEntry)) {
+        continue;
+      }
+      const extensionVersion = entry.name.slice(EXTENSION_FOLDER_PREFIX.length);
+      if (!best || compareVersions(extensionVersion, best.extensionVersion) > 0) {
+        best = {
+          extensionPath,
+          extensionVersion,
+          proxyEntry
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function resolveMcpProxy(state, localStatePath) {
+  const extensionPath = typeof state.extensionPath === "string" ? state.extensionPath : "";
+  const proxyEntry = typeof state.proxyEntry === "string" ? state.proxyEntry : "";
+  const candidates = uniqueValues([
+    proxyEntry,
+    mcpProxyEntryForExtensionPath(extensionPath)
+  ]);
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      const resolvedExtensionPath = extensionPath || path.resolve(path.dirname(candidate), "..", "..");
+      const resolvedExtensionVersion = state.extensionVersion || extensionVersionFromPath(resolvedExtensionPath);
+      if (state.proxyEntry !== candidate || state.extensionPath !== resolvedExtensionPath) {
+        try {
+          writeJson(localStatePath, {
+            ...state,
+            extensionPath: resolvedExtensionPath,
+            extensionVersion: resolvedExtensionVersion,
+            proxyEntry: candidate,
+            updatedAt: new Date().toISOString()
+          });
+        } catch (error) {
+          process.stderr.write("[amarillo-mcp-bootstrap] Could not update local MCP state: " + error.message + "\\n");
+        }
+      }
+      return {
+        extensionPath: resolvedExtensionPath,
+        extensionVersion: resolvedExtensionVersion,
+        proxyEntry: candidate,
+        recovered: false
+      };
+    }
+  }
+
+  const recovered = findNewestInstalledExtension();
+  if (!recovered) {
+    return null;
+  }
+
+  const nextState = {
+    ...state,
+    extensionPath: recovered.extensionPath,
+    extensionVersion: recovered.extensionVersion,
+    proxyEntry: recovered.proxyEntry,
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    writeJson(localStatePath, nextState);
+  } catch (error) {
+    process.stderr.write("[amarillo-mcp-bootstrap] Could not update local MCP state after recovery: " + error.message + "\\n");
+  }
+
+  return {
+    ...recovered,
+    recovered: true
+  };
 }
 
 function main() {
@@ -95,20 +232,17 @@ function main() {
   const host = typeof state.host === "string" && state.host ? state.host : "127.0.0.1";
   const port = Number(state.port || 8323);
   const bridgeToken = typeof state.bridgeToken === "string" ? state.bridgeToken : "";
-  const proxyEntry = path.join(extensionPath, "runtime", "mcp-proxy", "index.js");
 
-  if (!extensionPath) {
-    fail("Local MCP state does not contain extensionPath.");
-  }
   if (!bridgeToken) {
     fail("Local MCP state does not contain bridgeToken.");
   }
-  if (!fs.existsSync(proxyEntry)) {
-    fail(\`Amarillo MCP proxy was not found at \${proxyEntry}.\`);
+  const resolved = resolveMcpProxy(state, localStatePath);
+  if (!resolved) {
+    fail("Amarillo MCP proxy was not found in the saved local state or installed extension folders.");
   }
 
   const args = [
-    proxyEntry,
+    resolved.proxyEntry,
     "--workspace", options.workspaceRoot,
     "--host", host,
     "--port", String(port),
@@ -207,14 +341,32 @@ function buildMcpCodexVisibilityMarkdown() {
   ].join("\n");
 }
 
-function buildMcpLocalState(options) {
-  const extensionPath = options.extensionPath || inferExtensionPath(options.proxyEntry);
+function valueOrFallback(value, fallback, defaultValue = "") {
+  if (value !== undefined && value !== null && value !== "") {
+    return value;
+  }
+  if (fallback !== undefined && fallback !== null && fallback !== "") {
+    return fallback;
+  }
+  return defaultValue;
+}
+
+function buildMcpLocalState(options, existingState = null) {
+  const extensionPath = valueOrFallback(
+    options.extensionPath || inferExtensionPath(options.proxyEntry),
+    existingState?.extensionPath
+  );
+  const proxyEntry = valueOrFallback(
+    options.proxyEntry || mcpProxyEntryForExtensionPath(extensionPath),
+    existingState?.proxyEntry
+  );
   return {
-    host: String(options.host || "127.0.0.1"),
-    port: Number(options.port || 8323),
-    bridgeToken: String(options.bridgeToken || ""),
+    host: String(valueOrFallback(options.host, existingState?.host, "127.0.0.1")),
+    port: Number(valueOrFallback(options.port, existingState?.port, "8323")),
+    bridgeToken: String(valueOrFallback(options.bridgeToken, existingState?.bridgeToken)),
     extensionPath: extensionPath ? path.resolve(extensionPath) : "",
-    extensionVersion: String(options.extensionVersion || "unknown"),
+    extensionVersion: String(valueOrFallback(options.extensionVersion, existingState?.extensionVersion, "unknown")),
+    proxyEntry: proxyEntry ? path.resolve(proxyEntry) : "",
     updatedAt: options.updatedAt || new Date().toISOString()
   };
 }
@@ -271,7 +423,8 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
   const config = buildWorkspaceMcpConfig({});
   const bootstrapContents = buildMcpBootstrapScript();
   const visibilityContents = `${buildMcpCodexVisibilityMarkdown()}\n`;
-  const localState = buildMcpLocalState(options);
+  const currentLocalState = readJsonIfPossible(localStatePath);
+  const localState = buildMcpLocalState(options, currentLocalState);
   const fileContents = `${JSON.stringify(config, null, 2)}\n`;
   const localStateContents = `${JSON.stringify(localState, null, 2)}\n`;
   let wroteBootstrap = false;
@@ -292,7 +445,6 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
     visibilityChanged = true;
   }
 
-  const currentLocalState = readJsonIfPossible(localStatePath);
   const comparableLocalState = currentLocalState?.updatedAt
     ? { ...currentLocalState, updatedAt: localState.updatedAt }
     : currentLocalState;
@@ -342,6 +494,42 @@ async function ensureWorkspaceMcpConfig(workspaceRoot, options) {
   };
 }
 
+async function repairExistingWorkspaceMcpConfig(workspaceRoot, options) {
+  const bootstrapPath = path.join(workspaceRoot, ".vscode", MCP_BOOTSTRAP_FILE_NAME);
+  const localStatePath = path.join(workspaceRoot, ".amarillo", MCP_LOCAL_FILE_NAME);
+  const currentLocalState = readJsonIfPossible(localStatePath);
+  const hasExistingMcpSetup = Boolean(currentLocalState) || fs.existsSync(bootstrapPath);
+
+  if (!hasExistingMcpSetup) {
+    return {
+      status: "not_configured",
+      bootstrapPath,
+      localStatePath
+    };
+  }
+
+  const bridgeToken = valueOrFallback(currentLocalState?.bridgeToken, options.bridgeToken);
+  if (!bridgeToken) {
+    return {
+      status: "skipped",
+      reason: "missing_bridge_token",
+      bootstrapPath,
+      localStatePath
+    };
+  }
+
+  return ensureWorkspaceMcpConfig(workspaceRoot, {
+    ...currentLocalState,
+    ...options,
+    bridgeToken,
+    host: valueOrFallback(options.host, currentLocalState?.host, "127.0.0.1"),
+    port: valueOrFallback(options.port, currentLocalState?.port, "8323"),
+    extensionPath: valueOrFallback(options.extensionPath, currentLocalState?.extensionPath),
+    extensionVersion: valueOrFallback(options.extensionVersion, currentLocalState?.extensionVersion, "unknown"),
+    proxyEntry: valueOrFallback(options.proxyEntry, currentLocalState?.proxyEntry)
+  });
+}
+
 module.exports = {
   MCP_BOOTSTRAP_FILE_NAME,
   MCP_FILE_NAME,
@@ -352,5 +540,6 @@ module.exports = {
   buildWorkspaceMcpConfig,
   buildMcpBootstrapScript,
   buildMcpLocalState,
-  ensureWorkspaceMcpConfig
+  ensureWorkspaceMcpConfig,
+  repairExistingWorkspaceMcpConfig
 };
