@@ -11,7 +11,10 @@ const {
   ensureCodexMcpRegistration,
   inspectCodexMcpRegistration
 } = require("./codex-mcp");
-const { ensureWorkspaceMcpConfig } = require("./mcp-config");
+const {
+  ensureWorkspaceMcpConfig,
+  repairExistingWorkspaceMcpConfig
+} = require("./mcp-config");
 const {
   isIgnoredProjectDiscoveryDirectoryName,
   shouldIgnoreProjectDiscoveryPath
@@ -2243,6 +2246,38 @@ async function ensureWorkspaceMcp(context) {
   };
 }
 
+async function repairExistingWorkspaceMcpOnActivate(context) {
+  let settings;
+  try {
+    settings = getBridgeSettings();
+  } catch (_error) {
+    return;
+  }
+
+  const proxyEntry = runtimePath(context, "mcp-proxy", "index.js");
+  if (!syncFs.existsSync(proxyEntry)) {
+    return;
+  }
+
+  try {
+    const result = await repairExistingWorkspaceMcpConfig(settings.workspaceRoot, {
+      proxyEntry,
+      host: settings.host,
+      port: settings.port,
+      bridgeToken: context.workspaceState.get("amarillo.bridgeToken") || "",
+      extensionPath: context.extensionPath,
+      extensionVersion: extensionVersion(context)
+    });
+    if (result.status === "updated" || result.status === "created") {
+      log(`MCP local state repaired for ${workspaceDisplayName(settings.workspaceRoot)} using extension ${extensionVersion(context)}.`);
+    } else if (result.status === "skipped") {
+      log(`MCP local state repair skipped: ${result.reason}.`);
+    }
+  } catch (error) {
+    log(`MCP local state repair failed: ${error.message}`);
+  }
+}
+
 async function startBridge(context, options: BridgeStartOptions = {}) {
   // Auto-install the plugin before starting the bridge
   await silentPluginInstall(context);
@@ -3375,6 +3410,8 @@ function activate(context) {
   );
 
   // ===== Plugin auto-install on activation =====
+  void repairExistingWorkspaceMcpOnActivate(context);
+
   const autoInstall = vscode.workspace.getConfiguration("amarillo").get("autoInstallPlugin", true);
   if (autoInstall) {
     void silentPluginInstall(context);
