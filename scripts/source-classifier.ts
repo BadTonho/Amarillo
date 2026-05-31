@@ -28,8 +28,10 @@ function sourcePathForGeneratedJavaScript(filePath) {
   if (path.extname(resolved) !== ".js") {
     return null;
   }
-  if (isInside(resolved, path.join(repoRoot, "vscode-extension"))) {
-    return path.join(repoRoot, "vscode-extension-src", path.basename(resolved, ".js") + ".ts");
+  const extensionRoot = path.join(repoRoot, "vscode-extension");
+  if (isInside(resolved, extensionRoot)) {
+    const relativeSourcePath = path.relative(extensionRoot, resolved).slice(0, -3) + ".ts";
+    return path.join(repoRoot, "vscode-extension-src", relativeSourcePath);
   }
   if (!isGeneratedJavaScriptRoot(resolved)) {
     return null;
