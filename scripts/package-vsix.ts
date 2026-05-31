@@ -13,7 +13,9 @@ const runtimeDaemon = path.join(stagingExtension, "runtime", "daemon");
 const runtimeMcpProxy = path.join(stagingExtension, "runtime", "mcp-proxy");
 const runtimePlugin = path.join(stagingExtension, "runtime", "plugin");
 const mediaDir = path.join(stagingExtension, "media");
+const mcpDir = path.join(stagingExtension, "mcp");
 const schemasDir = path.join(stagingExtension, "schemas");
+const codexPluginDir = path.join(stagingExtension, ".codex-plugin");
 const extensionFiles = [
   "package.json",
   "extension.js",
@@ -151,18 +153,21 @@ function main() {
     fs.rmSync(stagingRoot, { recursive: true, force: true });
   }
 
-  for (const dirPath of [stagingExtension, runtimeDaemon, runtimeMcpProxy, runtimePlugin, mediaDir, schemasDir]) {
+  for (const dirPath of [stagingExtension, runtimeDaemon, runtimeMcpProxy, runtimePlugin, mediaDir, mcpDir, schemasDir, codexPluginDir]) {
     mkdirp(dirPath);
   }
 
   for (const fileName of extensionFiles) {
     copyFile(path.join(extensionSource, fileName), path.join(stagingExtension, fileName));
   }
+  copyFile(path.join(extensionSource, ".mcp.json"), path.join(stagingExtension, ".mcp.json"));
+  copyFile(path.join(extensionSource, ".codex-plugin", "plugin.json"), path.join(codexPluginDir, "plugin.json"));
   copyFile(path.join(repoRoot, "amarillo-version.json"), path.join(stagingExtension, "amarillo-version.json"));
   copyFile(path.join(extensionSource, "media", "amarillo.svg"), path.join(mediaDir, "amarillo.svg"));
   copyFile(path.join(extensionSource, "media", "icon.png"), path.join(mediaDir, "icon.png"));
   copyFile(path.join(extensionSource, "schemas", "meta.json"), path.join(schemasDir, "meta.json"));
   copyFile(path.join(extensionSource, "schemas", "project.json"), path.join(schemasDir, "project.json"));
+  copyDirectory(path.join(extensionSource, "mcp"), mcpDir);
 
   copyRuntimeDirectory(path.join(repoRoot, "src", "daemon"), runtimeDaemon);
   copyFile(path.join(repoRoot, "src", "mcp-proxy", "index.js"), path.join(runtimeMcpProxy, "index.js"));

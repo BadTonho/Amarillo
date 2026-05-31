@@ -177,6 +177,10 @@ updateJson("vscode-extension/package.json", (manifest) => {
   manifest.version = version.extensionVersion;
 });
 
+updateJson("vscode-extension/.codex-plugin/plugin.json", (manifest) => {
+  manifest.version = version.extensionVersion;
+});
+
 updateJson("package.json", (manifest) => {
   manifest.version = version.extensionVersion;
 });

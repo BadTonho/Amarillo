@@ -1,0 +1,31 @@
+{
+  "name": "amarillo",
+  "version": "1.1.42",
+  "description": "Amarillo VS Code extension tools for Codex.",
+  "author": {
+    "name": "Amarillo"
+  },
+  "keywords": [
+    "amarillo",
+    "roblox",
+    "vscode",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Amarillo",
+    "shortDescription": "Read-only Amarillo extension tools for Codex.",
+    "longDescription": "Adds read-only Codex MCP tools for inspecting the Amarillo VS Code extension manifest and changelog.",
+    "developerName": "Amarillo",
+    "category": "Development",
+    "capabilities": [
+      "Read"
+    ],
+    "brandColor": "#F5B301",
+    "defaultPrompt": [
+      "Check the Amarillo extension status.",
+      "Read the Amarillo changelog.",
+      "Inspect the Amarillo extension manifest."
+    ]
+  }
+}
