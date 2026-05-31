@@ -62,6 +62,19 @@ function readLocalState(workspace) {
   return JSON.parse(fs.readFileSync(path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME), "utf8"));
 }
 
+function legacyBootstrapScript() {
+  return [
+    "\"use strict\";",
+    "const fs = require(\"node:fs\");",
+    "const path = require(\"node:path\");",
+    "const extensionPath = \"\";",
+    "const bridgeToken = \"\";",
+    "const proxyEntry = path.join(extensionPath, \"runtime\", \"mcp-proxy\", \"index.js\");",
+    "if (!fs.existsSync(proxyEntry)) { process.exit(1); }",
+    "void bridgeToken;"
+  ].join("\n");
+}
+
 test("buildWorkspaceMcpConfig creates the portable stdio bootstrap shape", () => {
   const config = buildWorkspaceMcpConfig({});
 
@@ -185,6 +198,64 @@ test("ensureWorkspaceMcpConfig creates portable MCP files and local secret state
   const gitignore = fs.readFileSync(path.join(workspace, ".gitignore"), "utf8");
   assert.match(gitignore, /\.amarillo\//);
   assert.doesNotMatch(gitignore, /\.vscode\/mcp\.json/);
+});
+
+test("ensureWorkspaceMcpConfig replaces an old bootstrap and records proxyEntry", async () => {
+  const workspace = createTempWorkspace();
+  const extensionPath = path.join(workspace, "extensions", "amarillo.amarillo-vscode-1.2.3");
+  const proxyEntry = path.join(extensionPath, "runtime", "mcp-proxy", "index.js");
+  const mcpPath = path.join(workspace, ".vscode", "mcp.json");
+  const bootstrapPath = path.join(workspace, ".vscode", MCP_BOOTSTRAP_FILE_NAME);
+  const localStatePath = path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME);
+
+  fs.mkdirSync(path.dirname(bootstrapPath), { recursive: true });
+  fs.writeFileSync(bootstrapPath, legacyBootstrapScript(), "utf8");
+  writeJson(localStatePath, {
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "old-token",
+    extensionPath,
+    extensionVersion: "1.2.2",
+    updatedAt: "2026-05-13T00:00:00.000Z"
+  });
+
+  const result = await ensureWorkspaceMcpConfig(workspace, {
+    proxyEntry,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "new-token",
+    extensionPath,
+    extensionVersion: "1.2.3",
+    updatedAt: "2026-05-13T00:00:01.000Z"
+  });
+
+  assert.equal(result.status, "created");
+  assert.equal(result.bootstrapChanged, true);
+  assert.equal(result.localStateChanged, true);
+  assert.equal(result.mcpConfigChanged, true);
+  const bootstrap = fs.readFileSync(bootstrapPath, "utf8");
+  assert.equal(bootstrap, buildMcpBootstrapScript());
+  assert.match(bootstrap, /findNewestInstalledExtension/);
+  assert.equal(bootstrap.includes("old-token"), false);
+  assert.equal(bootstrap.includes("new-token"), false);
+  assert.equal(bootstrap.includes(extensionPath), false);
+  assert.equal(bootstrap.includes(proxyEntry), false);
+
+  const sharedMcpConfig = fs.readFileSync(mcpPath, "utf8");
+  assert.equal(sharedMcpConfig.includes("old-token"), false);
+  assert.equal(sharedMcpConfig.includes("new-token"), false);
+  assert.equal(sharedMcpConfig.includes(extensionPath), false);
+  assert.equal(sharedMcpConfig.includes(proxyEntry), false);
+
+  assert.deepEqual(readLocalState(workspace), {
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "new-token",
+    extensionPath,
+    extensionVersion: "1.2.3",
+    proxyEntry,
+    updatedAt: "2026-05-13T00:00:01.000Z"
+  });
 });
 
 test("bootstrap uses a valid saved proxyEntry", async () => {
@@ -375,6 +446,39 @@ test("ensureWorkspaceMcpConfig returns unchanged when config already matches", a
   assert.equal(result.visibilityChanged, false);
 });
 
+test("repairExistingWorkspaceMcpConfig prefers a current bridge token while repairing local state", async () => {
+  const workspace = createTempWorkspace();
+  const extensionPath = path.join(workspace, "extensions", "amarillo.amarillo-vscode-1.2.4");
+  const proxyEntry = path.join(extensionPath, "runtime", "mcp-proxy", "index.js");
+  writeJson(path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME), {
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "old-token",
+    extensionPath: path.join(workspace, "extensions", "amarillo.amarillo-vscode-1.2.3"),
+    extensionVersion: "1.2.3",
+    updatedAt: "2026-05-13T00:00:00.000Z"
+  });
+
+  const result = await repairExistingWorkspaceMcpConfig(workspace, {
+    proxyEntry,
+    bridgeToken: "new-token",
+    extensionPath,
+    extensionVersion: "1.2.4",
+    updatedAt: "2026-05-13T00:00:01.000Z"
+  });
+
+  assert.equal(result.status, "created");
+  assert.deepEqual(readLocalState(workspace), {
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "new-token",
+    extensionPath,
+    extensionVersion: "1.2.4",
+    proxyEntry,
+    updatedAt: "2026-05-13T00:00:01.000Z"
+  });
+});
+
 test("repairExistingWorkspaceMcpConfig preserves a local bridge token while repairing the extension path", async () => {
   const workspace = createTempWorkspace();
   const extensionPath = path.join(workspace, "extensions", "amarillo.amarillo-vscode-1.2.4");
@@ -425,6 +529,13 @@ test("VS Code activation schedules repair for existing MCP workspaces", () => {
   assert.match(extensionSource, /repairExistingWorkspaceMcpOnActivate/);
   assert.match(extensionSource, /repairExistingWorkspaceMcpConfig/);
   assert.match(extensionSource, /void repairExistingWorkspaceMcpOnActivate\(context\)/);
+});
+
+test("VS Code MCP flow verifies local state after writing", () => {
+  const extensionSource = fs.readFileSync(path.join(__dirname, "..", "vscode-extension-src", "extension.ts"), "utf8");
+
+  assert.match(extensionSource, /verifyWorkspaceMcpLocalState/);
+  assert.match(extensionSource, /MCP local state verified/);
 });
 
 test("ensureWorkspaceMcpConfig recreates visibility note without changing MCP status", async () => {

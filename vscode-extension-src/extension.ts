@@ -446,17 +446,59 @@ function workspaceRelativePath(workspaceRoot, targetPath) {
 
 function describeMcpConfigResult(mcpConfigResult, workspaceRoot) {
   const displayPath = workspaceRelativePath(workspaceRoot, mcpConfigResult.mcpPath);
+  const localStateDetail = mcpConfigResult.localStatePath
+    ? `; local state ${workspaceRelativePath(workspaceRoot, mcpConfigResult.localStatePath)}`
+    : "";
   const visibilityDetail = mcpConfigResult.visibilityChanged && mcpConfigResult.visibilityPath
     ? `; Codex visibility note updated at ${workspaceRelativePath(workspaceRoot, mcpConfigResult.visibilityPath)}`
     : "";
+  const changedFiles = [
+    mcpConfigResult.mcpConfigChanged ? "mcp.json" : null,
+    mcpConfigResult.bootstrapChanged ? "bootstrap" : null,
+    mcpConfigResult.localStateChanged ? "local state" : null
+  ].filter(Boolean);
+  const changedDetail = changedFiles.length > 0
+    ? `; refreshed ${changedFiles.join(", ")}`
+    : "";
+  const workspaceLabel = workspaceDisplayName(workspaceRoot);
   switch (mcpConfigResult.status) {
     case "created":
-      return `MCP configured at ${displayPath}${visibilityDetail}`;
+      return `MCP configured for ${workspaceLabel} at ${displayPath}${localStateDetail}${visibilityDetail}${changedDetail}`;
     case "updated":
-      return `MCP updated at ${displayPath}${visibilityDetail}`;
+      return `MCP updated for ${workspaceLabel} at ${displayPath}${localStateDetail}${visibilityDetail}${changedDetail}`;
     default:
-      return `MCP ready at ${displayPath}${visibilityDetail}`;
+      return `MCP ready for ${workspaceLabel} at ${displayPath}${localStateDetail}${visibilityDetail}`;
   }
+}
+
+function verifyWorkspaceMcpLocalState(workspaceRoot, mcpConfigResult) {
+  const localStatePath = mcpConfigResult.localStatePath;
+  const localStateLabel = workspaceRelativePath(workspaceRoot, localStatePath);
+  let localState;
+  try {
+    localState = JSON.parse(syncFs.readFileSync(localStatePath, "utf8"));
+  } catch (error) {
+    throw new Error(`MCP local state could not be read at ${localStateLabel}: ${error.message}`);
+  }
+
+  const requiredFields = ["bridgeToken", "extensionPath", "extensionVersion", "proxyEntry"];
+  const missingFields = requiredFields.filter((field) => {
+    const value = localState?.[field];
+    return typeof value !== "string" || value.length === 0;
+  });
+  if (missingFields.length > 0) {
+    throw new Error(`MCP local state at ${localStateLabel} is incomplete: missing ${missingFields.join(", ")}.`);
+  }
+
+  const expected = mcpConfigResult.localState || {};
+  const mismatchedFields = ["bridgeToken", "extensionPath", "extensionVersion", "proxyEntry", "host", "port"]
+    .filter((field) => expected[field] !== undefined && expected[field] !== null && expected[field] !== "")
+    .filter((field) => String(localState[field]) !== String(expected[field]));
+  if (mismatchedFields.length > 0) {
+    throw new Error(`MCP local state at ${localStateLabel} did not persist expected ${mismatchedFields.join(", ")}.`);
+  }
+
+  return localState;
 }
 
 function mcpReloadHint(mcpConfigResult) {
@@ -2231,8 +2273,10 @@ async function ensureWorkspaceMcp(context) {
     extensionPath: context.extensionPath,
     extensionVersion: extensionVersion(context)
   });
+  const verifiedLocalState = verifyWorkspaceMcpLocalState(workspaceRoot, mcpConfigResult);
   const message = describeMcpConfigResult(mcpConfigResult, workspaceRoot);
   log(message);
+  log(`MCP local state verified for ${workspaceDisplayName(workspaceRoot)} at ${workspaceRelativePath(workspaceRoot, mcpConfigResult.localStatePath)}: extension ${verifiedLocalState.extensionVersion}; bridge token present; proxy entry present.`);
   if (mcpConfigResult.status !== "unchanged") {
     log("If your AI/MCP client was already open, reopen the session to reload the server.");
   }
@@ -2242,6 +2286,7 @@ async function ensureWorkspaceMcp(context) {
     host,
     port,
     mcpConfigResult,
+    localState: verifiedLocalState,
     message
   };
 }
@@ -2260,11 +2305,13 @@ async function repairExistingWorkspaceMcpOnActivate(context) {
   }
 
   try {
+    const storedBridgeToken = context.workspaceState.get("amarillo.bridgeToken");
+    const currentBridgeToken = bridgeState.bridgeToken || (typeof storedBridgeToken === "string" ? storedBridgeToken : "");
     const result = await repairExistingWorkspaceMcpConfig(settings.workspaceRoot, {
       proxyEntry,
       host: settings.host,
       port: settings.port,
-      bridgeToken: context.workspaceState.get("amarillo.bridgeToken") || "",
+      bridgeToken: currentBridgeToken,
       extensionPath: context.extensionPath,
       extensionVersion: extensionVersion(context)
     });
