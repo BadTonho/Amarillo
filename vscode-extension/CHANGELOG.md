@@ -1,5 +1,142 @@
 # Changelog
 
+## 1.1.41
+
+- Adds **Dual-Hashing Protection** to compare both semantic and raw snapshot SHA-1 hashes, ensuring subtle default-valued GUI changes (like `ZIndex`) are correctly written to disk.
+- Implements **Zero-Loss Mount Toggling** to remember and restore custom mount relative paths through disabled state metadata, preventing configuration loss when toggling sync.
+- Introduces **Cross-Platform Relative Path Normalization** to automatically clean backslashes to forward slashes (`/`) for shared project configurations.
+- Integrates the official **Amarillo Brand Icon** asset for the VS Code extension.
+
+## 1.1.40
+
+- Initializes the core VS Code extension architecture and robust local daemon infrastructure.
+
+## 1.1.39
+
+- Implements secure plugin bootstrapping, robust snapshot synchronization module, and core daemon versioning services.
+
+## 1.1.38
+
+- Streamlines daemon execution and introduces modular versioning and plugin infrastructure.
+- Restructures the VS Code extension architecture and local bridge infrastructure.
+
+## 1.1.36
+
+- Modularizes the Roblox Studio plugin source into discrete, maintainable files.
+- Implements highly optimized snapshot synchronization logic for the plugin.
+
+## 1.1.34
+
+- Implements **Sync Mount Validation** to prevent accidental data loss during destructive operations by validating targets before synchronization is applied.
+- Enhances documentation and updates installation instructions for Amarillo bridge features.
+
+## 1.1.32
+
+- Introduces **Place Sync** diagnostics capability, exposing detailed status information via the diagnostics endpoint.
+
+## 1.1.26
+
+- Implements **Roblox Property Serialization** logic for advanced object translation between disk and Studio.
+- Adds snapshot normalization and intelligent property defaulting logic for reliable verification of instance trees.
+- Implements core plugin connection logic and status management for the Studio plugin.
+
+## 1.1.25
+
+- Adds **Workspace Sync Targets** functionality to manage and configure which parts of the workspace sync to Studio.
+- Enhances script property handling for improved serialization.
+
+## 1.1.23
+
+- Enhances Roblox script classification in the `scriptFileKind` function with corresponding comprehensive unit tests.
+- Refines extension and plugin versioning synchronization.
+
+## 1.1.22
+
+- Optimizes script classification logic to distinguish script kinds (Server, Client, Module) more accurately.
+
+## 1.1.21
+
+- Enhances model file handling and serialization within instance snapshots.
+
+## 1.1.20
+
+- Bumps version metadata and refines plugin-side workspace settings.
+
+## 1.1.19
+
+- Enhances project tree validation checks to prevent malformed schemas from reaching the bridge.
+
+## 1.1.18
+
+- Introduces a comprehensive **Synchronization Safety Plan** to prevent conflicting local and remote edits.
+
+## 1.1.17
+
+- Refines general Studio plugin functionality and diagnostics reporting.
+
+## 1.1.16
+
+- Upgrades version checks and synchronizes core package manifests.
+
+## 1.1.15
+
+- Encapsulates UI helper functions in the Roblox Studio plugin to reduce local register usage and prevent Luau stack limitations.
+
+## 1.1.14
+
+- Enhances instance snapshot handling and reconciliation algorithms in the plugin.
+
+## 1.1.13
+
+- Optimizes script document handling during rapid editor updates.
+
+## 1.1.7
+
+- Enhances plugin UI construction methods and layout components.
+- Adds `placeName` support across connection and diagnostics interfaces.
+
+## 1.1.5
+
+- Implements the **Privileged Action Confirmation** feature to ask for explicit confirmation in Roblox Studio before executing potentially destructive actions or custom code.
+
+## 1.1.4
+
+- Integrates an event-driven file system watcher using `DescendantAdded` and `DescendantRemoving` for highly optimized performance.
+- Introduces the versioning system and initial plugin-daemon handshake protocol.
+- Adds helper utilities for daemon workspaces and modularizes the sidebar UI.
+
+## 1.1.0
+
+- Integrates **Codex MCP Configuration** commands for advanced AI coding support.
+- Enhances workspace registration and command-line feedback for the Codex CLI integration.
+
+## 1.0.38
+
+- Enhances sidebar error handling and loading states.
+- Filters out reserved Roblox attributes during active synchronization.
+- Adds automated tests for sidebar rendering and Luau LSP sourcemap verification.
+- Improves styling, layout, and visual presentation of the sidebar webview UI.
+
+## 1.0.31
+
+- Upgrades Codex MCP integration, workspace project discovery, and portable bootstrap script.
+- Updates documentation and installation guide for easy user onboarding.
+
+## 1.0.29
+
+- Updates internal daemon packages and aligns dependency trees.
+
+## 1.0.28
+
+- Implements rate limiting on incoming HTTP endpoints to prevent spam.
+- Refactors the VS Code extension healthcheck logic and optimizes status reporting tests.
+
+## 1.0.16
+
+- Implements the **Daemon Shielding System** to prevent connection hijacking and port competition.
+- Improves MCP server configuration and stability.
+- Solves synchronization loss that occurred when moving folders within VS Code.
+
 ## 1.0.9
 
 - Forwards VS Code file create/delete/rename operations directly to the daemon so moving files in the VS Code Explorer stays synchronized.
