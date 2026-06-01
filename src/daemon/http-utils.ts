@@ -63,6 +63,20 @@ function errorLike(error: unknown): HttpErrorLike {
   return error && typeof error === "object" ? error as HttpErrorLike : {};
 }
 
+function isCorsOriginAllowed(origin: unknown): boolean {
+  if (typeof origin !== "string" || origin.length === 0) {
+    return false;
+  }
+  try {
+    const parsed = new URL(origin);
+    return parsed.hostname === "127.0.0.1"
+      || parsed.hostname === "localhost"
+      || parsed.protocol === "vscode-webview:";
+  } catch (_error) {
+    return false;
+  }
+}
+
 function corsHeaders(request: IncomingMessage | null = null): OutgoingHttpHeaders {
   const headers: OutgoingHttpHeaders = {
     "Content-Type": "application/json; charset=utf-8",
@@ -78,18 +92,9 @@ function corsHeaders(request: IncomingMessage | null = null): OutgoingHttpHeader
     return headers;
   }
 
-  try {
-    const parsed = new URL(origin);
-    if (
-      parsed.hostname === "127.0.0.1"
-      || parsed.hostname === "localhost"
-      || parsed.protocol === "vscode-webview:"
-    ) {
-      headers["Access-Control-Allow-Origin"] = origin;
-      headers.Vary = "Origin";
-    }
-  } catch (_error) {
-    // Invalid origins simply do not receive a CORS allow header.
+  if (isCorsOriginAllowed(origin)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers.Vary = "Origin";
   }
 
   return headers;
@@ -199,6 +204,7 @@ export {
   authHelpPayload,
   bridgeTokenFromHeaders,
   errorResponse,
+  isCorsOriginAllowed,
   jsonResponse,
   jsonBodyByteLength,
   normalizeToken,

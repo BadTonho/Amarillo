@@ -1128,6 +1128,144 @@ test("patchStudioFileSource accepts array paths and game-prefixed string paths",
   assert.match(fs.readFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "utf8"), /return 3/);
 });
 
+test("patchStudioFileSource rejects unsafe instance path segments", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ServerScriptService");
+  const scriptPath = path.join(syncRoot, "Hello.server.luau");
+  const outsidePath = path.join(workspace, "sync", "outside.server.luau");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "sync/ServerScriptService"
+      }
+    }
+  }, null, 2));
+  fs.writeFileSync(scriptPath, "return 'safe'", "utf8");
+  fs.writeFileSync(outsidePath, "return 'outside'", "utf8");
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const unsafePaths = [
+    ["ServerScriptService", "..", "outside"],
+    ["ServerScriptService", ".", "Hello"],
+    ["ServerScriptService", "Nested/Hello"],
+    ["ServerScriptService", "Nested\\Hello"],
+    "game.ServerScriptService..Hello"
+  ];
+
+  for (const unsafePath of unsafePaths) {
+    const result = patchStudioFileSource(project, unsafePath, "return 'hacked'");
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "INVALID_INSTANCE_PATH");
+  }
+  assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 'safe'");
+  assert.equal(fs.readFileSync(outsidePath, "utf8"), "return 'outside'");
+});
+
+test("studio snapshot sanitizes unsafe node names and preserves files outside the mount", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  const escapedRoot = path.join(workspace, "sync", "outside");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.mkdirSync(escapedRoot, { recursive: true });
+  fs.writeFileSync(path.join(escapedRoot, "Sentinel.server.luau"), "return 'outside'", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "..\\outside",
+            className: "Folder",
+            classNameSource: "studio",
+            properties: {},
+            children: [
+              {
+                name: "Payload",
+                className: "Script",
+                fileKind: "server",
+                ext: ".server.luau",
+                source: "return 'payload'",
+                properties: {},
+                children: []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const sanitizedRoot = path.join(syncRoot, "__outside");
+  assert.equal(fs.existsSync(path.join(escapedRoot, "Sentinel.server.luau")), true);
+  assert.equal(fs.existsSync(path.join(escapedRoot, "Payload.server.luau")), false);
+  assert.equal(fs.readFileSync(path.join(sanitizedRoot, "Payload.server.luau"), "utf8"), "return 'payload'");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(sanitizedRoot, "init.meta.json"), "utf8")).robloxName, "..\\outside");
+
+  const snapshot = readLocalProjectState(project);
+  assert.equal(snapshot.mounts[0].children[0].name, "..\\outside");
+  assert.equal(snapshot.mounts[0].children[0].fsName, "__outside");
+});
+
+test("async Studio snapshot writer sanitizes unsafe fsName values", async () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  const escapedRoot = path.join(workspace, "sync", "outside-async");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.mkdirSync(escapedRoot, { recursive: true });
+  fs.writeFileSync(path.join(escapedRoot, "Sentinel.server.luau"), "return 'outside'", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  await writeStudioProjectStateAsync(project, {
+    mounts: [
+      {
+        id: "ReplicatedStorage",
+        children: [
+          {
+            name: "SafeName",
+            fsName: "..\\outside-async",
+            className: "Script",
+            fileKind: "server",
+            ext: ".server.luau",
+            source: "return 'payload'",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  const sanitizedScriptPath = path.join(syncRoot, "__outside-async.server.luau");
+  const sanitizedMetaPath = path.join(syncRoot, "__outside-async.meta.json");
+  assert.equal(fs.existsSync(path.join(escapedRoot, "Sentinel.server.luau")), true);
+  assert.equal(fs.existsSync(path.join(escapedRoot, "SafeName.server.luau")), false);
+  assert.equal(fs.readFileSync(sanitizedScriptPath, "utf8"), "return 'payload'");
+  assert.equal(JSON.parse(fs.readFileSync(sanitizedMetaPath, "utf8")).robloxName, "SafeName");
+});
+
 test("syncback filters protect ignored Studio nodes and properties on disk", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ServerScriptService");
