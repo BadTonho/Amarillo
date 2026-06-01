@@ -48,6 +48,9 @@ The Amarillo plugin can:
 - **Property Defaulting**: Intelligent property handling with proper Roblox property serialization
 - **Dual-Hashing Protection**: Compares both a semantic hash and a raw snapshot SHA-1 hash to ensure even subtle default-valued GUI changes (like `ZIndex`) are written to disk
 - **Zero-Loss Mount Toggling**: Remembers and restores custom mount relative paths through disabled state metadata, ensuring no configuration is lost when toggling sync
+- **Path Traversal Protection**: Rejects unsafe path segments in source patching (e.g. `..` or subpath escapes) to maintain sandbox and directory integrity
+- **Snapshot Path Sanitization**: Automatically escapes and sanitizes unsafe node names (such as `..\outside`) into safe filesystem filenames (like `__outside`), storing the original Roblox name in `init.meta.json`
+- **Security-Hardened Local Daemon**: Enforces strict CORS preflight validation, only allowing local origins to prevent unauthorized web browsers from calling administrative or MCP API routes
 
 **Diagnostics & Introspection:**
 - Health checks and connection diagnostics
@@ -221,3 +224,5 @@ The final file will be created in `dist/`. Packaging includes only the generated
 - Cross-platform relative path normalization automatically cleans backslashes to forward slashes (`/`) for shared project configurations, avoiding OS conflicts.
 - `syncback.ignoreNames`, `syncback.ignoreClasses`, and `syncback.ignoreProperties` are parsed, inherited, and enforced by the Studio-to-disk writer.
 - Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).
+- Path traversal protection rejects unsafe path segments in source patching and sanitizes Roblox node names to safe filesystem representations, ensuring files outside authorized mounts are never overwritten.
+- Strict CORS validation allows only local origins (`localhost`, `127.0.0.1`, etc.) to call the administrative API routes and MCP endpoints.
