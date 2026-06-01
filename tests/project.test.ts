@@ -103,6 +103,19 @@ test("project catalog with only invalid project json stays empty and does not cr
   assert.equal(fs.existsSync(path.join(workspace, "default.project.json")), false);
 });
 
+test("project catalog default project uses existing sync root", () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync"), { recursive: true });
+
+  const catalog = loadWorkspaceProjectCatalog(workspace);
+  const projectJson = JSON.parse(fs.readFileSync(path.join(workspace, "default.project.json"), "utf8"));
+
+  assert.equal(catalog.selectableProjects.length, 1);
+  assert.equal(projectJson.tree.ServerScriptService.$path, "sync");
+  assert.equal(catalog.selectableProjects[0].mounts[0].absolutePath, path.join(workspace, "sync"));
+  assert.equal(fs.existsSync(path.join(workspace, "src")), false);
+});
+
 test("workspace discovery loads project files recursively", () => {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "nested"), { recursive: true });

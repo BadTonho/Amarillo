@@ -5,6 +5,7 @@ const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const projectResolver = require("./project-resolver");
+const { resolveWorkspaceProjectRoot } = require("./project-roots");
 
 const PROJECT_SUFFIX = ".project.json";
 const META_SUFFIX = ".meta.json";
@@ -234,15 +235,15 @@ function createDefaultProject(workspaceRoot) {
   if (fs.existsSync(projectPath)) {
     return;
   }
-  const srcDir = path.join(workspaceRoot, "src");
-  ensureDirectory(srcDir);
+  const projectRoot = resolveWorkspaceProjectRoot(workspaceRoot, { fallback: "src" });
+  ensureDirectory(path.join(workspaceRoot, projectRoot));
   
   const defaultProject = {
     name: "Default Project",
     placeIds: [],
     tree: {
       ServerScriptService: {
-        $path: "src"
+        $path: projectRoot
       }
     }
   };
