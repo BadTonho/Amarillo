@@ -84,6 +84,7 @@ const {
   authHelpPayload,
   bridgeTokenFromHeaders,
   errorResponse,
+  isCorsOriginAllowed,
   jsonResponse,
   normalizeToken,
   readJsonBody,
@@ -4624,6 +4625,14 @@ class PluginRobloxApp {
         this.recordMcpContact("proxy_http", { route: requestUrl.pathname });
       }
       if (request.method === "OPTIONS") {
+        if (request.headers.origin && !isCorsOriginAllowed(request.headers.origin)) {
+          jsonResponse(response, 403, {
+            ok: false,
+            code: "CORS_ORIGIN_FORBIDDEN",
+            error: "CORS preflight origin is not allowed."
+          }, request);
+          return;
+        }
         jsonResponse(response, 204, { ok: true }, request);
         return;
       }

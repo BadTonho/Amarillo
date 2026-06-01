@@ -70,6 +70,37 @@ test("daemon rate limits runaway HTTP clients before route dispatch", async () =
   assert.equal(response.headers["Cache-Control"], "no-store, no-cache, must-revalidate, proxy-revalidate");
 });
 
+test("daemon CORS preflight only allows local origins", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const blocked = await invoke(app, "OPTIONS", "/mcp/call", undefined, {
+    headers: {
+      origin: "https://evil.example",
+      "access-control-request-method": "POST"
+    }
+  });
+  assert.equal(blocked.statusCode, 403);
+  assert.equal(blocked.payload.code, "CORS_ORIGIN_FORBIDDEN");
+  assert.equal(blocked.headers["Access-Control-Allow-Origin"], undefined);
+
+  const localOrigin = "http://127.0.0.1:5173";
+  const allowed = await invoke(app, "OPTIONS", "/mcp/call", undefined, {
+    headers: {
+      origin: localOrigin,
+      "access-control-request-method": "POST"
+    }
+  });
+  assert.equal(allowed.statusCode, 204);
+  assert.equal(allowed.headers["Access-Control-Allow-Origin"], localOrigin);
+});
+
 test("bridge token protects administrative and MCP HTTP routes", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({

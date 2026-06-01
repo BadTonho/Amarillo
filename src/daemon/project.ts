@@ -12,6 +12,30 @@ const META_SUFFIX = ".meta.json";
 const AMARILLO_ID_ATTRIBUTE = "AmarilloId";
 const DUPLICATE_FS_SUFFIX = ".amarillo-";
 const DUPLICATE_MOUNT_ROOT_CODE = "DUPLICATE_MOUNT_ROOT";
+const WINDOWS_RESERVED_FS_NAMES = new Set([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  "COM1",
+  "COM2",
+  "COM3",
+  "COM4",
+  "COM5",
+  "COM6",
+  "COM7",
+  "COM8",
+  "COM9",
+  "LPT1",
+  "LPT2",
+  "LPT3",
+  "LPT4",
+  "LPT5",
+  "LPT6",
+  "LPT7",
+  "LPT8",
+  "LPT9"
+]);
 
 // ===== Lightweight glob matching (no external dependency) =====
 function globToRegex(glob) {
@@ -397,6 +421,30 @@ function isPathInside(childPath, parentPath) {
   return child === parent || child.startsWith(`${parent}/`);
 }
 
+function pathTraversalBlockedError(action, targetPath, rootPath) {
+  const relativePath = normalizeSlashes(path.relative(rootPath, targetPath));
+  const error = new Error(`Path traversal blocked while ${action}: '${relativePath}'.`) as Error & { code?: string };
+  error.code = "PATH_TRAVERSAL_BLOCKED";
+  return error;
+}
+
+function writeRootFromOptions(options: any = {}) {
+  return options.writeRoot || options.mount?.absolutePath || options.mount?.rootPath || null;
+}
+
+function assertPathInsideWriteRoot(targetPath, options: any = {}, action = "accessing path") {
+  const resolvedTarget = path.resolve(targetPath);
+  const writeRoot = writeRootFromOptions(options);
+  if (!writeRoot) {
+    return resolvedTarget;
+  }
+  const resolvedRoot = path.resolve(writeRoot);
+  if (!isPathInside(resolvedTarget, resolvedRoot)) {
+    throw pathTraversalBlockedError(action, resolvedTarget, resolvedRoot);
+  }
+  return resolvedTarget;
+}
+
 function listDirectoryEntries(dirPath) {
   if (!fs.existsSync(dirPath)) {
     return [];
@@ -473,11 +521,39 @@ function applyIdentityMeta(node, meta, fsName) {
   return node;
 }
 
+function isReservedWindowsFsName(value) {
+  const baseName = String(value || "").split(".")[0].toUpperCase();
+  return WINDOWS_RESERVED_FS_NAMES.has(baseName);
+}
+
+function safeFallbackFsSegment(fallback = "Instance") {
+  let segment = String(fallback || "Instance")
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/\.{2,}/g, "_")
+    .replace(/[ .]+$/g, "");
+  if (!segment || segment === "." || segment === ".." || isReservedWindowsFsName(segment)) {
+    segment = "Instance";
+  }
+  return segment;
+}
+
+function safeFsSegment(value, fallback = "Instance") {
+  let segment = typeof value === "string" ? value : String(value ?? "");
+  segment = segment
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/\.{2,}/g, "_")
+    .replace(/[ .]+$/g, "");
+  if (!segment || segment === "." || segment === ".." || isReservedWindowsFsName(segment)) {
+    return safeFallbackFsSegment(fallback);
+  }
+  return segment;
+}
+
 function nodeFsName(node) {
   if (typeof node?.fsName === "string" && node.fsName.length > 0) {
-    return node.fsName;
+    return safeFsSegment(node.fsName);
   }
-  return typeof node?.name === "string" ? node.name : "";
+  return safeFsSegment(typeof node?.name === "string" ? node.name : "");
 }
 
 function duplicateBaseName(value) {
@@ -1337,8 +1413,8 @@ function serializePropertyValue(value) {
   return value;
 }
 
-function ensureDirectory(dirPath) {
-  fs.mkdirSync(dirPath, { recursive: true });
+function ensureDirectory(dirPath, options: any = {}) {
+  fs.mkdirSync(assertPathInsideWriteRoot(dirPath, options, "creating directory"), { recursive: true });
 }
 
 function hashBuffer(value) {
@@ -1370,17 +1446,18 @@ function writeJsonFile(filePath, value, options: any = {}) {
 }
 
 function writeTextFileIfChanged(filePath, value, options: any = {}) {
-  const existed = fs.existsSync(filePath);
+  const targetPath = assertPathInsideWriteRoot(filePath, options, "writing file");
+  const existed = fs.existsSync(targetPath);
   if (existed) {
-    const current = fs.readFileSync(filePath, "utf8");
+    const current = fs.readFileSync(targetPath, "utf8");
     if (current === value) {
       return false;
     }
   }
-  fs.writeFileSync(filePath, value, "utf8");
+  fs.writeFileSync(targetPath, value, "utf8");
   notifyFileChange(options, {
     action: existed ? "modify" : "create",
-    filePath,
+    filePath: targetPath,
     ...fileInfoForContent(value)
   });
   return true;
@@ -1390,7 +1467,7 @@ function collectExistingFileInfos(targetPath, results = []) {
   if (!fs.existsSync(targetPath)) {
     return results;
   }
-  const stats = fs.statSync(targetPath);
+  const stats = fs.lstatSync(targetPath);
   if (stats.isFile()) {
     results.push({
       filePath: targetPath,
@@ -1408,11 +1485,12 @@ function collectExistingFileInfos(targetPath, results = []) {
 }
 
 function removePath(targetPath, options: any = {}) {
-  const removedFiles = collectExistingFileInfos(targetPath);
-  if (removedFiles.length === 0 && !fs.existsSync(targetPath)) {
+  const resolvedTarget = assertPathInsideWriteRoot(targetPath, options, "removing path");
+  const removedFiles = collectExistingFileInfos(resolvedTarget);
+  if (removedFiles.length === 0 && !fs.existsSync(resolvedTarget)) {
     return;
   }
-  fs.rmSync(targetPath, { recursive: true, force: true });
+  fs.rmSync(resolvedTarget, { recursive: true, force: true });
   for (const file of removedFiles) {
     notifyFileChange(options, {
       action: "delete",
@@ -1659,15 +1737,16 @@ function writeScriptNode(parentDir, node, asInit = false, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
+  const safeParentDir = assertPathInsideWriteRoot(parentDir, options, "writing script parent");
   const extension = scriptExtensionForNode(node);
   const fsName = nodeFsName(node);
   const fileName = asInit ? `init${extension}` : `${fsName}${extension}`;
-  writeTextFileIfChanged(path.join(parentDir, fileName), node.source || "", options);
+  writeTextFileIfChanged(path.join(safeParentDir, fileName), node.source || "", options);
 
   const meta = metaForScriptNode(node, options);
   if (Object.keys(meta).length > 0) {
     const metaName = asInit ? `init${META_SUFFIX}` : `${fsName}${META_SUFFIX}`;
-    writeJsonFile(path.join(parentDir, metaName), meta, options);
+    writeJsonFile(path.join(safeParentDir, metaName), meta, options);
   }
 }
 
@@ -1675,8 +1754,8 @@ function writeFolderNode(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
-  const nodeDir = path.join(parentDir, nodeFsName(node));
-  ensureDirectory(nodeDir);
+  const nodeDir = assertPathInsideWriteRoot(path.join(parentDir, nodeFsName(node)), options, "creating folder");
+  ensureDirectory(nodeDir, options);
 
   const meta = metaForNode(node, options);
   if (Object.keys(meta).length > 0) {
@@ -1701,8 +1780,8 @@ function writeNode(parentDir, node, options: any = {}) {
   }
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
-      const nodeDir = path.join(parentDir, nodeFsName(node));
-      ensureDirectory(nodeDir);
+      const nodeDir = assertPathInsideWriteRoot(path.join(parentDir, nodeFsName(node)), options, "creating script folder");
+      ensureDirectory(nodeDir, options);
       writeScriptNode(nodeDir, node, true, options);
       const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
       for (const child of children) {
@@ -1750,9 +1829,10 @@ function expectedEntriesForNode(node, withInitScript = false, options: any = {},
 }
 
 function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options: any = {}) {
-  const expected = expectedEntriesForNode(node, withInitScript, options, nodeDir);
-  for (const entry of listDirectoryEntries(nodeDir)) {
-    const fullPath = path.join(nodeDir, entry.name);
+  const safeNodeDir = assertPathInsideWriteRoot(nodeDir, options, "cleaning directory");
+  const expected = expectedEntriesForNode(node, withInitScript, options, safeNodeDir);
+  for (const entry of listDirectoryEntries(safeNodeDir)) {
+    const fullPath = path.join(safeNodeDir, entry.name);
     if (!expected.has(entry.name) && !shouldPreserveSyncbackEntry(fullPath, entry.name, options)) {
       removePath(fullPath, options);
     }
@@ -1762,10 +1842,11 @@ function cleanupUnexpectedEntries(nodeDir, node, withInitScript = false, options
 function writeMountSnapshot(mount, children, options: any = {}) {
   const mountOptions = {
     ...options,
-    mount
+    mount,
+    writeRoot: mount.absolutePath
   };
   const writableChildren = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(children || [], mountOptions), mount.absolutePath);
-  ensureDirectory(mount.absolutePath);
+  ensureDirectory(mount.absolutePath, mountOptions);
   for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
@@ -1841,9 +1922,10 @@ async function listDirectoryEntriesAsync(dirPath) {
 }
 
 async function writeTextFileIfChangedAsync(filePath, value, options: any = {}) {
+  const targetPath = assertPathInsideWriteRoot(filePath, options, "writing file");
   let existed = false;
   try {
-    const current = await fsp.readFile(filePath, "utf8");
+    const current = await fsp.readFile(targetPath, "utf8");
     existed = true;
     if (current === value) {
       return false;
@@ -1853,11 +1935,11 @@ async function writeTextFileIfChangedAsync(filePath, value, options: any = {}) {
       throw error;
     }
   }
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  await fsp.writeFile(filePath, value, "utf8");
+  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
+  await fsp.writeFile(targetPath, value, "utf8");
   notifyFileChange(options, {
     action: existed ? "modify" : "create",
-    filePath,
+    filePath: targetPath,
     ...fileInfoForContent(value)
   });
   return true;
@@ -1870,7 +1952,7 @@ function writeJsonFileAsync(filePath, value, options: any = {}) {
 async function collectExistingFileInfosAsync(targetPath, results = []) {
   let stats;
   try {
-    stats = await fsp.stat(targetPath);
+    stats = await fsp.lstat(targetPath);
   } catch (error) {
     if (error.code === "ENOENT") {
       return results;
@@ -1894,11 +1976,12 @@ async function collectExistingFileInfosAsync(targetPath, results = []) {
 }
 
 async function removePathAsync(targetPath, options: any = {}) {
-  const removedFiles = await collectExistingFileInfosAsync(targetPath);
-  if (removedFiles.length === 0 && !await pathExistsAsync(targetPath)) {
+  const resolvedTarget = assertPathInsideWriteRoot(targetPath, options, "removing path");
+  const removedFiles = await collectExistingFileInfosAsync(resolvedTarget);
+  if (removedFiles.length === 0 && !await pathExistsAsync(resolvedTarget)) {
     return;
   }
-  await fsp.rm(targetPath, { recursive: true, force: true });
+  await fsp.rm(resolvedTarget, { recursive: true, force: true });
   for (const file of removedFiles) {
     notifyFileChange(options, {
       action: "delete",
@@ -1944,9 +2027,10 @@ async function shouldPreserveSyncbackEntryAsync(fullPath, entryName, options: an
 }
 
 async function cleanupUnexpectedEntriesAsync(nodeDir, node, withInitScript = false, options: any = {}) {
-  const expected = expectedEntriesForNode(node, withInitScript, options, nodeDir);
-  for (const entry of await listDirectoryEntriesAsync(nodeDir)) {
-    const fullPath = path.join(nodeDir, entry.name);
+  const safeNodeDir = assertPathInsideWriteRoot(nodeDir, options, "cleaning directory");
+  const expected = expectedEntriesForNode(node, withInitScript, options, safeNodeDir);
+  for (const entry of await listDirectoryEntriesAsync(safeNodeDir)) {
+    const fullPath = path.join(safeNodeDir, entry.name);
     if (!expected.has(entry.name) && !await shouldPreserveSyncbackEntryAsync(fullPath, entry.name, options)) {
       await removePathAsync(fullPath, options);
     }
@@ -1957,15 +2041,16 @@ async function writeScriptNodeAsync(parentDir, node, asInit = false, options: an
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
+  const safeParentDir = assertPathInsideWriteRoot(parentDir, options, "writing script parent");
   const extension = scriptExtensionForNode(node);
   const fsName = nodeFsName(node);
   const fileName = asInit ? `init${extension}` : `${fsName}${extension}`;
-  await writeTextFileIfChangedAsync(path.join(parentDir, fileName), node.source || "", options);
+  await writeTextFileIfChangedAsync(path.join(safeParentDir, fileName), node.source || "", options);
 
   const meta = metaForScriptNode(node, options);
   if (Object.keys(meta).length > 0) {
     const metaName = asInit ? `init${META_SUFFIX}` : `${fsName}${META_SUFFIX}`;
-    await writeJsonFileAsync(path.join(parentDir, metaName), meta, options);
+    await writeJsonFileAsync(path.join(safeParentDir, metaName), meta, options);
   }
 }
 
@@ -1973,7 +2058,7 @@ async function writeFolderNodeAsync(parentDir, node, options: any = {}) {
   if (shouldIgnoreSyncbackNode(node, options, parentDir)) {
     return;
   }
-  const nodeDir = path.join(parentDir, nodeFsName(node));
+  const nodeDir = assertPathInsideWriteRoot(path.join(parentDir, nodeFsName(node)), options, "creating folder");
   await fsp.mkdir(nodeDir, { recursive: true });
 
   const meta = metaForNode(node, options);
@@ -1999,7 +2084,7 @@ async function writeNodeAsync(parentDir, node, options: any = {}) {
   }
   if (node.fileKind) {
     if (Array.isArray(node.children) && node.children.length > 0) {
-      const nodeDir = path.join(parentDir, nodeFsName(node));
+      const nodeDir = assertPathInsideWriteRoot(path.join(parentDir, nodeFsName(node)), options, "creating script folder");
       await fsp.mkdir(nodeDir, { recursive: true });
       await writeScriptNodeAsync(nodeDir, node, true, options);
       const children = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(node.children, options), nodeDir);
@@ -2021,10 +2106,11 @@ async function writeNodeAsync(parentDir, node, options: any = {}) {
 async function writeMountSnapshotAsync(mount, children, options: any = {}) {
   const mountOptions = {
     ...options,
-    mount
+    mount,
+    writeRoot: mount.absolutePath
   };
   const writableChildren = prepareSiblingNodesForWrite(filterModelScriptOnlyChildren(children || [], mountOptions), mount.absolutePath);
-  await fsp.mkdir(mount.absolutePath, { recursive: true });
+  await fsp.mkdir(assertPathInsideWriteRoot(mount.absolutePath, mountOptions, "creating mount directory"), { recursive: true });
   for (const child of writableChildren) {
     if (shouldIgnoreSyncbackNode(child, mountOptions, mount.absolutePath)) {
       continue;
@@ -2143,23 +2229,69 @@ function resolveProjectForPlace(projects, placeId, configuredDefaultId = null) {
   return resolveProjectSelectionForPlace(projects, placeId, configuredDefaultId).project;
 }
 
+function invalidInstancePathSegmentReason(segment) {
+  if (typeof segment !== "string" || segment.length === 0) {
+    return "empty";
+  }
+  if (segment === "." || segment === "..") {
+    return "dot_segment";
+  }
+  if (/[\\/]/.test(segment)) {
+    return "path_separator";
+  }
+  if (/[\x00-\x1F]/.test(segment)) {
+    return "control_character";
+  }
+  return null;
+}
+
 function normalizeInstancePathSegments(instancePath) {
-  if (Array.isArray(instancePath)) {
-    return instancePath.filter((segment) => typeof segment === "string" && segment.length > 0);
+  const rawSegments = Array.isArray(instancePath)
+    ? instancePath
+    : (typeof instancePath === "string" ? instancePath.split(".") : null);
+  if (!rawSegments) {
+    return {
+      ok: false,
+      segments: [],
+      error: "Caminho da instancia vazio ou invalido."
+    };
   }
-  if (typeof instancePath !== "string") {
-    return [];
+  const segments = [];
+  for (const segment of rawSegments) {
+    if (segment === "game" || segment === "DataModel") {
+      continue;
+    }
+    const invalidReason = invalidInstancePathSegmentReason(segment);
+    if (invalidReason) {
+      return {
+        ok: false,
+        segments: [],
+        error: `Caminho da instancia contem segmento invalido (${invalidReason}).`
+      };
+    }
+    segments.push(segment);
   }
-  return instancePath
-    .split(".")
-    .filter((segment) => segment.length > 0 && segment !== "game" && segment !== "DataModel");
+  return {
+    ok: segments.length > 0,
+    segments,
+    error: segments.length > 0 ? null : "Caminho da instancia vazio ou invalido."
+  };
 }
 
 function patchStudioFileSource(project, instancePath, newSource, options: any = {}) {
-  const targetSegments = normalizeInstancePathSegments(instancePath);
+  const normalizedPath = normalizeInstancePathSegments(instancePath);
+  if (!normalizedPath.ok) {
+    return {
+      ok: false,
+      code: "INVALID_INSTANCE_PATH",
+      error: normalizedPath.error || "Caminho da instancia vazio ou invalido."
+    };
+  }
+  const targetSegments = normalizedPath.segments;
   if (targetSegments.length === 0) {
     return {
       ok: false,
+      code: "INVALID_INSTANCE_PATH",
       error: "Caminho da instancia vazio ou invalido."
     };
   }
@@ -2189,13 +2321,25 @@ function patchStudioFileSource(project, instancePath, newSource, options: any = 
 
   const remainingSegments = targetSegments.slice(bestMountMatchLength);
   let currentPath = bestMount.absolutePath;
+  const patchOptions = {
+    ...options,
+    mount: options.mount || bestMount,
+    writeRoot: bestMount.absolutePath
+  };
   
   if (remainingSegments.length === 0) {
     const initFiles = ["init.luau", "init.server.luau", "init.client.luau", "init.lua", "init.server.lua", "init.client.lua"];
     for (const f of initFiles) {
       const p = path.join(currentPath, f);
+      if (!isPathInside(p, bestMount.absolutePath)) {
+        return {
+          ok: false,
+          code: "PATH_TRAVERSAL_BLOCKED",
+          error: `Resolved patch path escaped mount '${bestMount.id}'.`
+        };
+      }
       if (fs.existsSync(p)) {
-        const changed = writeTextFileIfChanged(p, newSource, options);
+        const changed = writeTextFileIfChanged(p, newSource, patchOptions);
         return {
           ok: true,
           filePath: p,
@@ -2211,6 +2355,13 @@ function patchStudioFileSource(project, instancePath, newSource, options: any = 
 
   for (let i = 0; i < remainingSegments.length - 1; i++) {
     currentPath = path.join(currentPath, remainingSegments[i]);
+    if (!isPathInside(currentPath, bestMount.absolutePath)) {
+      return {
+        ok: false,
+        code: "PATH_TRAVERSAL_BLOCKED",
+        error: `Resolved patch path escaped mount '${bestMount.id}'.`
+      };
+    }
   }
   
   const lastSegment = remainingSegments[remainingSegments.length - 1];
@@ -2231,8 +2382,15 @@ function patchStudioFileSource(project, instancePath, newSource, options: any = 
   
   for (const f of possibleFiles) {
     const p = path.join(currentPath, f);
+    if (!isPathInside(p, bestMount.absolutePath)) {
+      return {
+        ok: false,
+        code: "PATH_TRAVERSAL_BLOCKED",
+        error: `Resolved patch path escaped mount '${bestMount.id}'.`
+      };
+    }
     if (fs.existsSync(p)) {
-      const changed = writeTextFileIfChanged(p, newSource, options);
+      const changed = writeTextFileIfChanged(p, newSource, patchOptions);
       return {
         ok: true,
         filePath: p,
