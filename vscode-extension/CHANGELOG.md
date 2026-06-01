@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.1.46
+
+- Implements **Path Traversal Protection** rejecting unsafe path segments (e.g. `..` or subpath escapes) in source patching (`/studio/patch-source`) to protect directory integrity.
+- Adds **Snapshot Path Sanitization** to automatically escape and sanitize unsafe node names from Roblox Studio (like `..\outside`) into safe filesystem filenames (like `__outside`), saving the original Roblox name in `init.meta.json`.
+- Enforces **Strict CORS Preflight Validation** on the local daemon, allowing only local origins (`localhost` / `127.0.0.1`) to communicate with administrative or MCP endpoints.
+- Implements directory containment checks to prevent destructive syncback operations or writes outside workspace mounts.
+- Integrates comprehensive regression tests for path traversal, snapshot traversal, async syncback, and CORS preflight.
+
+## 1.1.45
+
+- Introduces core daemon architecture updates and recursive project discovery to automatically discover `.project.json` project files from the workspace root.
+- Adds workspace project initialization utilities and project resolver updates for multi-project workflows.
+- Scaffolds dynamic project root management (`project-roots.ts`) to manage multiple active project targets.
+
+## 1.1.44
+
+- Establishes a dedicated **MCP Proxy Server** inside the core architecture for robust stdio-to-HTTP bridge communication.
+- Implements portable workspace MCP configurations, decoupling machine-specific configurations from the shared Git repository by saving them to `.amarillo/mcp-local.json`.
+- Adds quick palette commands in the VS Code extension: `Amarillo: Start Bridge`, `Amarillo: Configure MCP for Workspace`, and `Amarillo: Configure Codex MCP`.
+
+## 1.1.43
+
+- Optimizes internal MCP configuration helper methods and ensures automated validation for Luau LSP and `sourcemap.json` generation.
+- Adds comprehensive unit tests validating robust workspace tool configuration.
+
+## 1.1.42
+
+- Scaffolds and bundles a dedicated, self-contained MCP server within the VS Code extension manifest (`vscode-extension-src/mcp/server.ts` compiled to `vscode-extension/mcp/server.js`).
+- Integrates automated tests verifying Codex plugin and extension MCP server behaviors.
+- Enhances extension packaging scripts and unifies cross-compilation configurations.
+
 ## 1.1.41
 
 - Adds **Dual-Hashing Protection** to compare both semantic and raw snapshot SHA-1 hashes, ensuring subtle default-valued GUI changes (like `ZIndex`) are correctly written to disk.
