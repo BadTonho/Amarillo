@@ -33,6 +33,24 @@ test("ensureWorkspaceProjectFile creates a default project scaffold when the wor
   assert.equal(fs.existsSync(path.join(workspace, "src", "Workspace")), false);
 });
 
+test("ensureWorkspaceProjectFile uses an existing sync root instead of creating src", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "sync", "ServerScriptService"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "sync", "ServerScriptService", "Hello.server.luau"), "return 1", "utf8");
+
+  const result = await ensureWorkspaceProjectFile(workspace, () => []);
+  const project = JSON.parse(fs.readFileSync(buildDefaultProjectPath(workspace), "utf8"));
+
+  assert.equal(result.created, true);
+  assert.equal(project.tree.ReplicatedStorage.$path, "sync/ReplicatedStorage");
+  assert.equal(project.tree.ServerScriptService.$path, "sync/ServerScriptService");
+  assert.equal(project.tree.StarterPlayer.StarterPlayerScripts.$path, "sync/StarterPlayer/StarterPlayerScripts");
+  assert.equal(project.tree.StarterGui.$path, "sync/StarterGui");
+  assert.equal(project.tree.Workspace.$path, "sync/Workspace");
+  assert.equal(fs.existsSync(path.join(workspace, "sync", "ReplicatedStorage")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "src")), false);
+});
+
 test("ensureWorkspaceProjectFile keeps existing project files untouched", async () => {
   const workspace = createTempWorkspace();
   const existingProjectPath = path.join(workspace, "Existing.project.json");

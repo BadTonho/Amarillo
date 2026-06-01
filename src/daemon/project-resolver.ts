@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { isIgnoredProjectDiscoveryDirectoryName } = require("./project-discovery");
+const { resolveWorkspaceProjectRoot } = require("./project-roots");
 
 const PROJECT_SUFFIX = ".project.json";
 
@@ -179,15 +180,15 @@ function createDefaultProject(workspaceRoot) {
   if (fs.existsSync(projectPath)) {
     return;
   }
-  const srcDir = path.join(workspaceRoot, "src");
-  ensureDirectory(srcDir);
+  const projectRoot = resolveWorkspaceProjectRoot(workspaceRoot, { fallback: "src" });
+  ensureDirectory(path.join(workspaceRoot, projectRoot));
 
   const defaultProject = {
     name: "Default Project",
     placeIds: [],
     tree: {
       ServerScriptService: {
-        $path: "src"
+        $path: projectRoot
       }
     }
   };

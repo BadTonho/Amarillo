@@ -328,6 +328,36 @@ test("place setup creates a place project and all base and exclusive folders", a
   assert.equal(accept.payload.session.placeName, "Namek Prime");
 });
 
+test("place setup creates newly enabled base mounts under the existing src root", async () => {
+  const workspace = createTempWorkspace();
+  fs.mkdirSync(path.join(workspace, "src", "ServerScriptService"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Base.project.json"), JSON.stringify({
+    name: "Base",
+    tree: {
+      $className: "DataModel",
+      ServerScriptService: {
+        $path: "src/ServerScriptService"
+      }
+    }
+  }, null, 2));
+  const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });
+  app.refreshWorkspace();
+  app.rememberPendingPlaceSetup(111222, "Src Arena");
+
+  const response = await invoke(app, "POST", "/projects/place-setup", {
+    placeId: 111222,
+    placeName: "Src Arena",
+    exclusiveMountIds: [],
+    baseMountIds: ["ServerStorage"]
+  });
+
+  assert.equal(response.statusCode, 200);
+  const projectJson = JSON.parse(fs.readFileSync(path.join(workspace, "SrcArena.project.json"), "utf8"));
+  assert.equal(projectJson.tree.ServerStorage.$path, "src/ServerStorage");
+  assert.equal(fs.existsSync(path.join(workspace, "src", "ServerStorage")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "sync", "ServerStorage")), false);
+});
+
 test("place setup and place sync edit select exclusive and shared base mounts by canonical id", async () => {
   const workspace = createTempWorkspace();
   fs.mkdirSync(path.join(workspace, "src", "ServerScriptService"), { recursive: true });

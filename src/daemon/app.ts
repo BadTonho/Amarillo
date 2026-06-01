@@ -91,6 +91,11 @@ const {
 } = require("./http-utils");
 const { handleTool: handleMcpTool } = require("./mcp");
 const {
+  pathInsideProjectRoot,
+  projectRootFromRelativePath,
+  resolveWorkspaceProjectRoot
+} = require("./project-roots");
+const {
   createMcpShieldState,
   listTools,
   mcpShieldSummary,
@@ -152,18 +157,6 @@ const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
 const PLACE_SYNC_BASE_DISABLED_PATH_KEY = "$amarilloDisabledPath";
 const PLACE_SYNC_EXCLUSIVE_DISABLED_PATH_KEY = "$amarilloDisabledExclusivePath";
-const DEFAULT_PLACE_PROJECT_TREE = {
-  "$className": "DataModel",
-  Workspace: { "$path": "sync/Workspace" },
-  ReplicatedStorage: { "$path": "sync/ReplicatedStorage" },
-  ServerScriptService: { "$path": "sync/ServerScriptService" },
-  ServerStorage: { "$path": "sync/ServerStorage" },
-  StarterGui: { "$path": "sync/StarterGui" },
-  StarterPlayer: {
-    StarterCharacterScripts: { "$path": "sync/StarterPlayer/StarterCharacterScripts" },
-    StarterPlayerScripts: { "$path": "sync/StarterPlayer/StarterPlayerScripts" }
-  }
-};
 const PLACE_SYNC_MOUNTS = [
   { id: "Workspace", label: "Workspace", segments: ["Workspace"], sharedPath: "sync/Workspace", exclusivePath: "Workspace" },
   { id: "ReplicatedStorage", label: "ReplicatedStorage", segments: ["ReplicatedStorage"], sharedPath: "sync/ReplicatedStorage", exclusivePath: "ReplicatedStorage" },
@@ -174,6 +167,25 @@ const PLACE_SYNC_MOUNTS = [
   { id: "StarterPlayer.StarterPlayerScripts", label: "StarterPlayerScripts", segments: ["StarterPlayer", "StarterPlayerScripts"], sharedPath: "sync/StarterPlayer/StarterPlayerScripts", exclusivePath: "StarterPlayer/StarterPlayerScripts" }
 ];
 const STANDARD_PLACE_EXCLUSIVE_MOUNTS = PLACE_SYNC_MOUNTS;
+
+function sharedPathForPlaceMount(mount, projectRoot = "sync") {
+  return pathInsideProjectRoot(projectRoot, mount.exclusivePath);
+}
+
+function buildDefaultPlaceProjectTree(projectRoot = "sync") {
+  return {
+    "$className": "DataModel",
+    Workspace: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[0], projectRoot) },
+    ReplicatedStorage: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[1], projectRoot) },
+    ServerScriptService: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[2], projectRoot) },
+    ServerStorage: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[3], projectRoot) },
+    StarterGui: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[4], projectRoot) },
+    StarterPlayer: {
+      StarterCharacterScripts: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[5], projectRoot) },
+      StarterPlayerScripts: { "$path": sharedPathForPlaceMount(PLACE_SYNC_MOUNTS[6], projectRoot) }
+    }
+  };
+}
 
 function cloneJson(value) {
   if (Array.isArray(value)) {
@@ -340,6 +352,63 @@ function normalizeProjectRelativePath(value) {
     : null;
 }
 
+function addProjectRootCount(counts, relativePath) {
+  const root = projectRootFromRelativePath(relativePath);
+  if (!root) {
+    return counts;
+  }
+  counts.set(root, (counts.get(root) || 0) + 1);
+  return counts;
+}
+
+function collectProjectRootCountsFromTree(node, counts = new Map()) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) {
+    return counts;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key.startsWith("$") && typeof value === "string") {
+      addProjectRootCount(counts, value);
+      continue;
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      collectProjectRootCountsFromTree(value, counts);
+    }
+  }
+  return counts;
+}
+
+function dominantProjectRootFromCounts(counts) {
+  let selectedRoot = null;
+  let selectedCount = 0;
+  for (const [root, count] of counts.entries()) {
+    if (count > selectedCount) {
+      selectedRoot = root;
+      selectedCount = count;
+    } else if (count === selectedCount) {
+      selectedRoot = null;
+    }
+  }
+  return selectedRoot;
+}
+
+function inferProjectRootFromTree(tree) {
+  return dominantProjectRootFromCounts(collectProjectRootCountsFromTree(tree));
+}
+
+function inferProjectRootFromProject(project) {
+  const counts = new Map();
+  collectProjectRootCountsFromTree(project?.tree || project?.raw?.tree || {}, counts);
+  for (const mount of project?.mounts || []) {
+    addProjectRootCount(counts, mount.relativePath);
+  }
+  return dominantProjectRootFromCounts(counts);
+}
+
+function resolvePlaceProjectRoot(workspaceRoot, project = null, fallback = "sync") {
+  return inferProjectRootFromProject(project)
+    || resolveWorkspaceProjectRoot(workspaceRoot, { fallback });
+}
+
 function placeSyncExclusiveRelativePath(placeSlug, mount) {
   return `${placeSlug}/exclusive/${mount.exclusivePath}`;
 }
@@ -383,6 +452,7 @@ function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown
   if (!tree || typeof tree !== "object" || Array.isArray(tree)) {
     tree = {};
   }
+  const defaultSharedRoot = projectRootFromRelativePath(options.defaultSharedRoot) || "sync";
   const exclusiveMountIds = resolveExclusiveMountIds(options);
   const baseMountIds = resolveBaseMountIds(options);
   if (!tree.$className) {
@@ -407,7 +477,7 @@ function configurePlaceSyncTree(tree, placeSlug, options: Record<string, unknown
       || (disabledBasePath !== null && currentPath !== null && childExclusivePath === null);
     const basePath = disabledBasePath
       || (currentPath && !currentPathIsExclusive ? currentPath : null)
-      || mount.sharedPath;
+      || sharedPathForPlaceMount(mount, defaultSharedRoot);
     const exclusivePath = childExclusivePath
       || disabledExclusivePath
       || (currentPathIsExclusive ? currentPath : null)
@@ -507,6 +577,7 @@ function segmentsStartWith(value, prefix) {
 
 function buildProjectPlaceSyncPayload(project) {
   const mounts = Array.isArray(project?.mounts) ? project.mounts : [];
+  const sharedRoot = inferProjectRootFromProject(project) || "sync";
   return {
     mounts: STANDARD_PLACE_EXCLUSIVE_MOUNTS.map((config) => {
       const leaf = getTreeNode(project?.tree || project?.raw?.tree || {}, config.segments, false);
@@ -529,7 +600,7 @@ function buildProjectPlaceSyncPayload(project) {
         id: config.id,
         label: config.label,
         path: config.segments.join("."),
-        sharedPath: config.sharedPath,
+        sharedPath: sharedPathForPlaceMount(config, sharedRoot),
         exclusivePath: config.exclusivePath,
         baseEnabled: Boolean(baseMount),
         baseRelativePath: baseMount?.relativePath || normalizeProjectRelativePath(leaf?.[PLACE_SYNC_BASE_DISABLED_PATH_KEY]) || null,
@@ -2673,9 +2744,10 @@ class PluginRobloxApp {
     const placeName = normalizePlaceName(options.placeName) || normalizePlaceName(this.pendingPlaceSetup?.placeName) || `Place ${placeIds[0]}`;
     const placeSlug = this.uniquePlaceProjectSlug(placeSlugFromName(placeName, `Place${placeIds[0]}`));
     const sourceProject = this.sourceProjectForPlaceSetup();
-    const baseTree = this.readRawProjectTree(sourceProject) || cloneJson(DEFAULT_PLACE_PROJECT_TREE);
+    const sharedRoot = resolvePlaceProjectRoot(this.workspaceRoot, sourceProject, "sync");
+    const baseTree = this.readRawProjectTree(sourceProject) || buildDefaultPlaceProjectTree(sharedRoot);
     const projectFile = path.join(this.workspaceRoot, `${placeSlug}.project.json`);
-    let tree = configurePlaceSyncTree(baseTree, placeSlug, options);
+    let tree = configurePlaceSyncTree(baseTree, placeSlug, { ...options, defaultSharedRoot: sharedRoot });
     if (objectHasOwn(options, "keepUnknowns")) {
       tree = setKeepUnknowns(tree, options.keepUnknowns === true);
     }
@@ -2721,7 +2793,8 @@ class PluginRobloxApp {
 
     const projectName = normalizePlaceName(raw.name) || normalizePlaceName(project.name) || path.basename(project.id, ".project.json");
     const placeSlug = placeSlugFromName(projectName, "Place");
-    raw.tree = configurePlaceSyncTree(raw.tree, placeSlug, options);
+    const sharedRoot = inferProjectRootFromTree(raw.tree) || resolveWorkspaceProjectRoot(this.workspaceRoot, { fallback: "sync" });
+    raw.tree = configurePlaceSyncTree(raw.tree, placeSlug, { ...options, defaultSharedRoot: sharedRoot });
     if (objectHasOwn(options, "keepUnknowns")) {
       raw.tree = setKeepUnknowns(raw.tree, options.keepUnknowns === true);
     }
