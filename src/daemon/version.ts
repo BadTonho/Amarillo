@@ -1,9 +1,9 @@
 "use strict";
 
-const DAEMON_VERSION = "1.1.46";
+const DAEMON_VERSION = "1.1.47";
 const AMARILLO_PROTOCOL_VERSION = 2;
 const MIN_PLUGIN_VERSION = "1.1.2";
-const CURRENT_PLUGIN_VERSION = "1.1.46";
+const CURRENT_PLUGIN_VERSION = "1.1.47";
 
 function normalizeVersion(value) {
   if (typeof value === "string" && value.trim()) {

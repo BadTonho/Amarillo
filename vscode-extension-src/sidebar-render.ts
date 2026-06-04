@@ -226,7 +226,7 @@ ${SIDEBAR_CSS}
   <body>
     <main class="shell">
       <section class="card hero tone-border-${escapeHtml(statusTone)}">
-        <div class="eyebrow">Amarillo Bridge</div>
+        <div class="eyebrow">Amarillo Bridge v${escapeHtml(status.version || "unknown")}</div>
         <h1>${escapeHtml(status.title || "Bridge status")}</h1>
         <span class="badge tone-${escapeHtml(statusTone)}">${escapeHtml(status.endpoint || "unknown")}</span>
         <div class="hero-meta">
