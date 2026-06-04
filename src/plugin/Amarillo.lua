@@ -14,7 +14,7 @@ local MarketplaceService = game:GetService("MarketplaceService")
 local okScriptEditor, ScriptEditorService = pcall(function() return game:GetService("ScriptEditorService") end)
 
 local SETTINGS_KEY = "AmarilloSettings"
-local PLUGIN_VERSION = "1.1.46"
+local PLUGIN_VERSION = "1.1.47"
 local AMARILLO_PROTOCOL_VERSION = 2
 local DEFAULT_HOST = "127.0.0.1"
 local LEGACY_DEFAULT_PORT = 8123
@@ -4487,7 +4487,7 @@ end
 
 local function buildHomePage()
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12))
-local homeTitle = makeTextLabel(homeHero, "Amarillo", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
+local homeTitle = makeTextLabel(homeHero, "Amarillo v" .. PLUGIN_VERSION, UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
 local homeSubtitle = makeTextLabel(homeHero, "Bridge Studio <-> Workspace", UDim2.new(1, -120, 0, 18), UDim2.fromOffset(16, 46), 13)
 homeSubtitle.TextColor3 = Color3.fromRGB(139, 148, 158)

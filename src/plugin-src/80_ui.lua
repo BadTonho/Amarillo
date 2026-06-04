@@ -728,7 +728,7 @@ end
 
 local function buildHomePage()
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12))
-local homeTitle = makeTextLabel(homeHero, "Amarillo", UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
+local homeTitle = makeTextLabel(homeHero, "Amarillo v" .. PLUGIN_VERSION, UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
 local homeSubtitle = makeTextLabel(homeHero, "Bridge Studio <-> Workspace", UDim2.new(1, -120, 0, 18), UDim2.fromOffset(16, 46), 13)
 homeSubtitle.TextColor3 = Color3.fromRGB(139, 148, 158)

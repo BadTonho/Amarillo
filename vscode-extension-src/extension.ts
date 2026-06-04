@@ -1229,6 +1229,7 @@ async function getSidebarState(runtimeState: SidebarRuntimeState | null = null) 
   return {
     status: {
       title: running ? "Bridge online" : "Bridge offline",
+      version: extensionVersion(),
       tone: sidebarTone(statusTone),
       endpoint: settings ? `${settings.host}:${settings.port}` : "no workspace",
       workspace: visibleWorkspaceRoot ? workspaceDisplayName(visibleWorkspaceRoot) : "no workspace",
