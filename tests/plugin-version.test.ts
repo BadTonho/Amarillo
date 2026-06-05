@@ -152,6 +152,15 @@ test("Roblox plugin blocks duplicate exclusive mount roots before mutations", ()
   assert.match(pluginSource, /duplicateMountRootIssueForSnapshot\(projectSnapshot\)/);
 });
 
+test("Roblox plugin regenerates copied AmarilloId attributes during snapshots", () => {
+  assert.match(pluginSource, /local function reserveSnapshotAmarilloId\(instance, options\)/);
+  assert.match(pluginSource, /options\.seenAmarilloIds = options\.seenAmarilloIds or \{\}/);
+  assert.match(pluginSource, /HttpService:GenerateGUID\(false\)/);
+  assert.match(pluginSource, /Regenerated duplicated AmarilloId during snapshot/);
+  assert.match(pluginSource, /local amarilloId = reserveSnapshotAmarilloId\(instance, options\)/);
+  assert.match(pluginSource, /options\.seenAmarilloIds = \{\}/);
+});
+
 test("Roblox plugin reuses the serialized snapshot body for automatic snapshot cache checks", () => {
   assert.match(pluginSource, /lastSnapshotBodyJson = nil/);
   assert.match(pluginSource, /local bodyJson = HttpService:JSONEncode\(bodyTable\)/);

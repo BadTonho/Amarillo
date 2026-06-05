@@ -147,6 +147,39 @@ local function ensureAmarilloId(instance)
 	return nil
 end
 
+local function reserveSnapshotAmarilloId(instance, options)
+	local amarilloId = getAmarilloId(instance)
+	if not amarilloId then
+		return nil
+	end
+	if type(options) ~= "table" then
+		return amarilloId
+	end
+
+	options.seenAmarilloIds = options.seenAmarilloIds or {}
+	local seenInstance = options.seenAmarilloIds[amarilloId]
+	if not seenInstance or seenInstance == instance then
+		options.seenAmarilloIds[amarilloId] = instance
+		return amarilloId
+	end
+
+	for _ = 1, 8 do
+		local generated = HttpService:GenerateGUID(false)
+		if generated ~= amarilloId and not options.seenAmarilloIds[generated] then
+			if setAmarilloId(instance, generated, "snapshot duplicate identity") then
+				options.seenAmarilloIds[generated] = instance
+				options.duplicateAmarilloIdsCorrected = true
+				appendLog("Regenerated duplicated AmarilloId during snapshot for " .. tostring(instance.Name))
+				return generated
+			end
+		end
+	end
+
+	options.duplicateAmarilloIdsCorrected = true
+	appendLog("Failed to regenerate duplicated AmarilloId during snapshot for " .. tostring(instance.Name))
+	return amarilloId
+end
+
 local function childNameCounts(parent)
 	local counts = {}
 	for _, child in ipairs(parent:GetChildren()) do
@@ -362,7 +395,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	if isOpaqueModelInstance(instance) then
 		return nil
 	end
-	local amarilloId = getAmarilloId(instance)
+	local amarilloId = reserveSnapshotAmarilloId(instance, options)
 	local node = {
 		name = instance.Name,
 		className = instance.ClassName,
@@ -594,6 +627,8 @@ local function snapshotCurrentProject(options)
 		return nil
 	end
 	options = options or {}
+	options.seenAmarilloIds = {}
+	options.duplicateAmarilloIdsCorrected = false
 	local openDocumentSources = collectOpenDocumentSources()
 	local mounts = {}
 	local cachedMounts = {}

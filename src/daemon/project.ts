@@ -568,6 +568,59 @@ function stableAmarilloId(parts) {
   return `amarillo-${crypto.createHash("sha1").update(parts.join("\u0000")).digest("hex").slice(0, 16)}`;
 }
 
+function reserveUniqueAmarilloId(node, identityKey, seen) {
+  const currentId = typeof node?.amarilloId === "string" && node.amarilloId.length > 0
+    ? node.amarilloId
+    : null;
+  if (!currentId) {
+    return null;
+  }
+  if (!seen.has(currentId)) {
+    seen.set(currentId, identityKey);
+    return currentId;
+  }
+
+  let ordinal = 2;
+  let candidate = stableAmarilloId(["duplicate-amarillo-id", identityKey, currentId, String(ordinal)]);
+  while (seen.has(candidate)) {
+    ordinal++;
+    candidate = stableAmarilloId(["duplicate-amarillo-id", identityKey, currentId, String(ordinal)]);
+  }
+  seen.set(candidate, identityKey);
+  return candidate;
+}
+
+function normalizeNodeAmarilloIds(node, parentKey, index, seen) {
+  const next = { ...(node || {}) };
+  const fsName = nodeFsName(next) || safeFsSegment(next.name || `Instance${index + 1}`);
+  const identityKey = `${parentKey}/${fsName}#${index + 1}#${next.name || ""}#${next.className || ""}`;
+  const amarilloId = reserveUniqueAmarilloId(next, identityKey, seen);
+  if (amarilloId && amarilloId !== next.amarilloId) {
+    next.amarilloId = amarilloId;
+  }
+  if (Array.isArray(next.children)) {
+    next.children = next.children.map((child, childIndex) => normalizeNodeAmarilloIds(child, identityKey, childIndex, seen));
+  }
+  return next;
+}
+
+function normalizeSnapshotAmarilloIds(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.mounts)) {
+    return snapshot;
+  }
+  const seen = new Map();
+  return {
+    ...snapshot,
+    mounts: snapshot.mounts.map((mount, mountIndex) => {
+      const mountKey = `${snapshot.projectId || "project"}/${mount?.id || mountIndex}`;
+      return {
+        ...mount,
+        children: (mount?.children || []).map((child, childIndex) => normalizeNodeAmarilloIds(child, mountKey, childIndex, seen))
+      };
+    })
+  };
+}
+
 function cloneNodeForFs(node, fsName, duplicateOrdinal, identityKey, isDuplicate = false) {
   const next = {
     ...(node || {}),
@@ -1179,7 +1232,7 @@ function readLocalProjectState(project, extraOptions: any = {}) {
     legacyScripts: project.legacyScripts,
     mountRoot: null
   };
-  return {
+  const snapshot = {
     projectId: project.id,
     name: project.name,
     placeIds: project.placeIds,
@@ -1216,6 +1269,7 @@ function readLocalProjectState(project, extraOptions: any = {}) {
       };
     })
   };
+  return normalizeSnapshotAmarilloIds(snapshot);
 }
 
 // OPT-006: Async version that reads script files in parallel instead of blocking the event loop
@@ -1388,12 +1442,13 @@ async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
     };
   });
 
-  return {
+  const snapshot = {
     projectId: project.id,
     name: project.name,
     placeIds: project.placeIds,
     mounts: await Promise.all(mountPromises)
   };
+  return normalizeSnapshotAmarilloIds(snapshot);
 }
 
 function serializePropertyValue(value) {
@@ -1883,6 +1938,7 @@ function writeMountSnapshot(mount, children, options: any = {}) {
 
 function writeStudioProjectState(project, snapshot, options: any = {}) {
   const changes = [];
+  const normalizedSnapshot = normalizeSnapshotAmarilloIds(snapshot || {});
   const writeOptions = {
     ...options,
     syncback: project.syncback || {},
@@ -1895,7 +1951,7 @@ function writeStudioProjectState(project, snapshot, options: any = {}) {
     }
   };
   const mountMap = new Map(project.mounts.map((mount) => [mount.id, mount]));
-  for (const mountSnapshot of snapshot.mounts || []) {
+  for (const mountSnapshot of normalizedSnapshot.mounts || []) {
     const mount = mountMap.get(mountSnapshot.id);
     if (!mount) {
       continue;
@@ -2146,6 +2202,7 @@ async function writeMountSnapshotAsync(mount, children, options: any = {}) {
 
 async function writeStudioProjectStateAsync(project, snapshot, options: any = {}) {
   const changes = [];
+  const normalizedSnapshot = normalizeSnapshotAmarilloIds(snapshot || {});
   const writeOptions = {
     ...options,
     syncback: project.syncback || {},
@@ -2158,7 +2215,7 @@ async function writeStudioProjectStateAsync(project, snapshot, options: any = {}
     }
   };
   const mountMap = new Map(project.mounts.map((mount) => [mount.id, mount]));
-  for (const mountSnapshot of snapshot.mounts || []) {
+  for (const mountSnapshot of normalizedSnapshot.mounts || []) {
     const mount = mountMap.get(mountSnapshot.id);
     if (!mount) {
       continue;
