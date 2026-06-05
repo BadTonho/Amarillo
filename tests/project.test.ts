@@ -967,6 +967,89 @@ test("studio snapshot roundtrips duplicate sibling names with filesystem metadat
   assert.deepEqual(fsNames, ["Duplicate", "Duplicate.amarillo-2"]);
 });
 
+test("local project state repairs copied amarilloId metadata in memory", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "StarterGui");
+  fs.mkdirSync(path.join(syncRoot, "BotaoDesempenho"), { recursive: true });
+  fs.mkdirSync(path.join(syncRoot, "BotaoTeclas"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $path: "sync/StarterGui"
+      }
+    }
+  }, null, 2));
+
+  const copiedId = "copied-studio-id";
+  for (const name of ["BotaoDesempenho", "BotaoTeclas"]) {
+    fs.writeFileSync(path.join(syncRoot, name, "init.meta.json"), JSON.stringify({
+      className: "ImageButton",
+      amarilloId: copiedId
+    }, null, 2));
+  }
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const firstSnapshot = readLocalProjectState(project);
+  const secondSnapshot = readLocalProjectState(project);
+  const firstIds = firstSnapshot.mounts[0].children.map((child) => child.amarilloId);
+  const secondIds = secondSnapshot.mounts[0].children.map((child) => child.amarilloId);
+
+  assert.equal(new Set(firstIds).size, 2);
+  assert.ok(firstIds.includes(copiedId));
+  assert.deepEqual(firstIds, secondIds);
+});
+
+test("studio snapshot writer persists unique amarilloIds when Studio duplicated attributes", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "StarterGui");
+  fs.mkdirSync(syncRoot, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      StarterGui: {
+        $path: "sync/StarterGui"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  writeStudioProjectState(project, {
+    mounts: [
+      {
+        id: "StarterGui",
+        children: [
+          {
+            name: "BotaoDesempenho",
+            className: "ImageButton",
+            classNameSource: "studio",
+            amarilloId: "duplicated-studio-id",
+            properties: {},
+            children: []
+          },
+          {
+            name: "BotaoTeclas",
+            className: "ImageButton",
+            classNameSource: "studio",
+            amarilloId: "duplicated-studio-id",
+            properties: {},
+            children: []
+          }
+        ]
+      }
+    ]
+  });
+
+  const desempenhoMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "BotaoDesempenho", "init.meta.json"), "utf8"));
+  const teclasMeta = JSON.parse(fs.readFileSync(path.join(syncRoot, "BotaoTeclas", "init.meta.json"), "utf8"));
+
+  assert.equal(desempenhoMeta.amarilloId, "duplicated-studio-id");
+  assert.notEqual(teclasMeta.amarilloId, "duplicated-studio-id");
+  assert.match(teclasMeta.amarilloId, /^amarillo-/);
+});
+
 test("studio snapshot syncback ignores Models as opaque Studio assets", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
