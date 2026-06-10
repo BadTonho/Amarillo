@@ -2,7 +2,7 @@
 
 This file is an operational checklist. Use it when creating a new Amarillo VSIX and installing it locally while keeping MCP portable across machines.
 
-Before preparing a public release, review `PublicPluginDistributionPlan.md`. It documents the Roblox Studio plugin packaging work needed to avoid Luau `Out of local registers` failures in shared installs.
+Before preparing a public release, ensure that all tests pass (including [plugin-version.test.ts](file:///c:/Users/Admin/Desktop/amarillo/amarillo/tests/plugin-version.test.ts), which validates that Roblox Studio plugin UI construction keeps local registers below Luau limits to avoid `Out of local registers` failures in shared installs).
 
 Run this from the folder that contains the workspace, then enter the Amarillo repo:
 

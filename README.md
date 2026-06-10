@@ -118,6 +118,7 @@ The Amarillo plugin exposes a complete MCP (Model Context Protocol) interface fo
 - `health` - Check bridge and plugin health status
 - `list_projects` - List all available Roblox projects
 - `set_active_project` - Switch the active project for synchronization
+- `connect_session` - Create a new Studio session directly without requiring the offer/accept handshake
 - `get_tree` - Get the current instance tree structure
 - `get_selection` - Get currently selected instances in Studio
 - `push_changes` - Send files from VS Code to Roblox Studio
