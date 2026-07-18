@@ -49,7 +49,9 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
         },
         placeId: {
           type: "number",
-          description: "Optional Roblox place ID for project matching."
+          description: "Optional Roblox place ID for project matching.",
+          minimum: 0,
+          maximum: Number.MAX_SAFE_INTEGER
         }
       }
     }
@@ -107,7 +109,8 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
           type: "string"
         },
         code: {
-          type: "string"
+          type: "string",
+          maxLength: 256 * 1024
         }
       }
     }
@@ -197,7 +200,9 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
         },
         maxDepth: {
           type: "number",
-          description: "Maximum search depth between 1 and 10."
+          description: "Maximum search depth between 1 and 10.",
+          minimum: 1,
+          maximum: 10
         },
         classFilter: {
           type: "string",
@@ -274,7 +279,9 @@ const TOOL_DEFINITIONS: McpToolDefinition[] = [
         },
         count: {
           type: "number",
-          description: "Maximum number of entries to return. Default is 50 and maximum is 200."
+          description: "Maximum number of entries to return. Default is 50 and maximum is 200.",
+          minimum: 1,
+          maximum: 200
         }
       }
     }
@@ -379,11 +386,38 @@ function listTools() {
 }
 
 const TOOL_DEFINITION_BY_NAME = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool]));
+const MAX_TOOL_ARGUMENT_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_STRING_LENGTH = 8192;
+const MAX_STRING_LENGTH_BY_KEY = {
+  code: 256 * 1024,
+  path: 2048,
+  parentPath: 2048,
+  query: 512,
+  sessionId: 128,
+  projectId: 512,
+  property: 256,
+  className: 128,
+  classFilter: 128,
+  name: 256,
+  scope: 2048
+};
 
 function validateToolArguments(name: string, args: McpToolArguments = {}): McpToolArguments {
   const tool = TOOL_DEFINITION_BY_NAME.get(name);
   if (!tool) {
     throw new Error(`Unsupported MCP tool: ${name}`);
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error(`Arguments for MCP tool '${name}' must be an object.`);
+  }
+  let serializedBytes = 0;
+  try {
+    serializedBytes = Buffer.byteLength(JSON.stringify(args), "utf8");
+  } catch (_error) {
+    throw new Error(`Arguments for MCP tool '${name}' must be JSON-serializable.`);
+  }
+  if (serializedBytes > MAX_TOOL_ARGUMENT_BYTES) {
+    throw new Error(`Arguments for MCP tool '${name}' exceed ${MAX_TOOL_ARGUMENT_BYTES} bytes.`);
   }
   const schema: McpToolInputSchema = tool.inputSchema || { type: "object" };
   const properties = schema.properties || {};
@@ -396,19 +430,46 @@ function validateToolArguments(name: string, args: McpToolArguments = {}): McpTo
   }
 
   for (const [key, definition] of Object.entries(properties) as [string, McpToolPropertySchema][]) {
-    if (args[key] === undefined || args[key] === null || definition.type === undefined) {
+    const value = args[key];
+    if (value === undefined || value === null || definition.type === undefined) {
       continue;
     }
-    if (definition.type === "number" && typeof args[key] !== "number") {
+    if ((definition.type === "number" || definition.type === "integer")
+      && (typeof value !== "number" || !Number.isFinite(value))) {
       throw new Error(`Argument '${key}' for MCP tool '${name}' must be a number.`);
     }
-    if (definition.type === "string" && typeof args[key] !== "string") {
+    if (definition.type === "integer" && !Number.isInteger(value)) {
+      throw new Error(`Argument '${key}' for MCP tool '${name}' must be an integer.`);
+    }
+    if (definition.type === "string" && typeof value !== "string") {
       throw new Error(`Argument '${key}' for MCP tool '${name}' must be a string.`);
     }
-    if (definition.type === "object" && (typeof args[key] !== "object" || Array.isArray(args[key]))) {
+    if (definition.type === "object" && (typeof value !== "object" || Array.isArray(value))) {
       throw new Error(`Argument '${key}' for MCP tool '${name}' must be an object.`);
     }
-    if (Array.isArray(definition.enum) && !definition.enum.includes(args[key])) {
+    if (definition.type === "string") {
+      const maxLength = Number.isFinite(definition.maxLength)
+        ? definition.maxLength
+        : MAX_STRING_LENGTH_BY_KEY[key] || DEFAULT_MAX_STRING_LENGTH;
+      if ((value as string).length < Number(definition.minLength || 0)) {
+        throw new Error(`Argument '${key}' for MCP tool '${name}' is too short.`);
+      }
+      if ((value as string).length > maxLength) {
+        throw new Error(`Argument '${key}' for MCP tool '${name}' exceeds ${maxLength} characters.`);
+      }
+      if (definition.pattern && !(new RegExp(definition.pattern)).test(value as string)) {
+        throw new Error(`Argument '${key}' for MCP tool '${name}' has an invalid format.`);
+      }
+    }
+    if (definition.type === "number" || definition.type === "integer") {
+      if (definition.minimum !== undefined && (value as number) < definition.minimum) {
+        throw new Error(`Argument '${key}' for MCP tool '${name}' is below the minimum.`);
+      }
+      if (definition.maximum !== undefined && (value as number) > definition.maximum) {
+        throw new Error(`Argument '${key}' for MCP tool '${name}' exceeds the maximum.`);
+      }
+    }
+    if (Array.isArray(definition.enum) && !definition.enum.includes(value)) {
       throw new Error(`Argument '${key}' for MCP tool '${name}' must be one of: ${definition.enum.join(", ")}.`);
     }
   }

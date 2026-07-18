@@ -8,17 +8,11 @@ const DEFAULT_JSONL_FILE = "activity.jsonl";
 const DEFAULT_MARKDOWN_FILE = "activity.md";
 const DEFAULT_LOG_DIRECTORY = "activity";
 const DEFAULT_MAX_SNAPSHOT_BYTES = 128 * 1024;
+const JSONL_QUERY_CACHE_TTL_MS = 250;
+const JSONL_QUERY_CACHE_MAX_RECORDS = 5000;
 
 function normalizeSlashes(value) {
   return String(value || "").replace(/\\/g, "/");
-}
-
-function hashValue(value) {
-  return crypto.createHash("sha1").update(String(value)).digest("hex");
-}
-
-function fileHash(filePath) {
-  return crypto.createHash("sha1").update(fs.readFileSync(filePath)).digest("hex");
 }
 
 function isProbablyText(buffer) {
@@ -46,13 +40,13 @@ function getFileInfo(filePath, options: any = {}) {
     if (!stats.isFile()) {
       return null;
     }
+    const buffer = fs.readFileSync(filePath);
     const info: any = {
-      size: stats.size,
-      hash: fileHash(filePath)
+      size: buffer.length,
+      hash: crypto.createHash("sha1").update(buffer).digest("hex")
     };
     const maxSnapshotBytes = Number(options.maxSnapshotBytes || DEFAULT_MAX_SNAPSHOT_BYTES);
-    if (options.includeText === true && stats.size <= maxSnapshotBytes) {
-      const buffer = fs.readFileSync(filePath);
+    if (options.includeText === true && buffer.length <= maxSnapshotBytes) {
       if (isProbablyText(buffer)) {
         info.text = buffer.toString("utf8");
         info.textTruncated = false;
@@ -103,6 +97,7 @@ class ActivityLog {
     this.markdownFileName = options.markdownFileName || DEFAULT_MARKDOWN_FILE;
     this.logDirectoryName = options.logDirectoryName || DEFAULT_LOG_DIRECTORY;
     this.maxSnapshotBytes = Number(options.maxSnapshotBytes || DEFAULT_MAX_SNAPSHOT_BYTES);
+    this.recordsCache = null;
   }
 
   get directoryPath() {
@@ -172,6 +167,31 @@ class ActivityLog {
     return paths;
   }
 
+  readRecords() {
+    const paths = this.collectJsonlPaths();
+    const fingerprint = paths.map((filePath) => {
+      try {
+        const stats = fs.statSync(filePath);
+        return `${filePath}:${stats.mtimeMs}:${stats.size}`;
+      } catch (_error) {
+        return `${filePath}:missing`;
+      }
+    }).join("|");
+    const now = Date.now();
+    if (this.recordsCache
+      && this.recordsCache.fingerprint === fingerprint
+      && now - this.recordsCache.createdAt < JSONL_QUERY_CACHE_TTL_MS) {
+      return this.recordsCache.records;
+    }
+    const records = paths
+      .flatMap((filePath) => readJsonlRecords(filePath))
+      .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0));
+    this.recordsCache = records.length <= JSONL_QUERY_CACHE_MAX_RECORDS
+      ? { createdAt: now, fingerprint, records }
+      : null;
+    return records;
+  }
+
   writeDetail(record, entry: any = {}) {
     const detail: any = {
       id: record.id,
@@ -236,7 +256,7 @@ class ActivityLog {
         || (action === "modify" && typeof entry.oldText === "string" && Boolean(newHash))
       );
     const record: any = {
-      id: entry.id || `${Date.now().toString(36)}-${hashValue(`${timestamp}:${entry.path}:${Math.random()}`).slice(0, 8)}`,
+      id: entry.id || `${Date.now().toString(36)}-${crypto.randomUUID()}`,
       timestamp,
       action,
       path: absolutePath ? normalizeSlashes(absolutePath) : null,
@@ -264,6 +284,7 @@ class ActivityLog {
     }
     fs.appendFileSync(this.jsonlPathForTimestamp(record.timestamp), `${JSON.stringify(record)}\n`, "utf8");
     this.appendMarkdown(record);
+    this.recordsCache = null;
     return record;
   }
 
@@ -287,9 +308,7 @@ class ActivityLog {
 
   query(options: any = {}) {
     const limit = Number(options.limit || 0);
-    const records = this.collectJsonlPaths()
-      .flatMap((filePath) => readJsonlRecords(filePath))
-      .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0));
+    const records = this.readRecords();
     const filtered = [];
     for (const record of records) {
       if (options.action && record.action !== options.action) {

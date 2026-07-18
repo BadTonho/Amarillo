@@ -1,6 +1,9 @@
 "use strict";
 
 import type { ConnectionOfferStatus, TruthSource } from "./connection";
+import type { RuntimeSnapshotNode, StudioSnapshot } from "./studio";
+
+export type { RuntimeSnapshotNode, StudioSnapshot } from "./studio";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -14,21 +17,6 @@ export interface RuntimeMount {
   absolutePath: string;
   segments: string[];
   children?: RuntimeSnapshotNode[];
-  [key: string]: unknown;
-}
-
-export interface RuntimeSnapshotNode {
-  name?: string;
-  className?: string;
-  fileKind?: string | null;
-  source?: string;
-  segments?: string[];
-  children?: RuntimeSnapshotNode[];
-  [key: string]: unknown;
-}
-
-export interface StudioSnapshot {
-  mounts?: RuntimeSnapshotNode[];
   [key: string]: unknown;
 }
 

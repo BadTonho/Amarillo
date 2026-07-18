@@ -116,7 +116,15 @@ function errorResponse(response: ServerResponse, error: unknown, request: Incomi
 }
 
 async function readJsonBody<T = Record<string, unknown>>(request: IncomingMessage, options: ReadJsonBodyOptions = {}): Promise<T> {
-  const maxBytes = Number(options.maxBytes || DEFAULT_MAX_JSON_BODY_BYTES);
+  const configuredMaxBytes = Number(options.maxBytes);
+  const maxBytes = Number.isFinite(configuredMaxBytes) && configuredMaxBytes > 0
+    ? configuredMaxBytes
+    : DEFAULT_MAX_JSON_BODY_BYTES;
+  const declaredLength = requestContentLength(request);
+  if (declaredLength !== null && declaredLength > maxBytes) {
+    request.resume();
+    throw new HttpError(413, "BODY_TOO_LARGE", `JSON body exceeds ${maxBytes} bytes.`);
+  }
   const chunks: Buffer[] = [];
   let totalBytes = 0;
 
@@ -124,6 +132,7 @@ async function readJsonBody<T = Record<string, unknown>>(request: IncomingMessag
     const chunkBuffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     totalBytes += chunkBuffer.length;
     if (totalBytes > maxBytes) {
+      request.resume();
       throw new HttpError(413, "BODY_TOO_LARGE", `JSON body exceeds ${maxBytes} bytes.`);
     }
     chunks.push(chunkBuffer);

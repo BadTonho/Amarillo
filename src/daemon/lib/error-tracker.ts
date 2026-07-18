@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 /**
  * Structured error tracking for Amarillo.
@@ -123,6 +124,7 @@ class ErrorTracker {
     this.persistOnAdd = options.persistOnAdd !== false;
     this.entries = [];
     this._listeners = [];
+    this.persistenceFailureReported = false;
     this._loadExisting();
   }
 
@@ -388,9 +390,7 @@ class ErrorTracker {
   }
 
   _generateId() {
-    const timestamp = Date.now().toString(36);
-    const random = Math.random().toString(36).slice(2, 8);
-    return `${timestamp}-${random}`;
+    return `${Date.now().toString(36)}-${crypto.randomUUID()}`;
   }
 
   _loadExisting() {
@@ -399,11 +399,15 @@ class ErrorTracker {
       const entries = [];
       const seenIds = new Set();
       const loadFile = (filePath) => {
-        for (const entry of readEntriesFile(filePath)) {
-          if (entry && entry.id && !seenIds.has(entry.id)) {
-            seenIds.add(entry.id);
-            entries.push(entry);
+        try {
+          for (const entry of readEntriesFile(filePath)) {
+            if (entry && entry.id && !seenIds.has(entry.id)) {
+              seenIds.add(entry.id);
+              entries.push(entry);
+            }
           }
+        } catch (error) {
+          this._reportDiagnostic("ERROR-LOG-LOAD", filePath, error);
         }
       };
 
@@ -416,8 +420,8 @@ class ErrorTracker {
       this.entries = entries
         .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0))
         .slice(0, this.maxEntries);
-    } catch (_error) {
-      // Corrupt or missing file: start empty.
+    } catch (error) {
+      this._reportDiagnostic("ERROR-LOG-DISCOVERY", this.logRootPath, error);
       this.entries = [];
     }
   }
@@ -447,9 +451,20 @@ class ErrorTracker {
       for (const [day, entries] of grouped.entries()) {
         this._writeEntriesFile(path.join(this.logRootPath, day, this.logFileName), entries);
       }
-    } catch (_error) {
-      // Persistence failures must not crash the daemon.
+    } catch (error) {
+      this._reportDiagnostic("ERROR-LOG-PERSIST", this.logRootPath, error);
     }
+  }
+
+  _reportDiagnostic(code, filePath, error) {
+    if (this.persistenceFailureReported && code === "ERROR-LOG-PERSIST") {
+      return;
+    }
+    if (code === "ERROR-LOG-PERSIST") {
+      this.persistenceFailureReported = true;
+    }
+    const message = error && typeof error.message === "string" ? error.message : String(error || "Unknown error");
+    process.stderr.write(`[amarillo] ${code} (${path.basename(filePath || this.logRootPath)}): ${message}\n`);
   }
 
   _writeEntriesFile(filePath, entries) {

@@ -6,6 +6,8 @@ const { TOOL_DEFINITIONS, listTools } = require("./mcp-tools");
 
 const MCP_CONFIG_RELATIVE_PATH = path.join(".vscode", "mcp.json");
 const MCP_LOCAL_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
+const MCP_CONFIG_CACHE_TTL_MS = 1000;
+const mcpConfigInspectionCache = new Map();
 
 function createMcpShieldState() {
   return {
@@ -113,7 +115,7 @@ function inspectMcpLocalState(workspaceRoot) {
   };
 }
 
-function inspectWorkspaceMcpConfig(workspaceRoot) {
+function inspectWorkspaceMcpConfigUncached(workspaceRoot) {
   const mcpPath = path.join(workspaceRoot, MCP_CONFIG_RELATIVE_PATH);
   const localState = inspectMcpLocalState(workspaceRoot);
   const base = {
@@ -218,6 +220,41 @@ function inspectWorkspaceMcpConfig(workspaceRoot) {
       : "Workspace MCP config is present and points directly to the Amarillo stdio proxy.",
     server: serverSummary
   };
+}
+
+function fileFingerprint(filePath) {
+  try {
+    const stats = fs.statSync(filePath);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch (_error) {
+    return "missing";
+  }
+}
+
+function inspectWorkspaceMcpConfig(workspaceRoot) {
+  const resolvedWorkspaceRoot = path.resolve(workspaceRoot);
+  const now = Date.now();
+  const mcpPath = path.join(resolvedWorkspaceRoot, MCP_CONFIG_RELATIVE_PATH);
+  const localStatePath = path.join(resolvedWorkspaceRoot, MCP_LOCAL_RELATIVE_PATH);
+  const fingerprint = `${fileFingerprint(mcpPath)}|${fileFingerprint(localStatePath)}`;
+  const cached = mcpConfigInspectionCache.get(resolvedWorkspaceRoot);
+  if (cached && cached.fingerprint === fingerprint && now - cached.createdAt < MCP_CONFIG_CACHE_TTL_MS) {
+    return cached.value;
+  }
+  const value = inspectWorkspaceMcpConfigUncached(resolvedWorkspaceRoot);
+  mcpConfigInspectionCache.set(resolvedWorkspaceRoot, {
+    createdAt: now,
+    fingerprint,
+    value
+  });
+  while (mcpConfigInspectionCache.size > 32) {
+    const oldestKey = mcpConfigInspectionCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    mcpConfigInspectionCache.delete(oldestKey);
+  }
+  return value;
 }
 
 function mcpFallbackExample(baseUrl) {

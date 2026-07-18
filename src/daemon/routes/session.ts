@@ -62,6 +62,15 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
     return true;
   }
 
+  if (!project) {
+    jsonResponse(response, 409, {
+      ok: false,
+      code: "PROJECT_NOT_FOUND",
+      error: "The project associated with this Studio session is no longer available."
+    }, request);
+    return true;
+  }
+
   if (request.method === "POST" && action === "pull") {
     const blockedReason = app.isSessionVersionBlocked(session) ? app.syncBlockedReason(session) : null;
     if (blockedReason) {
