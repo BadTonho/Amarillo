@@ -1,12 +1,11 @@
 "use strict";
 
+import type { StudioSnapshot } from "./studio";
+
+export type { StudioSnapshot } from "./studio";
+
 export type TruthSource = "pc" | "studio";
 export type ConnectionOfferStatus = "pending" | "accepted" | "declined" | "ready";
-
-export interface StudioSnapshot {
-  mounts: unknown[];
-  [key: string]: unknown;
-}
 
 export interface SyncTargetsPayload {
   Workspace?: unknown;

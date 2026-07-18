@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const SOURCEMAP_FILE_NAME = "sourcemap.json";
+const DEFAULT_MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_SETTINGS = {
   "luau-lsp.sourcemap.enabled": true,
   "luau-lsp.sourcemap.autogenerate": true,
@@ -133,8 +134,27 @@ function buildRojoSourcemapArgs(workspaceRoot, projectFilePath, sourcemapPath) {
   ];
 }
 
+function appendLimitedOutput(current, chunk, maxBytes) {
+  const currentBytes = Buffer.byteLength(current, "utf8");
+  const remainingBytes = maxBytes - currentBytes;
+  if (remainingBytes <= 0) {
+    return { value: current, truncated: true };
+  }
+  const chunkBuffer = Buffer.from(String(chunk), "utf8");
+  if (chunkBuffer.length <= remainingBytes) {
+    return { value: current + chunkBuffer.toString("utf8"), truncated: false };
+  }
+  return {
+    value: current + chunkBuffer.subarray(0, remainingBytes).toString("utf8"),
+    truncated: true
+  };
+}
+
 function defaultRunCommand(command, args, options: any = {}) {
   return new Promise((resolve, reject) => {
+    const maxOutputBytes = Number(options.maxOutputBytes) > 0
+      ? Number(options.maxOutputBytes)
+      : DEFAULT_MAX_PROCESS_OUTPUT_BYTES;
     const child = spawn(command, args, {
       cwd: options.cwd,
       windowsHide: true,
@@ -143,16 +163,25 @@ function defaultRunCommand(command, args, options: any = {}) {
 
     let stdout = "";
     let stderr = "";
+    let outputTruncated = false;
     child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      const result = appendLimitedOutput(stdout, chunk, maxOutputBytes);
+      stdout = result.value;
+      outputTruncated ||= result.truncated;
     });
     child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
+      const result = appendLimitedOutput(stderr, chunk, maxOutputBytes);
+      stderr = result.value;
+      outputTruncated ||= result.truncated;
     });
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve({ stdout, stderr });
+        resolve({
+          stdout,
+          stderr,
+          outputTruncated
+        });
         return;
       }
       const error: any = new Error(stderr.trim() || stdout.trim() || `Command exited with code ${code}`);

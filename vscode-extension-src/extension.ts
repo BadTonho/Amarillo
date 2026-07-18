@@ -45,6 +45,7 @@ const activityDiffDocuments = new Map<string, string>();
 const AMARILLO_PROTOCOL_VERSION = 2;
 const SIDEBAR_HEALTH_TIMEOUT_MS = 1200;
 const SIDEBAR_STATE_TIMEOUT_MS = 4500;
+const DEFAULT_MAX_JSON_RESPONSE_BYTES = 64 * 1024 * 1024;
 const SOURCEMAP_ACTIVATION_DELAY_MS = 3000;
 const PLACE_SYNC_MOUNT_OPTIONS = [
   { id: "Workspace", label: "Workspace", path: "Workspace" },
@@ -83,6 +84,7 @@ type ExtensionJsonObject = Record<string, unknown>;
 interface RequestJsonOptions {
   timeout?: number;
   bridgeToken?: string | null;
+  maxResponseBytes?: number;
 }
 
 interface ProjectStateHint {
@@ -1425,6 +1427,9 @@ function requestJson<TResponse = ExtensionJsonObject>(
   }
 
   return new Promise((resolve, reject) => {
+    const maxResponseBytes = Number(options.maxResponseBytes) > 0
+      ? Number(options.maxResponseBytes)
+      : DEFAULT_MAX_JSON_RESPONSE_BYTES;
     const request = http.request({
       method,
       hostname: url.hostname,
@@ -1433,12 +1438,34 @@ function requestJson<TResponse = ExtensionJsonObject>(
       timeout,
       headers
     }, (response) => {
-      let responseBody = "";
+      const contentLength = Number(response.headers["content-length"] || 0);
+      if (contentLength > maxResponseBytes) {
+        response.resume();
+        reject(new Error(`HTTP response exceeds ${maxResponseBytes} bytes.`));
+        return;
+      }
+      const responseChunks: string[] = [];
+      let responseBytes = 0;
+      let responseTooLarge = false;
       response.setEncoding("utf8");
       response.on("data", (chunk) => {
-        responseBody += chunk;
+        if (responseTooLarge) {
+          return;
+        }
+        responseBytes += Buffer.byteLength(chunk, "utf8");
+        if (responseBytes > maxResponseBytes) {
+          responseTooLarge = true;
+          response.destroy(new Error(`HTTP response exceeds ${maxResponseBytes} bytes.`));
+          reject(new Error(`HTTP response exceeds ${maxResponseBytes} bytes.`));
+          return;
+        }
+        responseChunks.push(chunk);
       });
       response.on("end", () => {
+        if (responseTooLarge) {
+          return;
+        }
+        const responseBody = responseChunks.join("");
         if (response.statusCode && response.statusCode >= 400) {
           reject(new Error(`HTTP ${response.statusCode}: ${responseBody}`));
           return;
@@ -3279,6 +3306,11 @@ function activate(context) {
         return activityDiffDocuments.get(uri.toString()) || "";
       }
     }),
+    vscode.workspace.onDidCloseTextDocument((document) => {
+      if (document.uri.scheme === "amarillo-activity") {
+        activityDiffDocuments.delete(document.uri.toString());
+      }
+    }),
     vscode.window.registerWebviewViewProvider("amarillo.sidebar", sidebarProvider),
     vscode.commands.registerCommand("amarillo.installRobloxPlugin", () => installRobloxPlugin(context)),
     vscode.commands.registerCommand("amarillo.startBridge", () => startBridge(context)),
@@ -3356,6 +3388,7 @@ function activate(context) {
     {
       dispose: () => {
         bridgeState.dispose();
+        activityDiffDocuments.clear();
         sidebarProvider = null;
         extensionContext = null;
       }
@@ -3510,6 +3543,7 @@ function activate(context) {
 
 function deactivate() {
   bridgeState.dispose();
+  activityDiffDocuments.clear();
 }
 
 module.exports = {

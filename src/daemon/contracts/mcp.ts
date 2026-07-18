@@ -7,6 +7,11 @@ export type McpJsonSchemaType = "string" | "number" | "object" | "boolean" | "ar
 export interface McpToolPropertySchema {
   type?: McpJsonSchemaType;
   description?: string;
+  minLength?: number;
+  maxLength?: number;
+  minimum?: number;
+  maximum?: number;
+  pattern?: string;
   enum?: unknown[];
   [key: string]: unknown;
 }

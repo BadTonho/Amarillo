@@ -36,10 +36,11 @@ test("daemon and VS Code extension use the same project discovery ignore list", 
 
 test("project discovery file event and extension paths use shared helpers", () => {
   const appSource = readText("src", "daemon", "app.ts");
+  const watcherSource = readText("src", "daemon", "services", "workspace-watcher.ts");
   const resolverSource = readText("src", "daemon", "project-resolver.ts");
   const extensionSource = readText("vscode-extension-src", "extension.ts");
 
-  assert.match(appSource, /shouldIgnoreProjectDiscoveryPath\(normalized\)/);
+  assert.match(watcherSource, /shouldIgnoreProjectDiscoveryPath\(normalized\)/);
   assert.match(resolverSource, /isIgnoredProjectDiscoveryDirectoryName\(entry\.name\)/);
   assert.match(extensionSource, /isIgnoredProjectDiscoveryDirectoryName\(entry\.name\)/);
   assert.match(extensionSource, /shouldIgnoreProjectDiscoveryPath\(relativePath\)/);

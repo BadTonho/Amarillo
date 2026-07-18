@@ -39,17 +39,18 @@ const WINDOWS_RESERVED_FS_NAMES = new Set([
 
 // ===== Lightweight glob matching (no external dependency) =====
 function globToRegex(glob) {
+  const normalizedGlob = normalizeSlashes(glob);
   let regex = "";
   let i = 0;
-  const len = glob.length;
+  const len = normalizedGlob.length;
   while (i < len) {
-    const ch = glob[i];
+    const ch = normalizedGlob[i];
     if (ch === "*") {
-      if (glob[i + 1] === "*") {
+      if (normalizedGlob[i + 1] === "*") {
         // ** matches any path
         regex += ".*";
         i += 2;
-        if (glob[i] === "/") { i++; } // skip trailing slash after **
+        if (normalizedGlob[i] === "/") { i++; } // skip trailing slash after **
         continue;
       }
       regex += "[^/]*";
@@ -59,6 +60,8 @@ function globToRegex(glob) {
       regex += "\\.";
     } else if (ch === "/") {
       regex += "/";
+    } else if ("\\^$+()[]{}|".includes(ch)) {
+      regex += `\\${ch}`;
     } else {
       regex += ch;
     }
@@ -456,7 +459,12 @@ function readMetaFile(metaPath) {
   if (!fs.existsSync(metaPath)) {
     return {};
   }
-  return parseJsonFile(metaPath);
+  try {
+    const parsed = parseJsonFile(metaPath);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
 }
 
 function isOpaqueModelNode(node) {
@@ -987,10 +995,14 @@ function buildNodeFromFile(filePath, explicitName = null, options: any = {}) {
 
   if (name.endsWith(".model.json")) {
     const baseName = explicitName || name.replace(/\.model\.json$/i, "");
-    const model = parseJsonFile(filePath);
-    const rootNode: any = buildNodeFromJsonModel(baseName, model);
-    rootNode.sourceFile = "model.json";
-    return rootNode;
+    try {
+      const model = parseJsonFile(filePath);
+      const rootNode: any = buildNodeFromJsonModel(baseName, model);
+      rootNode.sourceFile = "model.json";
+      return rootNode;
+    } catch (_error) {
+      return null;
+    }
   }
 
   if (name.endsWith(".rbxm") || name.endsWith(".rbxmx")) {
@@ -1313,8 +1325,93 @@ async function buildNodeFromFileAsync(filePath, explicitName = null, options: an
       children: []
     }, meta, baseName);
   }
-  // For non-script files, delegate to sync (they're small JSON/metadata)
-  return buildNodeFromFile(filePath, explicitName, options);
+  if (name.endsWith(".model.json")) {
+    const baseName = explicitName || name.replace(/\.model\.json$/i, "");
+    try {
+      const model = JSON.parse(await fsp.readFile(filePath, "utf8"));
+      const rootNode: any = buildNodeFromJsonModel(baseName, model);
+      rootNode.sourceFile = "model.json";
+      return rootNode;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  if (name.endsWith(".rbxm") || name.endsWith(".rbxmx")) {
+    const baseName = explicitName || name.replace(/\.(rbxm|rbxmx)$/i, "");
+    return {
+      name: baseName,
+      className: "Model",
+      classNameSource: "file",
+      properties: {
+        ExternalAssetFile: name
+      },
+      keepUnknowns: true,
+      children: [],
+      sourceFile: name.endsWith(".rbxm") ? "rbxm" : "rbxmx"
+    };
+  }
+
+  // .json -> ModuleScript (excluding .project.json, .model.json, .meta.json)
+  if (name.endsWith(".json") && !name.endsWith(PROJECT_SUFFIX) && !name.endsWith(".model.json") && !name.endsWith(META_SUFFIX)) {
+    const baseName = explicitName || name.replace(/\.json$/i, "");
+    try {
+      const rawJson = JSON.parse(await fsp.readFile(filePath, "utf8"));
+      const luauSource = `return ${jsonToLuauTable(rawJson, 0)}`;
+      return {
+        name: baseName,
+        className: "ModuleScript",
+        classNameSource: "file",
+        source: luauSource,
+        properties: {},
+        children: [],
+        sourceFile: "json"
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  if (name.endsWith(".txt")) {
+    const baseName = explicitName || name.replace(/\.txt$/i, "");
+    const content = await fsp.readFile(filePath, "utf8");
+    return {
+      name: baseName,
+      className: "StringValue",
+      classNameSource: "file",
+      properties: { Value: content },
+      children: [],
+      sourceFile: "txt"
+    };
+  }
+
+  if (name.endsWith(".md")) {
+    const baseName = explicitName || name.replace(/\.md$/i, "");
+    const content = await fsp.readFile(filePath, "utf8");
+    return {
+      name: baseName,
+      className: "StringValue",
+      classNameSource: "file",
+      properties: { Value: markdownToRichText(content) },
+      children: [],
+      sourceFile: "md"
+    };
+  }
+
+  if (name.endsWith(".csv")) {
+    const baseName = explicitName || name.replace(/\.csv$/i, "");
+    const content = await fsp.readFile(filePath, "utf8");
+    return {
+      name: baseName,
+      className: "LocalizationTable",
+      classNameSource: "file",
+      properties: { Contents: content },
+      children: [],
+      sourceFile: "csv"
+    };
+  }
+
+  return null;
 }
 
 async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {

@@ -7,10 +7,8 @@ const crypto = require("node:crypto");
 const DEFAULT_JSONL_FILE = "mcp.jsonl";
 const DEFAULT_MARKDOWN_FILE = "mcp.md";
 const DEFAULT_LOG_DIRECTORY = "activity";
-
-function hashValue(value) {
-  return crypto.createHash("sha1").update(String(value)).digest("hex");
-}
+const JSONL_QUERY_CACHE_TTL_MS = 250;
+const JSONL_QUERY_CACHE_MAX_RECORDS = 5000;
 
 function dateKeyFromTimestamp(timestamp) {
   const parsed = new Date(timestamp);
@@ -63,6 +61,7 @@ class McpAuditLog {
     this.jsonlFileName = options.jsonlFileName || DEFAULT_JSONL_FILE;
     this.markdownFileName = options.markdownFileName || DEFAULT_MARKDOWN_FILE;
     this.logDirectoryName = options.logDirectoryName || DEFAULT_LOG_DIRECTORY;
+    this.recordsCache = null;
   }
 
   get directoryPath() {
@@ -102,10 +101,35 @@ class McpAuditLog {
     return paths;
   }
 
+  readRecords() {
+    const paths = this.collectJsonlPaths();
+    const fingerprint = paths.map((filePath) => {
+      try {
+        const stats = fs.statSync(filePath);
+        return `${filePath}:${stats.mtimeMs}:${stats.size}`;
+      } catch (_error) {
+        return `${filePath}:missing`;
+      }
+    }).join("|");
+    const now = Date.now();
+    if (this.recordsCache
+      && this.recordsCache.fingerprint === fingerprint
+      && now - this.recordsCache.createdAt < JSONL_QUERY_CACHE_TTL_MS) {
+      return this.recordsCache.records;
+    }
+    const records = paths
+      .flatMap((filePath) => readJsonlRecords(filePath))
+      .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0));
+    this.recordsCache = records.length <= JSONL_QUERY_CACHE_MAX_RECORDS
+      ? { createdAt: now, fingerprint, records }
+      : null;
+    return records;
+  }
+
   add(entry: any = {}) {
     const timestamp = entry.timestamp || new Date().toISOString();
     const record = {
-      id: entry.id || `${Date.now().toString(36)}-${hashValue(`${timestamp}:${entry.tool}:${Math.random()}`).slice(0, 8)}`,
+      id: entry.id || `${Date.now().toString(36)}-${crypto.randomUUID()}`,
       timestamp,
       tool: entry.tool || "unknown",
       source: entry.source || "unknown",
@@ -124,6 +148,7 @@ class McpAuditLog {
     fs.mkdirSync(this.dailyDirectoryPath(record.timestamp), { recursive: true });
     fs.appendFileSync(this.jsonlPathForTimestamp(record.timestamp), `${JSON.stringify(record)}\n`, "utf8");
     this.appendMarkdown(record);
+    this.recordsCache = null;
     return record;
   }
 
@@ -147,9 +172,7 @@ class McpAuditLog {
 
   query(options: any = {}) {
     const limit = Number(options.limit || 0);
-    const records = this.collectJsonlPaths()
-      .flatMap((filePath) => readJsonlRecords(filePath))
-      .sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0));
+    const records = this.readRecords();
     const filtered = [];
     for (const record of records) {
       if (options.tool && record.tool !== options.tool) {

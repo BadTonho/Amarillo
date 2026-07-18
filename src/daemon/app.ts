@@ -111,7 +111,6 @@ const {
   normalizeProtocolVersion,
   normalizeVersion
 } = require("./version");
-const { shouldIgnoreProjectDiscoveryPath } = require("./project-discovery");
 
 // OPT-001/002: Simplified hash — direct JSON.stringify with sorted keys
 function createDeferred(): CommandDeferred {
@@ -137,6 +136,16 @@ function logSync(event, details: Record<string, unknown> = {}) {
   process.stderr.write(`[SYNC] ${JSON.stringify(msg)}\n`);
 }
 
+function isLoopbackHost(host) {
+  const normalized = String(host || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
+  return normalized === "localhost"
+    || normalized === "127.0.0.1"
+    || normalized === "::1";
+}
+
 const SCRIPT_PATCH_DEBOUNCE_MS = 75;
 const SCRIPT_PATCH_BURST_LIMIT = 25;
 const PROJECT_TREE_DEBOUNCE_MS = 250;
@@ -154,6 +163,10 @@ const STUDIO_CONTACT_STALE_WARNING_MS = 35000;
 const STUDIO_CONTACT_CRITICAL_MS = 65000;
 const DEFAULT_AUTO_SYNC_TO_STUDIO = true;
 const DEFAULT_PRIVILEGED_ACTION_CONFIRMATION = true;
+const PRIVILEGED_ACTION_RATE_LIMIT = 20;
+const PRIVILEGED_ACTION_RATE_WINDOW_MS = 1000;
+const HTTP_SHUTDOWN_TIMEOUT_MS = 5000;
+const ACTIVITY_STATE_MAX_TEXT_BYTES = 8 * 1024 * 1024;
 const SYNC_COMMAND_TYPES = new Set(["apply_project_tree", "apply_file_patch"]);
 const DESTRUCTIVE_ACTION_TYPES = new Set(["modify_property", "create_instance", "delete_instance", "insert_model"]);
 const PLACE_SYNC_BASE_DISABLED_PATH_KEY = "$amarilloDisabledPath";
@@ -917,10 +930,13 @@ class PluginRobloxApp {
   activityLog: ActivityLogLike;
   mcpAuditLog: McpAuditLogLike;
   activityFileState: Map<string, ActivityFileInfo>;
+  activityFileStateTextBytes: number;
   activityKnownFiles: Set<string>;
   mcpShield: McpShieldState;
   recentUnauthorizedHttpRequests: Map<string, number>;
   rateLimiter: RateLimiterLike;
+  privilegedRateLimiter: RateLimiterLike;
+  shutdownPromise: Promise<void> | null;
   shuttingDown: boolean;
   perfTracker: any;
   doctorService: any;
@@ -975,10 +991,16 @@ class PluginRobloxApp {
       workspaceRoot: this.workspaceRoot
     });
     this.activityFileState = new Map<string, ActivityFileInfo>();
+    this.activityFileStateTextBytes = 0;
     this.activityKnownFiles = new Set<string>();
     this.mcpShield = createMcpShieldState();
     this.recentUnauthorizedHttpRequests = new Map<string, number>();
     this.rateLimiter = new RateLimiter({ maxRequests: 120, windowMs: 1000 });
+    this.privilegedRateLimiter = new RateLimiter({
+      maxRequests: PRIVILEGED_ACTION_RATE_LIMIT,
+      windowMs: PRIVILEGED_ACTION_RATE_WINDOW_MS
+    });
+    this.shutdownPromise = null;
     this.shuttingDown = false;
     this.perfTracker = new PerfTracker();
     this.doctorService = new DoctorService(this);
@@ -1038,7 +1060,7 @@ class PluginRobloxApp {
     if (request.method === "GET" && requestUrl.pathname === "/studio/poll" && !requestUrl.searchParams.get("sessionId")) {
       return true;
     }
-    if (request.method === "POST" && (
+    if (isLoopbackHost(this.host) && request.method === "POST" && (
       requestUrl.pathname === "/connection/accept"
       || requestUrl.pathname === "/connection/decline"
       || requestUrl.pathname === "/connection/diff"
@@ -1049,8 +1071,11 @@ class PluginRobloxApp {
   }
 
   authorizeHttpRequest(request, requestUrl) {
-    if (!this.bridgeToken || this.isPublicHttpRoute(request, requestUrl)) {
+    if (this.isPublicHttpRoute(request, requestUrl)) {
       return true;
+    }
+    if (!this.bridgeToken) {
+      return isLoopbackHost(this.host);
     }
     if (requestUrl.pathname.startsWith("/studio/")) {
       return true;
@@ -1116,6 +1141,9 @@ class PluginRobloxApp {
     if (!this.host) {
       this.host = String(this.config.argon.host || "127.0.0.1");
     }
+    if (!isLoopbackHost(this.host) && !this.bridgeToken) {
+      throw new Error("A bridge token is required when the daemon listens outside loopback.");
+    }
     this.startWatchers();
     this.httpServer = http.createServer((request, response) => {
       this.handleHttp(request, response).catch((error) => {
@@ -1129,8 +1157,9 @@ class PluginRobloxApp {
         });
         jsonResponse(response, 500, {
           ok: false,
-          error: error.message
-        });
+          code: "INTERNAL_ERROR",
+          error: "Internal server error."
+        }, request);
       });
     });
     // CLI users can scan like Argon; VS Code uses a strict port so Studio and MCP stay aligned.
@@ -1158,7 +1187,11 @@ class PluginRobloxApp {
                 context: { method: request.method, url: request.url },
                 stack: httpError.stack
               });
-              jsonResponse(response, 500, { ok: false, error: httpError.message });
+              jsonResponse(response, 500, {
+                ok: false,
+                code: "INTERNAL_ERROR",
+                error: "Internal server error."
+              }, request);
             });
           });
           continue;
@@ -1174,6 +1207,13 @@ class PluginRobloxApp {
   }
 
   async stop() {
+    if (!this.shutdownPromise) {
+      this.shutdownPromise = this.performStop();
+    }
+    return this.shutdownPromise;
+  }
+
+  async performStop() {
     this.shuttingDown = true;
 
     // Stop accepting file-system events
@@ -1208,10 +1248,40 @@ class PluginRobloxApp {
     if (this.rateLimiter) {
       this.rateLimiter.dispose();
     }
+    if (this.privilegedRateLimiter) {
+      this.privilegedRateLimiter.dispose();
+    }
 
     if (this.httpServer) {
-      this.httpServer.close();
-      await once(this.httpServer, "close");
+      const server = this.httpServer;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          clearTimeout(timeout);
+          resolve();
+        };
+        const timeout = setTimeout(() => {
+          const closableServer = server as HttpServer & {
+            closeAllConnections?: () => void;
+            closeIdleConnections?: () => void;
+          };
+          closableServer.closeAllConnections?.();
+          closableServer.closeIdleConnections?.();
+          finish();
+        }, HTTP_SHUTDOWN_TIMEOUT_MS);
+        if (typeof timeout.unref === "function") {
+          timeout.unref();
+        }
+        try {
+          server.close(finish);
+        } catch (_error) {
+          finish();
+        }
+      });
       this.httpServer = null;
     }
   }
@@ -1287,7 +1357,28 @@ class PluginRobloxApp {
     for (const candidate of projects || []) {
       for (const mount of candidate?.mounts || []) {
         if (mount?.absolutePath && isMountSyncEnabled(mount, targets)) {
-          fs.mkdirSync(mount.absolutePath, { recursive: true });
+          try {
+            fs.mkdirSync(mount.absolutePath, { recursive: true });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.recordError({
+              component: "daemon",
+              severity: "error",
+              code: "MOUNT-DIRECTORY-CREATE",
+              message: `Failed to prepare sync mount '${mount.id || "unknown"}'.`,
+              projectId: candidate?.id || null,
+              context: {
+                mountId: mount.id || null,
+                mountPath: mount.absolutePath,
+                error: message
+              },
+              stack: error instanceof Error ? error.stack : null
+            });
+            const wrapped = new Error(`Failed to prepare sync mount '${mount.id || "unknown"}'.`) as Error & { code?: string; cause?: unknown };
+            wrapped.code = "MOUNT_DIRECTORY_CREATE_FAILED";
+            wrapped.cause = error;
+            throw wrapped;
+          }
         }
       }
     }
@@ -1744,6 +1835,7 @@ class PluginRobloxApp {
   refreshActivityKnownFiles() {
     this.activityKnownFiles.clear();
     this.activityFileState.clear();
+    this.activityFileStateTextBytes = 0;
     for (const project of this.allProjects) {
       for (const mount of project.mounts || []) {
         for (const filePath of collectFilesRecursive(mount.absolutePath)) {
@@ -1751,11 +1843,55 @@ class PluginRobloxApp {
           this.activityKnownFiles.add(normalized);
           const info = getFileInfo(normalized, { includeText: true });
           if (info?.hash) {
-            this.activityFileState.set(normalized, info);
+            this.setActivityFileState(normalized, info);
           }
         }
       }
     }
+  }
+
+  setActivityFileState(filePath, info) {
+    this.removeActivityFileState(filePath);
+    if (!info || !info.hash) {
+      return;
+    }
+    const nextInfo = { ...info };
+    if (typeof nextInfo.text === "string") {
+      const textBytes = Buffer.byteLength(nextInfo.text, "utf8");
+      if (textBytes > ACTIVITY_STATE_MAX_TEXT_BYTES) {
+        delete nextInfo.text;
+        nextInfo.textTruncated = true;
+      } else {
+        this.activityFileStateTextBytes += textBytes;
+      }
+    }
+    this.activityFileState.set(filePath, nextInfo);
+
+    if (this.activityFileStateTextBytes <= ACTIVITY_STATE_MAX_TEXT_BYTES) {
+      return;
+    }
+    for (const [candidatePath, candidateInfo] of this.activityFileState) {
+      if (this.activityFileStateTextBytes <= ACTIVITY_STATE_MAX_TEXT_BYTES) {
+        break;
+      }
+      if (typeof candidateInfo.text !== "string") {
+        continue;
+      }
+      this.activityFileStateTextBytes -= Buffer.byteLength(candidateInfo.text, "utf8");
+      delete candidateInfo.text;
+      candidateInfo.textTruncated = true;
+    }
+  }
+
+  removeActivityFileState(filePath) {
+    const previous = this.activityFileState.get(filePath);
+    if (previous && typeof previous.text === "string") {
+      this.activityFileStateTextBytes = Math.max(
+        0,
+        this.activityFileStateTextBytes - Buffer.byteLength(previous.text, "utf8")
+      );
+    }
+    this.activityFileState.delete(filePath);
   }
 
 
@@ -1832,7 +1968,7 @@ class PluginRobloxApp {
     });
 
     if (record.action === "delete") {
-      this.activityFileState.delete(normalized);
+      this.removeActivityFileState(normalized);
       this.activityKnownFiles.delete(normalized);
     } else {
       this.activityKnownFiles.add(normalized);
@@ -1841,7 +1977,7 @@ class PluginRobloxApp {
         hash: record.hash
       };
       if (nextStateInfo && nextStateInfo.hash) {
-        this.activityFileState.set(normalized, nextStateInfo);
+        this.setActivityFileState(normalized, nextStateInfo);
       }
     }
     return record;
@@ -2055,7 +2191,11 @@ class PluginRobloxApp {
     session.pendingResponses.clear();
     session.inFlightCommands.clear();
     session.pendingCommands = [];
+    const pollWaiter = session._pollWaiter;
     session._pollWaiter = null;
+    if (pollWaiter) {
+      pollWaiter();
+    }
   }
 
   reclaimStudioSession(session: RuntimeSession, selection: ProjectSelection, placeId, options: SessionOpenOptions = {}) {
@@ -2094,112 +2234,6 @@ class PluginRobloxApp {
 
   startWatchers() {
     return this.workspaceWatcher.start();
-
-    let configRefreshTimer: NodeJS.Timeout | null = null;
-    let configRefreshTarget: string | null = null;
-    let eventFlushTimer: NodeJS.Timeout | null = null;
-    const pendingEvents = new Map<string, { eventType: string; normalized: string }>();
-
-    const scheduleConfigRefresh = (normalized: string) => {
-      if (normalized.endsWith(".project.json")) {
-        configRefreshTarget = normalized;
-      }
-      if (configRefreshTimer) {
-        clearTimeout(configRefreshTimer);
-      }
-      configRefreshTimer = setTimeout(() => {
-        if (this.shuttingDown) {
-          return;
-        }
-        const refreshTarget = configRefreshTarget;
-        configRefreshTimer = null;
-        configRefreshTarget = null;
-        this.refreshWorkspace();
-        if (refreshTarget) {
-          this.handleProjectDefinitionChanged(refreshTarget);
-        }
-      }, 200);
-      if (typeof configRefreshTimer.unref === "function") {
-        configRefreshTimer.unref();
-      }
-    };
-
-    const isRelevantWorkspaceFile = (normalized: string) => (
-      normalized.endsWith(".lua")
-      || normalized.endsWith(".luau")
-      || normalized.endsWith(".meta.json")
-      || normalized.endsWith(".model.json")
-      || normalized.endsWith(".rbxm")
-      || normalized.endsWith(".rbxmx")
-      || normalized.endsWith(".project.json")
-    );
-
-    const flushWorkspaceEvents = () => {
-      eventFlushTimer = null;
-      if (this.shuttingDown) {
-        pendingEvents.clear();
-        return;
-      }
-      const events = Array.from(pendingEvents.values());
-      pendingEvents.clear();
-
-      for (const event of events) {
-        const normalized = event.normalized;
-        if (normalized === "argon.toml" || normalized === ".pluginroblox.json" || normalized.endsWith(".project.json")) {
-          scheduleConfigRefresh(normalized);
-        }
-
-        if (isRelevantWorkspaceFile(normalized)) {
-          this.onWorkspaceFileChanged(path.join(this.workspaceRoot, normalized), event.eventType);
-        }
-      }
-    };
-
-    const queueWorkspaceEvent = (eventType, fileName) => {
-      if (!fileName) {
-        return;
-      }
-      const normalized = String(fileName).replace(/\\/g, "/").replace(/^\.\//, "");
-      if (!normalized || shouldIgnoreProjectDiscoveryPath(normalized)) {
-        return;
-      }
-
-      pendingEvents.set(normalized, {
-        eventType: String(eventType || "change"),
-        normalized
-      });
-      if (eventFlushTimer) {
-        clearTimeout(eventFlushTimer);
-      }
-      eventFlushTimer = setTimeout(flushWorkspaceEvents, WORKSPACE_WATCHER_EVENT_DEBOUNCE_MS);
-      if (typeof eventFlushTimer.unref === "function") {
-        eventFlushTimer.unref();
-      }
-    };
-
-    try {
-      const watcher = fs.watch(this.workspaceRoot, { recursive: true }, queueWorkspaceEvent);
-      watcher.on("error", (error) => {
-        this.recordError({
-          component: "daemon",
-          severity: "warning",
-          code: "WATCHER-ERROR",
-          message: error.message,
-          context: { workspaceRoot: this.workspaceRoot },
-          stack: error.stack
-        });
-      });
-      this.fileWatchers.push(watcher);
-    } catch (error) {
-      this.recordError({
-        component: "daemon",
-        severity: "warning",
-        code: "WATCHER-START",
-        message: error.message,
-        context: { workspaceRoot: this.workspaceRoot },
-        stack: error.stack
-      });
-    }
   }
 
   handleProjectDefinitionChanged(changedProjectId) {
@@ -4184,10 +4218,35 @@ class PluginRobloxApp {
     return result.selection || [];
   }
 
+  privilegedActionRateLimitResult(session, type) {
+    if (!this.privilegedRateLimiter.isLimited(session.id)) {
+      return null;
+    }
+    logSync("privileged_action_rate_limited", {
+      sessionId: session.id,
+      actionType: type,
+      limit: PRIVILEGED_ACTION_RATE_LIMIT,
+      windowMs: PRIVILEGED_ACTION_RATE_WINDOW_MS
+    });
+    return {
+      ok: false,
+      blocked: true,
+      declined: false,
+      confirmed: false,
+      reasonCode: "RATE_LIMITED",
+      error: "Too many privileged actions. Try again shortly.",
+      sessionId: session.id
+    };
+  }
+
   async runStudioCode(sessionId, code) {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error("Studio session not found.");
+    }
+    const rateLimitResult = this.privilegedActionRateLimitResult(session, "run_code");
+    if (rateLimitResult) {
+      return rateLimitResult;
     }
     const policy = this.privilegedActionPolicy(session, "run_code");
     if (!policy.allowed) {
@@ -4243,6 +4302,10 @@ class PluginRobloxApp {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error("Studio session not found.");
+    }
+    const rateLimitResult = this.privilegedActionRateLimitResult(session, type);
+    if (rateLimitResult) {
+      return rateLimitResult;
     }
     const policy = this.destructiveActionPolicy(session, type);
     if (!policy.allowed) {
@@ -4678,6 +4741,3 @@ module.exports = {
   hashSnapshot,
   normalizeAndHashSnapshot
 };
-
-
-

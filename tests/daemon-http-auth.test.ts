@@ -173,6 +173,30 @@ test("bridge token protects administrative and MCP HTTP routes", async () => {
   assert.match(bearerAuthorized.payload.mcp.fallback.example.alternativeAuthorizationHeader, /Authorization: Bearer/);
 });
 
+test("daemon requires a bridge token for connection routes outside loopback", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "0.0.0.0",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const body = {
+    projectId: "Game.project.json",
+    truthSource: "pc",
+    studioSnapshot: { mounts: [] }
+  };
+  const unauthorized = await invoke(app, "POST", "/connection/diff", body);
+  assert.equal(unauthorized.statusCode, 401);
+
+  const authorized = await invoke(app, "POST", "/connection/diff", body, {
+    headers: { "x-amarillo-bridge-token": "secret-token" }
+  });
+  assert.equal(authorized.statusCode, 200);
+});
+
 test("daemon returns standard JSON errors for invalid or oversized bodies", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({

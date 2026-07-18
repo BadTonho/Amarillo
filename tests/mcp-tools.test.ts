@@ -42,6 +42,24 @@ test("validateToolArguments preserves valid argument objects", () => {
   assert.equal(validateToolArguments("create_instance", args), args);
 });
 
+test("validateToolArguments enforces privileged payload and numeric bounds", () => {
+  assert.throws(
+    () => validateToolArguments("run_code", {
+      sessionId: "session-1",
+      code: "x".repeat(256 * 1024 + 1)
+    }),
+    /exceeds 262144 characters/
+  );
+  assert.throws(
+    () => validateToolArguments("get_descendants", {
+      sessionId: "session-1",
+      path: "game.Workspace",
+      maxDepth: 11
+    }),
+    /exceeds the maximum/
+  );
+});
+
 test("run_code tool is documented as privileged", () => {
   const tool = TOOL_DEFINITIONS.find((candidate) => candidate.name === "run_code");
   assert.ok(tool);

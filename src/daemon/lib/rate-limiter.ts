@@ -34,7 +34,9 @@ class RateLimiter {
     this.entries = new Map();
     this.cleanupTimer = null;
 
-    const cleanupIntervalMs = Number(options.cleanupIntervalMs) > 0 ? Number(options.cleanupIntervalMs) : 30000;
+    const cleanupIntervalMs = Number(options.cleanupIntervalMs) > 0
+      ? Number(options.cleanupIntervalMs)
+      : Math.min(30000, Math.max(1000, this.windowMs * 2));
     this.cleanupTimer = setInterval(() => this.cleanup(), cleanupIntervalMs);
     if (typeof this.cleanupTimer.unref === "function") {
       this.cleanupTimer.unref();
