@@ -71,21 +71,96 @@ local function request(method, route, body)
 	return requestWithBase(baseUrl(), method, route, body)
 end
 
+local function cloneErrorContext(context)
+	local result = {}
+	if type(context) == "table" then
+		for key, value in pairs(context) do
+			result[key] = value
+		end
+	end
+	result.pluginVersion = PLUGIN_VERSION
+	result.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+	result.studioInstanceId = state.studioInstanceId
+	result.placeId = game.PlaceId
+	result.placeName = game.Name
+	return result
+end
+
+local function generateErrorEventId()
+	local ok, eventId = pcall(function()
+		return HttpService:GenerateGUID(false)
+	end)
+	if ok and eventId then
+		return eventId
+	end
+	return string.format("%s-%s", tostring(os.time()), tostring(now()))
+end
+
+local function captureErrorStack(message)
+	local stack = nil
+	pcall(function()
+		if debug and debug.traceback then
+			stack = debug.traceback(tostring(message), 3)
+		end
+	end)
+	return stack
+end
+
+local function enqueuePluginError(payload)
+	state.pendingErrorReports = state.pendingErrorReports or {}
+	table.insert(state.pendingErrorReports, payload)
+	while #state.pendingErrorReports > ERROR_REPORT_QUEUE_LIMIT do
+		table.remove(state.pendingErrorReports, 1)
+	end
+end
+
+local function sendPluginError(payload)
+	local callOk, requestOk, response = pcall(function()
+		return request("POST", "/errors/add", payload)
+	end)
+	return callOk and requestOk == true and type(response) == "table" and response.ok == true
+end
+
+local function flushPluginErrorReports(force)
+	if not state.pendingErrorReports or #state.pendingErrorReports == 0 then
+		return
+	end
+	if not state.sessionId or not state.sessionToken then
+		return
+	end
+	local currentTime = now()
+	if not force and currentTime - (state.lastErrorReportFlushAt or 0) < ERROR_REPORT_RETRY_SECONDS then
+		return
+	end
+	state.lastErrorReportFlushAt = currentTime
+	local pending = state.pendingErrorReports
+	state.pendingErrorReports = {}
+	for _, payload in ipairs(pending) do
+		if not sendPluginError(payload) then
+			enqueuePluginError(payload)
+		end
+	end
+end
+
 local function reportPluginError(message, code, context, severity)
 	if not message or message == "" then
 		return
 	end
-	pcall(function()
-		request("POST", "/errors/add", {
-			component = "plugin",
-			severity = severity or "error",
-			code = code or "PLUGIN",
-			message = tostring(message),
-			sessionId = state.sessionId,
-			projectId = state.selectedProjectId,
-			context = context
-		})
-	end)
+	local normalizedMessage = tostring(message)
+	local payload = {
+		component = "plugin",
+		severity = severity or "error",
+		code = code or "PLUGIN",
+		eventId = generateErrorEventId(),
+		message = normalizedMessage,
+		sessionId = state.sessionId,
+		projectId = state.selectedProjectId,
+		context = cloneErrorContext(context),
+		stack = captureErrorStack(normalizedMessage)
+	}
+	if not sendPluginError(payload) then
+		enqueuePluginError(payload)
+	end
 end
 
 -- OPT-005: Send pre-serialized JSON body to avoid double JSONEncode

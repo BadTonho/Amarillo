@@ -10,6 +10,7 @@ export interface DiagnosticErrorEntry {
   component: string;
   severity: DiagnosticSeverity;
   code: string | null;
+  eventId: string | null;
   message: string;
   file: string | null;
   line: number | null;

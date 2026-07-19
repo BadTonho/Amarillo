@@ -51,6 +51,17 @@ test("generated Roblox plugin is synchronized with plugin-src modules", () => {
   assert.equal(pluginSource, generatePluginSource());
 });
 
+test("Roblox plugin enriches and retries structured error reports", () => {
+  assert.match(pluginSource, /local ERROR_REPORT_RETRY_SECONDS = 5\.0/);
+  assert.match(pluginSource, /local ERROR_REPORT_QUEUE_LIMIT = 100/);
+  assert.match(pluginSource, /pendingErrorReports = \{\}/);
+  assert.match(pluginSource, /eventId = generateErrorEventId\(\)/);
+  assert.match(pluginSource, /stack = captureErrorStack\(normalizedMessage\)/);
+  assert.match(pluginSource, /local function flushPluginErrorReports\(force\)/);
+  assert.match(pluginSource, /pluginVersion = PLUGIN_VERSION/);
+  assert.match(pluginSource, /studioInstanceId = state\.studioInstanceId/);
+});
+
 test("Roblox plugin classifies Script snapshots by RunContext", () => {
   const helperStart = pluginSource.indexOf("local function scriptFileKind(instance)");
   const localScriptCheck = pluginSource.indexOf("instance:IsA(\"LocalScript\")", helperStart);

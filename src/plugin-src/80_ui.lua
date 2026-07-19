@@ -39,6 +39,7 @@ end
 local function applyAcceptedSession(response, truthSource)
 	state.sessionId = response.session and response.session.id or nil
 	state.sessionToken = response.session and response.session.sessionToken or nil
+	flushPluginErrorReports(true)
 	state.project = response.project
 	state.projectSelectionReason = response.session and response.session.projectSelectionReason or nil
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
@@ -106,6 +107,10 @@ local function acceptPendingConnection(truthSource)
 		end
 		updateStatus("connection error")
 		appendLog("Connection failed: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-CONNECTION", {
+			route = "/connection/accept",
+			truthSource = truthSource
+		}, "warning")
 		return
 	end
 
@@ -130,6 +135,9 @@ local function connectSession()
 	if not healthOk then
 		resetSessionState("daemon offline")
 		appendLog("Connection failed: " .. tostring(health))
+		reportPluginError(health, "PLUGIN-CONNECTION", {
+			route = "/health"
+		}, "warning")
 		return
 	end
 	if tonumber(health.projectCount or 0) == 0 then
@@ -154,6 +162,11 @@ local function declinePendingConnection()
 			studioInstanceId = state.studioInstanceId
 		})
 		appendLog(ok and "Connection declined in Roblox Studio." or ("Failed to decline connection: " .. tostring(response)))
+		if not ok then
+			reportPluginError(response, "PLUGIN-CONNECTION", {
+				route = "/connection/decline"
+			}, "warning")
+		end
 	end
 	state.connectionOffer = nil
 	hideConnectionPrompt()
@@ -253,6 +266,10 @@ local function fetchAndShowDiff(truthSource)
 		appendLog("Create the place project in the VS Code sidebar before syncing this place.")
 	else
 		appendLog("Failed to calculate diff. Proceeding without preview.")
+		reportPluginError(response or "Connection diff failed.", "PLUGIN-DIFF", {
+			route = "/connection/diff",
+			truthSource = truthSource
+		}, "warning")
 		acceptPendingConnection(truthSource)
 	end
 end
@@ -301,6 +318,11 @@ local function manualPull()
 	end
 	local ok, response = request("POST", "/session/" .. state.sessionId .. "/pull", {})
 	appendLog(ok and "Receiving files from PC..." or ("Receive from PC failed: " .. tostring(response)))
+	if not ok then
+		reportPluginError(response, "PLUGIN-PULL", {
+			route = "/session/pull"
+		}, "error")
+	end
 end
 
 local function manualPush()
@@ -328,6 +350,9 @@ local function manualRunCode()
 		end
 	else
 		appendLog("Failed to execute Luau: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-EXEC", {
+			route = "/session/exec"
+		}, "error")
 	end
 end
 
@@ -342,6 +367,9 @@ local function manualSelection()
 		appendLog("Selection loaded into the inspection area.")
 	else
 		appendLog("Failed to load selection: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SELECTION", {
+			route = "/session/selection"
+		}, "warning")
 	end
 end
 
@@ -354,6 +382,12 @@ local function sendPlaytest(mode)
 		mode = mode
 	})
 	appendLog(ok and ("Playtest " .. mode .. " requested.") or ("Playtest failed: " .. tostring(response)))
+	if not ok then
+		reportPluginError(response, "PLUGIN-PLAYTEST", {
+			route = "/session/playtest",
+			mode = mode
+		}, "warning")
+	end
 end
 
 local function pollCommands()
@@ -364,6 +398,10 @@ local function pollCommands()
 	if not ok then
 		updateStatus("daemon offline")
 		appendLog("Polling failed: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-POLL", {
+			route = "/studio/poll",
+			source = "manual"
+		}, "warning")
 		return
 	end
 	updateStatus("connected")
@@ -614,6 +652,9 @@ local function openSettingsView()
 		state.availableProjects = {}
 		renderProjectList()
 		appendLog("Failed to load projects: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-PROJECTS", {
+			route = "/projects"
+		}, "warning")
 		setTextIfPresent(state.ui.settingsProjectsHint, "Could not load projects from the daemon.")
 	end
 	updateEndpointSummary()
