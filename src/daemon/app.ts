@@ -45,8 +45,7 @@ const {
   resolveProjectSelectionForPlace,
   validateProjectSnapshotMounts,
   validateProjectTreeFiles,
-  writeStudioProjectState,
-  writeStudioProjectStateAsync
+  writeStudioProjectState
 } = require("./project");
 const { ErrorTracker } = require("./lib/error-tracker");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
@@ -99,7 +98,6 @@ const {
 const {
   createMcpShieldState,
   listTools,
-  mcpShieldSummary,
   mcpToolResultToHttpPayload
 } = require("./mcp-shield");
 const {
@@ -883,13 +881,6 @@ function collectFilesRecursive(dirPath, results = []) {
     }
   }
   return results;
-}
-
-function recentTimestamp(entries = []) {
-  return entries
-    .map((entry) => Date.parse(entry.timestamp || entry.at || entry.createdAt || ""))
-    .filter((timestamp) => Number.isFinite(timestamp))
-    .sort((left, right) => right - left)[0] || null;
 }
 
 function isInitialStudioSyncPending(session) {
@@ -3969,169 +3960,14 @@ class PluginRobloxApp {
 
   scheduleStudioSnapshotWrite(session: RuntimeSession, reason, writeNow) {
     return this.studioSnapshotWriter.schedule(session, reason, writeNow);
-
-    const sessionId = session.id;
-    const delayMs = writeNow ? 0 : 300;
-    const existing = this.pendingStudioWrites.get(sessionId);
-
-    if (existing) {
-      if (existing.timer) {
-        clearTimeout(existing.timer);
-      }
-      existing.reason = reason;
-      existing.snapshotHash = session.lastStudioHash || null;
-      existing.updatedAt = Date.now();
-      existing.timer = setTimeout(() => {
-        void this.flushStudioWrite(sessionId);
-      }, delayMs);
-      if (typeof existing.timer.unref === "function") {
-        existing.timer.unref();
-      }
-      logSync("disk_write_coalesced", {
-        sessionId,
-        reason,
-        snapshotHash: existing.snapshotHash,
-        delayMs
-      });
-      return existing.promise;
-    }
-
-    let resolveWrite: () => void = () => {};
-    const job: PendingStudioWrite = {
-      sessionId,
-      reason,
-      snapshotHash: session.lastStudioHash || null,
-      queuedAt: Date.now(),
-      updatedAt: Date.now(),
-      timer: null,
-      running: false,
-      promise: new Promise<void>((resolve) => {
-        resolveWrite = resolve;
-      }),
-      resolve: resolveWrite
-    };
-
-    job.timer = setTimeout(() => {
-      void this.flushStudioWrite(sessionId);
-    }, delayMs);
-    if (typeof job.timer.unref === "function") {
-      job.timer.unref();
-    }
-    this.pendingStudioWrites.set(sessionId, job);
-    logSync("disk_write_scheduled", {
-      sessionId,
-      reason,
-      snapshotHash: job.snapshotHash,
-      delayMs
-    });
-    return job.promise;
   }
 
   async flushStudioWrite(sessionId) {
     return this.studioSnapshotWriter.flush(sessionId);
-
-    const job = this.pendingStudioWrites.get(sessionId);
-    if (!job) {
-      return Promise.resolve();
-    }
-    if (job.running) {
-      return job.promise;
-    }
-    job.running = true;
-    if (job.timer) {
-      clearTimeout(job.timer);
-      job.timer = null;
-    }
-
-    const session = this.sessions.get(sessionId);
-    const reason = job.reason;
-    try {
-      const project = session ? this.getProjectById(session.projectId) : null;
-      if (!session || !project || !session.lastStudioSnapshot) {
-        logSync("disk_write_skipped", {
-          sessionId,
-          reason: !session ? "no_session" : (project ? "no_snapshot" : "no_project"),
-          requestedReason: reason
-        });
-        return job.promise;
-      }
-
-      const startedAt = Date.now();
-      logSync("disk_write_start", {
-        sessionId,
-        reason,
-        snapshotHash: session.lastStudioHash
-      });
-      this.lastDiskWriteTime = Date.now();
-      let changes = [];
-      try {
-        changes = await writeStudioProjectStateAsync(project, session.lastStudioSnapshot, {
-          onFileChange: (change) => {
-            this.recordActivity(change, {
-              direction: "studio_to_pc",
-              source: "studio_snapshot",
-              reason,
-              sessionId
-            });
-          }
-        });
-      } catch (error) {
-        this.markSyncDegraded(session, `Failed to write Studio snapshot to disk: ${error.message}`, {
-          code: "DISK-WRITE",
-          observedHash: session.lastStudioHash || null
-        });
-        this.recordError({
-          component: "daemon",
-          severity: "error",
-          code: "DISK-WRITE",
-          message: error.message,
-          sessionId,
-          projectId: project.id,
-          context: { reason },
-          stack: error.stack
-        });
-        return job.promise;
-      }
-
-      session.lastAppliedAt = new Date().toISOString();
-      if (reason === "manual" || reason === INITIAL_STUDIO_SYNC_REASON) {
-        this.markSyncVerified(session, session.lastStudioHash);
-      }
-      if (reason === INITIAL_STUDIO_SYNC_REASON || (session.connectionState !== "ready" && session.truthSource === "studio")) {
-        this.markSessionReady(session, reason);
-      }
-      logSync("disk_write_complete", {
-        sessionId,
-        timestamp: session.lastAppliedAt,
-        durationMs: Date.now() - startedAt,
-        changedFiles: changes.length
-      });
-    } finally {
-      if (this.pendingStudioWrites.get(sessionId) === job) {
-        this.pendingStudioWrites.delete(sessionId);
-      }
-      job.resolve();
-    }
-
-    return job.promise;
   }
 
   async drainPendingStudioWrites(timeoutMs = 5000) {
     return this.studioSnapshotWriter.drain(timeoutMs);
-
-    const jobs = Array.from(this.pendingStudioWrites.values());
-    if (jobs.length === 0) {
-      return;
-    }
-
-    for (const job of jobs) {
-      void this.flushStudioWrite(job.sessionId);
-    }
-
-    await Promise.race([
-      Promise.all(jobs.map((job) => job.promise)),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
-    ]);
   }
 
   updateStudioSnapshot(sessionId, snapshot, reason = "auto", options: { requestByteLength?: number | null } = {}) {
@@ -4464,127 +4300,6 @@ class PluginRobloxApp {
 
   doctorReport() {
     return this.doctorService.report();
-
-    const sessions = Array.from(this.sessions.values()).map((session) => this.sessionSummary(session));
-    const versions = this.versionPayload();
-    const mcp = mcpShieldSummary(this);
-    const errors = this.errorTracker.summary();
-    const recentUnresolvedErrors = this.errorTracker.query({ resolved: false, limit: 5 });
-    const activity = this.activityLog.summary();
-    const mcpAudit = this.mcpAuditLog.summary();
-    const blockedReasons = [];
-    const warnings = [];
-
-    if (this.projects.length === 0) {
-      blockedReasons.push("No enabled .project.json was found in this workspace.");
-    }
-    if (versions.extension.state === "blocked") {
-      blockedReasons.push(versions.extension.message);
-    }
-    for (const session of sessions) {
-      if (isInitialStudioSyncPending(session)) {
-        warnings.push(`${session.projectName}: initial Studio sync is still accepted but no Studio snapshot has been applied yet.`);
-      }
-      if (session.requiresPluginUpdate) {
-        blockedReasons.push(`${session.projectName}: ${session.versionMessage}`);
-      }
-      if (session.requiresManualResync) {
-        blockedReasons.push(`${session.projectName}: ${session.lastSyncError || "Sync degraded."}`);
-      }
-      if (session.studioContactState === "stale" || session.studioContactState === "critical") {
-        warnings.push(`${session.projectName}: ${session.studioContactMessage}`);
-      }
-    }
-
-    if (sessions.length === 0) {
-      warnings.push("No active Studio session is connected.");
-    }
-    if (mcp.state !== "ready") {
-      warnings.push(`MCP is ${mcp.state}: ${mcp.message}`);
-    }
-    if (errors.unresolved > 0 && blockedReasons.length === 0) {
-      warnings.push(`${errors.unresolved} unresolved diagnostic error(s) are recorded.`);
-    }
-
-    const status = blockedReasons.length > 0
-      ? "blocked"
-      : (warnings.length > 0 ? "warning" : "ok");
-    const recommendations = [];
-    if (sessions.some((session) => session.requiresPluginUpdate)) {
-      recommendations.push("Run Amarillo: Install Roblox Studio Plugin, then reload the plugin in Roblox Studio.");
-    }
-    if (sessions.some((session) => session.requiresManualResync)) {
-      recommendations.push("Run a manual resync after checking the sync paused message.");
-    }
-    if (this.projects.length === 0) {
-      recommendations.push("Create or select a valid .project.json for this workspace.");
-    }
-    if (mcp.state !== "ready") {
-      recommendations.push("Run Amarillo: Configure MCP for Workspace and reopen the AI/MCP client session.");
-    }
-    if (sessions.length === 0) {
-      recommendations.push("Open Roblox Studio and connect the Amarillo plugin.");
-    }
-    if (recommendations.length === 0) {
-      recommendations.push("No action required.");
-    }
-
-    return {
-      ok: status !== "blocked",
-      status,
-      generatedAt: new Date().toISOString(),
-      summary: {
-        message: status === "ok"
-          ? "Amarillo Doctor did not find blocking issues."
-          : (status === "blocked" ? "Amarillo Doctor found blocking issues." : "Amarillo Doctor found warnings."),
-        blockedReasons,
-        warnings,
-        projectCount: this.projects.length,
-        sessionCount: sessions.length,
-        syncBlockedSessionCount: sessions.filter((session) => session.syncBlockedReason).length,
-        unresolvedErrorCount: errors.unresolved,
-        initialSyncStuckSessionCount: sessions.filter(isInitialStudioSyncPending).length,
-        mcpAuditCount: mcpAudit.total
-      },
-      versions,
-      compatibility: {
-        protocolVersion: AMARILLO_PROTOCOL_VERSION,
-        extensionState: versions.extension.state,
-        blockedSessionIds: sessions.filter((session) => session.requiresPluginUpdate).map((session) => session.id)
-      },
-      workspace: {
-        root: this.workspaceRoot,
-        host: this.host,
-        port: this.port,
-        projectCount: this.projects.length,
-        defaultProjectId: this.defaultProjectId,
-        refreshedAt: this.lastWorkspaceRefresh
-      },
-      sessions,
-      sync: {
-        autoSyncToStudio: this.autoSyncToStudio,
-        syncTargets: this.syncTargets,
-        lastDiskWriteTime: this.lastDiskWriteTime,
-        degradedSessionIds: sessions.filter((session) => session.requiresManualResync).map((session) => session.id),
-        blockedSessionIds: sessions.filter((session) => session.syncBlockedReason).map((session) => session.id)
-      },
-      mcp,
-      errors: {
-        ...errors,
-        recentUnresolved: recentUnresolvedErrors,
-        lastErrorAt: recentTimestamp(errors.recent)
-      },
-      activity: {
-        ...activity,
-        lastActivityAt: recentTimestamp(activity.recent)
-      },
-      mcpAudit: {
-        ...mcpAudit,
-        lastToolAt: mcpAudit.lastTool?.timestamp || null,
-        lastFailureOrDeclineAt: mcpAudit.lastFailureOrDecline?.timestamp || null
-      },
-      recommendations
-    };
   }
 
   calculateDiff(studioSnapshot, pcSnapshot, truthSource) {

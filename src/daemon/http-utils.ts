@@ -2,6 +2,7 @@
 
 import type { IncomingHttpHeaders, IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
+import { brotliCompressSync, gzipSync } from "node:zlib";
 
 const DEFAULT_MAX_JSON_BODY_BYTES = 1024 * 1024;
 const STUDIO_SYNC_MAX_JSON_BODY_BYTES = 64 * 1024 * 1024;
@@ -12,6 +13,7 @@ const SESSION_TOKEN_HEADER = "x-amarillo-session-token";
 const SESSION_TOKEN_HEADER_DISPLAY = "X-Amarillo-Session-Token";
 const MCP_AUTH_HELP_PATH = "/mcp/auth-help";
 const JSON_BODY_BYTE_LENGTH = Symbol("amarilloJsonBodyByteLength");
+const JSON_COMPRESSION_MIN_BYTES = 1024;
 
 function authHelpPayload() {
   return {
@@ -100,9 +102,49 @@ function corsHeaders(request: IncomingMessage | null = null): OutgoingHttpHeader
   return headers;
 }
 
+function appendVaryHeader(headers: OutgoingHttpHeaders, value: string): void {
+  const existing = typeof headers.Vary === "string"
+    ? headers.Vary.split(",").map((item) => item.trim()).filter(Boolean)
+    : [];
+  if (!existing.some((item) => item.toLowerCase() === value.toLowerCase())) {
+    existing.push(value);
+  }
+  headers.Vary = existing.join(", ");
+}
+
+function selectedJsonEncoding(request: IncomingMessage | null, bodyByteLength: number): "br" | "gzip" | null {
+  if (!request || bodyByteLength < JSON_COMPRESSION_MIN_BYTES) {
+    return null;
+  }
+  const rawValue = request.headers?.["accept-encoding"];
+  const accepted = (Array.isArray(rawValue) ? rawValue.join(",") : rawValue || "")
+    .toLowerCase()
+    .split(",")
+    .map((item) => item.trim().split(";", 1)[0]);
+  if (accepted.includes("br")) {
+    return "br";
+  }
+  if (accepted.includes("gzip") || accepted.includes("*")) {
+    return "gzip";
+  }
+  return null;
+}
+
 function jsonResponse(response: ServerResponse, statusCode: number, payload: unknown, request: IncomingMessage | null = null): void {
-  response.writeHead(statusCode, corsHeaders(request));
-  response.end(JSON.stringify(payload));
+  const serialized = Buffer.from(JSON.stringify(payload), "utf8");
+  const headers = corsHeaders(request);
+  const encoding = selectedJsonEncoding(request, serialized.length);
+  const body = encoding === "br"
+    ? brotliCompressSync(serialized)
+    : (encoding === "gzip" ? gzipSync(serialized) : serialized);
+
+  headers["Content-Length"] = body.length;
+  if (encoding) {
+    headers["Content-Encoding"] = encoding;
+    appendVaryHeader(headers, "Accept-Encoding");
+  }
+  response.writeHead(statusCode, headers);
+  response.end(body);
 }
 
 function errorResponse(response: ServerResponse, error: unknown, request: IncomingMessage | null = null): void {
@@ -206,6 +248,7 @@ export {
   BRIDGE_TOKEN_HEADER_DISPLAY,
   DEFAULT_MAX_JSON_BODY_BYTES,
   HttpError,
+  JSON_COMPRESSION_MIN_BYTES,
   MCP_AUTH_HELP_PATH,
   SESSION_TOKEN_HEADER,
   SESSION_TOKEN_HEADER_DISPLAY,
