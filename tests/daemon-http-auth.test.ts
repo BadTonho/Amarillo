@@ -4,8 +4,10 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { brotliDecompressSync, gunzipSync } = require("node:zlib");
 const { PluginRobloxApp } = require("../src/daemon/app");
 const { readLocalProjectState } = require("../src/daemon/project");
+const { jsonResponse } = require("../src/daemon/http-utils");
 const { AMARILLO_PROTOCOL_VERSION, MIN_PLUGIN_VERSION } = require("../src/daemon/version");
 const {
   createTempWorkspace,
@@ -17,6 +19,69 @@ const {
   findSnapshotNodeByPath
 } = require("./helpers/daemon-workspace");
 
+test("daemon compresses large JSON responses when the client supports gzip", () => {
+  let statusCode = 0;
+  let headers: Record<string, string> = {};
+  let responseBody = null;
+  const response = {
+    writeHead(status, nextHeaders) {
+      statusCode = status;
+      headers = nextHeaders;
+    },
+    end(body) {
+      responseBody = body;
+    }
+  };
+
+  jsonResponse(response, 200, { value: "x".repeat(4096) }, {
+    headers: { "accept-encoding": "gzip" }
+  });
+
+  assert.equal(statusCode, 200);
+  assert.equal(headers["Content-Encoding"], "gzip");
+  assert.match(headers.Vary, /Accept-Encoding/);
+  assert.equal(JSON.parse(gunzipSync(responseBody).toString("utf8")).value.length, 4096);
+});
+
+test("daemon prefers Brotli when the client supports it", () => {
+  let headers: Record<string, string> = {};
+  let responseBody = null;
+  const response = {
+    writeHead(_status, nextHeaders) {
+      headers = nextHeaders;
+    },
+    end(body) {
+      responseBody = body;
+    }
+  };
+
+  jsonResponse(response, 200, { value: "x".repeat(4096) }, {
+    headers: { "accept-encoding": "gzip, br" }
+  });
+
+  assert.equal(headers["Content-Encoding"], "br");
+  assert.equal(JSON.parse(brotliDecompressSync(responseBody).toString("utf8")).value.length, 4096);
+});
+
+test("daemon keeps small JSON responses uncompressed", () => {
+  let headers: Record<string, string> = {};
+  let responseBody = null;
+  const response = {
+    writeHead(_status, nextHeaders) {
+      headers = nextHeaders;
+    },
+    end(body) {
+      responseBody = body;
+    }
+  };
+
+  jsonResponse(response, 200, { ok: true }, {
+    headers: { "accept-encoding": "gzip" }
+  });
+
+  assert.equal(headers["Content-Encoding"], undefined);
+  assert.deepEqual(JSON.parse(responseBody.toString("utf8")), { ok: true });
+});
 
 test("daemon JSON responses disable network caching", async () => {
   const workspace = createWorkspaceWithProject();

@@ -16,13 +16,16 @@
     "diagnose:mcp": "npm run build:scripts && node scripts/diagnose-mcp.js",
     "clean:generated": "npm run build:scripts && node scripts/clean-generated.js",
     "check:sources": "npm run build:scripts && node scripts/check-sources.js",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "typecheck:runtime": "tsc -p tsconfig.daemon.json --noEmit",
     "typecheck:extension": "tsc -p tsconfig.extension.json --noEmit",
     "typecheck:connection": "tsc -p tsconfig.connection.json",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "typecheck": "npm run typecheck:runtime && npm run typecheck:extension && npm run typecheck:connection && npm run typecheck:scripts && npm run typecheck:tests",
-    "check": "npm run build:scripts && npm run build && npm run build:tests && npm run check:sources && npm run typecheck && node scripts/check-js-syntax.js",
+    "check": "npm run build:scripts && npm run build && npm run build:tests && npm run check:sources && npm run typecheck && npm run lint && node scripts/check-js-syntax.js",
     "start": "npm run build && node src/daemon/index.js",
     "start:workspace": "npm run build && node src/daemon/index.js --workspace .",
     "package:vsix": "npm run version:sync && npm run build && node scripts/package-vsix.js",
@@ -33,6 +36,7 @@
     "node": ">=22.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "@types/node": "^22.19.18",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3"
