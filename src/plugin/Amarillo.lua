@@ -33,6 +33,8 @@ local INITIAL_STUDIO_SYNC_RETRY_SECONDS = 2.0
 local INITIAL_STUDIO_SYNC_LOG_SECONDS = 10.0
 local SAFE_SET_ERROR_DEDUPE_SECONDS = 30.0
 local SAFE_SET_FAILURE_REPORT_LIMIT = 10
+local ERROR_REPORT_RETRY_SECONDS = 5.0
+local ERROR_REPORT_QUEUE_LIMIT = 100
 
 local state = {
 	host = DEFAULT_HOST,
@@ -67,6 +69,8 @@ local state = {
 	lastActivityAt = 0,
 	isApplyingRemote = false,
 	logs = {},
+	pendingErrorReports = {},
+	lastErrorReportFlushAt = 0,
 	treeCache = nil,
 	pendingScriptPatches = {},
 	openDocumentCache = {},
@@ -687,21 +691,96 @@ local function request(method, route, body)
 	return requestWithBase(baseUrl(), method, route, body)
 end
 
+local function cloneErrorContext(context)
+	local result = {}
+	if type(context) == "table" then
+		for key, value in pairs(context) do
+			result[key] = value
+		end
+	end
+	result.pluginVersion = PLUGIN_VERSION
+	result.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
+	result.studioInstanceId = state.studioInstanceId
+	result.placeId = game.PlaceId
+	result.placeName = game.Name
+	return result
+end
+
+local function generateErrorEventId()
+	local ok, eventId = pcall(function()
+		return HttpService:GenerateGUID(false)
+	end)
+	if ok and eventId then
+		return eventId
+	end
+	return string.format("%s-%s", tostring(os.time()), tostring(now()))
+end
+
+local function captureErrorStack(message)
+	local stack = nil
+	pcall(function()
+		if debug and debug.traceback then
+			stack = debug.traceback(tostring(message), 3)
+		end
+	end)
+	return stack
+end
+
+local function enqueuePluginError(payload)
+	state.pendingErrorReports = state.pendingErrorReports or {}
+	table.insert(state.pendingErrorReports, payload)
+	while #state.pendingErrorReports > ERROR_REPORT_QUEUE_LIMIT do
+		table.remove(state.pendingErrorReports, 1)
+	end
+end
+
+local function sendPluginError(payload)
+	local callOk, requestOk, response = pcall(function()
+		return request("POST", "/errors/add", payload)
+	end)
+	return callOk and requestOk == true and type(response) == "table" and response.ok == true
+end
+
+local function flushPluginErrorReports(force)
+	if not state.pendingErrorReports or #state.pendingErrorReports == 0 then
+		return
+	end
+	if not state.sessionId or not state.sessionToken then
+		return
+	end
+	local currentTime = now()
+	if not force and currentTime - (state.lastErrorReportFlushAt or 0) < ERROR_REPORT_RETRY_SECONDS then
+		return
+	end
+	state.lastErrorReportFlushAt = currentTime
+	local pending = state.pendingErrorReports
+	state.pendingErrorReports = {}
+	for _, payload in ipairs(pending) do
+		if not sendPluginError(payload) then
+			enqueuePluginError(payload)
+		end
+	end
+end
+
 local function reportPluginError(message, code, context, severity)
 	if not message or message == "" then
 		return
 	end
-	pcall(function()
-		request("POST", "/errors/add", {
-			component = "plugin",
-			severity = severity or "error",
-			code = code or "PLUGIN",
-			message = tostring(message),
-			sessionId = state.sessionId,
-			projectId = state.selectedProjectId,
-			context = context
-		})
-	end)
+	local normalizedMessage = tostring(message)
+	local payload = {
+		component = "plugin",
+		severity = severity or "error",
+		code = code or "PLUGIN",
+		eventId = generateErrorEventId(),
+		message = normalizedMessage,
+		sessionId = state.sessionId,
+		projectId = state.selectedProjectId,
+		context = cloneErrorContext(context),
+		stack = captureErrorStack(normalizedMessage)
+	}
+	if not sendPluginError(payload) then
+		enqueuePluginError(payload)
+	end
 end
 
 -- OPT-005: Send pre-serialized JSON body to avoid double JSONEncode
@@ -1719,6 +1798,10 @@ local function destroyUnexpectedChild(instance, contextLabel)
 			fullName = instance:GetFullName()
 		end)
 		appendLog("Failed to destroy during sync (" .. tostring(contextLabel) .. "): " .. tostring(fullName) .. " -> " .. tostring(err))
+		reportPluginError(err, "PLUGIN-SYNC-DESTROY", {
+			contextLabel = contextLabel,
+			instance = fullName
+		}, "warning")
 	end
 	return ok
 end
@@ -2460,6 +2543,10 @@ local function postCommandResult(commandId, okValue, payload)
 	local ok, response = request("POST", "/studio/complete", body)
 	if not ok then
 		appendLog("Failed to confirm command with daemon: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-COMMAND-REPORT", {
+			route = "/studio/complete",
+			commandId = commandId
+		}, "error")
 	end
 	return ok, response
 end
@@ -2980,6 +3067,10 @@ local function handleCommand(command)
 					timestamp = entry.timestamp
 				})
 			end
+		elseif not ok then
+			reportPluginError(logHistory, "PLUGIN-OUTPUT-LOG", {
+				source = "LogService:GetLogHistory"
+			}, "warning")
 		end
 		postCommandResult(command.id, true, {
 			entries = entries,
@@ -3168,6 +3259,12 @@ local function syncSnapshot(reason)
 
 	local snapshot = snapshotCurrentProject()
 	if not snapshot then
+		if reason ~= "initial_accept" then
+			reportPluginError("Snapshot unavailable.", "PLUGIN-SNAPSHOT", {
+				reason = reason or "auto",
+				route = "/studio/snapshot"
+			}, "error")
+		end
 		return false, "Snapshot unavailable."
 	end
 	-- OPT-005: Build the full body JSON once, reuse for comparison and HTTP send
@@ -3186,6 +3283,12 @@ local function syncSnapshot(reason)
 	state.treeCache = snapshot
 	local ok, response = requestRawBody("POST", "/studio/snapshot", bodyJson)
 	appendLog(ok and ("Sending snapshot: " .. (reason or "auto")) or ("Failed to send snapshot: " .. tostring(response)))
+	if not ok and reason ~= "initial_accept" then
+		reportPluginError(response, "PLUGIN-SNAPSHOT", {
+			reason = reason or "auto",
+			route = "/studio/snapshot"
+		}, "error")
+	end
 	return ok, response
 end
 
@@ -3833,6 +3936,7 @@ end
 local function applyAcceptedSession(response, truthSource)
 	state.sessionId = response.session and response.session.id or nil
 	state.sessionToken = response.session and response.session.sessionToken or nil
+	flushPluginErrorReports(true)
 	state.project = response.project
 	state.projectSelectionReason = response.session and response.session.projectSelectionReason or nil
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
@@ -3900,6 +4004,10 @@ local function acceptPendingConnection(truthSource)
 		end
 		updateStatus("connection error")
 		appendLog("Connection failed: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-CONNECTION", {
+			route = "/connection/accept",
+			truthSource = truthSource
+		}, "warning")
 		return
 	end
 
@@ -3924,6 +4032,9 @@ local function connectSession()
 	if not healthOk then
 		resetSessionState("daemon offline")
 		appendLog("Connection failed: " .. tostring(health))
+		reportPluginError(health, "PLUGIN-CONNECTION", {
+			route = "/health"
+		}, "warning")
 		return
 	end
 	if tonumber(health.projectCount or 0) == 0 then
@@ -3948,6 +4059,11 @@ local function declinePendingConnection()
 			studioInstanceId = state.studioInstanceId
 		})
 		appendLog(ok and "Connection declined in Roblox Studio." or ("Failed to decline connection: " .. tostring(response)))
+		if not ok then
+			reportPluginError(response, "PLUGIN-CONNECTION", {
+				route = "/connection/decline"
+			}, "warning")
+		end
 	end
 	state.connectionOffer = nil
 	hideConnectionPrompt()
@@ -4047,6 +4163,10 @@ local function fetchAndShowDiff(truthSource)
 		appendLog("Create the place project in the VS Code sidebar before syncing this place.")
 	else
 		appendLog("Failed to calculate diff. Proceeding without preview.")
+		reportPluginError(response or "Connection diff failed.", "PLUGIN-DIFF", {
+			route = "/connection/diff",
+			truthSource = truthSource
+		}, "warning")
 		acceptPendingConnection(truthSource)
 	end
 end
@@ -4095,6 +4215,11 @@ local function manualPull()
 	end
 	local ok, response = request("POST", "/session/" .. state.sessionId .. "/pull", {})
 	appendLog(ok and "Receiving files from PC..." or ("Receive from PC failed: " .. tostring(response)))
+	if not ok then
+		reportPluginError(response, "PLUGIN-PULL", {
+			route = "/session/pull"
+		}, "error")
+	end
 end
 
 local function manualPush()
@@ -4122,6 +4247,9 @@ local function manualRunCode()
 		end
 	else
 		appendLog("Failed to execute Luau: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-EXEC", {
+			route = "/session/exec"
+		}, "error")
 	end
 end
 
@@ -4136,6 +4264,9 @@ local function manualSelection()
 		appendLog("Selection loaded into the inspection area.")
 	else
 		appendLog("Failed to load selection: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SELECTION", {
+			route = "/session/selection"
+		}, "warning")
 	end
 end
 
@@ -4148,6 +4279,12 @@ local function sendPlaytest(mode)
 		mode = mode
 	})
 	appendLog(ok and ("Playtest " .. mode .. " requested.") or ("Playtest failed: " .. tostring(response)))
+	if not ok then
+		reportPluginError(response, "PLUGIN-PLAYTEST", {
+			route = "/session/playtest",
+			mode = mode
+		}, "warning")
+	end
 end
 
 local function pollCommands()
@@ -4158,6 +4295,10 @@ local function pollCommands()
 	if not ok then
 		updateStatus("daemon offline")
 		appendLog("Polling failed: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-POLL", {
+			route = "/studio/poll",
+			source = "manual"
+		}, "warning")
 		return
 	end
 	updateStatus("connected")
@@ -4408,6 +4549,9 @@ local function openSettingsView()
 		state.availableProjects = {}
 		renderProjectList()
 		appendLog("Failed to load projects: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-PROJECTS", {
+			route = "/projects"
+		}, "warning")
 		setTextIfPresent(state.ui.settingsProjectsHint, "Could not load projects from the daemon.")
 	end
 	updateEndpointSummary()
@@ -5268,6 +5412,9 @@ startWatcher = function()
 		state.watchers.connectScriptEditorWatcher()
 	else
 		appendLog("ScriptEditorService unavailable!")
+		reportPluginError("ScriptEditorService unavailable.", "PLUGIN-WATCHER", {
+			source = "ScriptEditorService"
+		}, "warning")
 	end
 
 	appendLog("Optimized watcher started (DescendantAdded/Removing).")
@@ -5317,6 +5464,7 @@ task.spawn(function()
 			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId .. "&" .. pluginVersionQuery())
 			if reqOk then
 				state.watchers.consecutivePollFailures = 0
+				flushPluginErrorReports(false)
 				applySyncSummary(reqResponse.session)
 				if state.syncState ~= "degraded" then
 					if state.awaitingInitialSync then
@@ -5356,6 +5504,12 @@ task.spawn(function()
 				state.watchers.consecutivePollFailures = state.watchers.consecutivePollFailures + 1
 				updateStatus("reconnecting (" .. state.watchers.consecutivePollFailures .. ")")
 				appendLog("Connection lost, attempting to reconnect... (" .. state.watchers.consecutivePollFailures .. ")")
+				if state.watchers.consecutivePollFailures == 1 or state.watchers.consecutivePollFailures >= 15 then
+					reportPluginError(reqResponse, "PLUGIN-POLL", {
+						route = "/studio/poll",
+						consecutiveFailures = state.watchers.consecutivePollFailures
+					}, "warning")
+				end
 
 				-- After 15 consecutive failures (~30s), give up and disconnect
 				if state.watchers.consecutivePollFailures >= 15 then
@@ -5397,6 +5551,10 @@ task.spawn(function()
 				end)
 				if not snapOk then
 					appendLog("Auto snapshot sync failed: " .. tostring(snapErr))
+					reportPluginError(snapErr, "PLUGIN-SNAPSHOT", {
+						reason = "auto",
+						route = "/studio/snapshot"
+					}, "error")
 				end
 			end
 		end

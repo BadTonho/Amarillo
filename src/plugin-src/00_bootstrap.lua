@@ -30,6 +30,8 @@ local INITIAL_STUDIO_SYNC_RETRY_SECONDS = 2.0
 local INITIAL_STUDIO_SYNC_LOG_SECONDS = 10.0
 local SAFE_SET_ERROR_DEDUPE_SECONDS = 30.0
 local SAFE_SET_FAILURE_REPORT_LIMIT = 10
+local ERROR_REPORT_RETRY_SECONDS = 5.0
+local ERROR_REPORT_QUEUE_LIMIT = 100
 
 local state = {
 	host = DEFAULT_HOST,
@@ -64,6 +66,8 @@ local state = {
 	lastActivityAt = 0,
 	isApplyingRemote = false,
 	logs = {},
+	pendingErrorReports = {},
+	lastErrorReportFlushAt = 0,
 	treeCache = nil,
 	pendingScriptPatches = {},
 	openDocumentCache = {},

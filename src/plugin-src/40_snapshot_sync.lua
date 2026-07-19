@@ -379,6 +379,10 @@ local function destroyUnexpectedChild(instance, contextLabel)
 			fullName = instance:GetFullName()
 		end)
 		appendLog("Failed to destroy during sync (" .. tostring(contextLabel) .. "): " .. tostring(fullName) .. " -> " .. tostring(err))
+		reportPluginError(err, "PLUGIN-SYNC-DESTROY", {
+			contextLabel = contextLabel,
+			instance = fullName
+		}, "warning")
 	end
 	return ok
 end

@@ -207,6 +207,9 @@ startWatcher = function()
 		state.watchers.connectScriptEditorWatcher()
 	else
 		appendLog("ScriptEditorService unavailable!")
+		reportPluginError("ScriptEditorService unavailable.", "PLUGIN-WATCHER", {
+			source = "ScriptEditorService"
+		}, "warning")
 	end
 
 	appendLog("Optimized watcher started (DescendantAdded/Removing).")
@@ -256,6 +259,7 @@ task.spawn(function()
 			local reqOk, reqResponse = request("GET", "/studio/poll?sessionId=" .. state.sessionId .. "&" .. pluginVersionQuery())
 			if reqOk then
 				state.watchers.consecutivePollFailures = 0
+				flushPluginErrorReports(false)
 				applySyncSummary(reqResponse.session)
 				if state.syncState ~= "degraded" then
 					if state.awaitingInitialSync then
@@ -295,6 +299,12 @@ task.spawn(function()
 				state.watchers.consecutivePollFailures = state.watchers.consecutivePollFailures + 1
 				updateStatus("reconnecting (" .. state.watchers.consecutivePollFailures .. ")")
 				appendLog("Connection lost, attempting to reconnect... (" .. state.watchers.consecutivePollFailures .. ")")
+				if state.watchers.consecutivePollFailures == 1 or state.watchers.consecutivePollFailures >= 15 then
+					reportPluginError(reqResponse, "PLUGIN-POLL", {
+						route = "/studio/poll",
+						consecutiveFailures = state.watchers.consecutivePollFailures
+					}, "warning")
+				end
 
 				-- After 15 consecutive failures (~30s), give up and disconnect
 				if state.watchers.consecutivePollFailures >= 15 then
@@ -336,6 +346,10 @@ task.spawn(function()
 				end)
 				if not snapOk then
 					appendLog("Auto snapshot sync failed: " .. tostring(snapErr))
+					reportPluginError(snapErr, "PLUGIN-SNAPSHOT", {
+						reason = "auto",
+						route = "/studio/snapshot"
+					}, "error")
 				end
 			end
 		end

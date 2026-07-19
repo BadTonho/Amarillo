@@ -1380,6 +1380,7 @@ class PluginRobloxApp {
       component: entry.component || "daemon",
       severity: entry.severity || "error",
       code: entry.code || null,
+      eventId: entry.eventId || null,
       message: entry.message || "Unknown error",
       file: entry.file || null,
       line: entry.line || null,

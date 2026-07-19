@@ -249,6 +249,7 @@ export interface ErrorInput {
   component?: string;
   severity?: string;
   code?: string | null;
+  eventId?: string | null;
   message?: string;
   file?: string | null;
   line?: number | null;

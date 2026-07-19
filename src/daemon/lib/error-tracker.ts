@@ -186,12 +186,22 @@ class ErrorTracker {
    * @returns {object} Created record.
    */
   add(entry) {
+    const eventId = typeof entry.eventId === "string" && entry.eventId.trim().length > 0
+      ? entry.eventId.trim()
+      : null;
+    if (eventId) {
+      const existing = this.entries.find((candidate) => candidate.eventId === eventId);
+      if (existing) {
+        return existing;
+      }
+    }
     const record = {
       id: this._generateId(),
       timestamp: this.nowTimestamp(),
       component: entry.component || "unknown",
       severity: this._normalizeSeverity(entry.severity),
       code: entry.code || null,
+      eventId,
       message: String(entry.message || "Unknown error"),
       file: entry.file || null,
       line: entry.line || null,
@@ -235,6 +245,7 @@ class ErrorTracker {
       component: options.component || "daemon",
       severity: options.severity || "error",
       code: options.code || null,
+      eventId: options.eventId || null,
       message: error.message || String(error),
       stack: error.stack || null,
       file: options.file || null,
@@ -287,7 +298,7 @@ class ErrorTracker {
   clear() {
     this.entries = [];
     if (this.persistOnAdd) {
-      this._persist();
+      this._clearPersisted();
     }
   }
 
@@ -429,19 +440,34 @@ class ErrorTracker {
   _persist() {
     try {
       fs.mkdirSync(this.logRootPath, { recursive: true });
-      const grouped = new Map();
+      const persistedEntries = new Map();
+      const existingFiles = this.collectDailyLogFilePaths();
+      if (fs.existsSync(this.legacyLogFilePath)) {
+        existingFiles.push(this.legacyLogFilePath);
+      }
+      for (const filePath of existingFiles) {
+        try {
+          for (const entry of readEntriesFile(filePath)) {
+            if (entry && entry.id && !persistedEntries.has(entry.id)) {
+              persistedEntries.set(entry.id, entry);
+            }
+          }
+        } catch (error) {
+          this._reportDiagnostic("ERROR-LOG-PERSIST-LOAD", filePath, error);
+        }
+      }
       for (const entry of this.entries) {
+        if (entry && entry.id) {
+          persistedEntries.set(entry.id, entry);
+        }
+      }
+
+      const grouped = new Map();
+      for (const entry of persistedEntries.values()) {
         const day = dateKeyFromTimestamp(entry.timestamp, this.timeZone);
         const bucket = grouped.get(day) || [];
         bucket.push(entry);
         grouped.set(day, bucket);
-      }
-
-      for (const filePath of this.collectDailyLogFilePaths()) {
-        const day = path.basename(path.dirname(filePath));
-        if (!grouped.has(day)) {
-          this._writeEntriesFile(filePath, []);
-        }
       }
 
       if (grouped.size === 0) {
@@ -449,7 +475,25 @@ class ErrorTracker {
       }
 
       for (const [day, entries] of grouped.entries()) {
+        entries.sort((left, right) => Date.parse(right.timestamp || 0) - Date.parse(left.timestamp || 0));
         this._writeEntriesFile(path.join(this.logRootPath, day, this.logFileName), entries);
+      }
+    } catch (error) {
+      this._reportDiagnostic("ERROR-LOG-PERSIST", this.logRootPath, error);
+    }
+  }
+
+  _clearPersisted() {
+    try {
+      const files = this.collectDailyLogFilePaths();
+      if (fs.existsSync(this.legacyLogFilePath)) {
+        files.push(this.legacyLogFilePath);
+      }
+      for (const filePath of files) {
+        this._writeEntriesFile(filePath, []);
+      }
+      if (files.length === 0) {
+        this._writeEntriesFile(this.logFilePath, []);
       }
     } catch (error) {
       this._reportDiagnostic("ERROR-LOG-PERSIST", this.logRootPath, error);

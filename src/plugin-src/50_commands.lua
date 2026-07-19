@@ -19,6 +19,10 @@ local function postCommandResult(commandId, okValue, payload)
 	local ok, response = request("POST", "/studio/complete", body)
 	if not ok then
 		appendLog("Failed to confirm command with daemon: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-COMMAND-REPORT", {
+			route = "/studio/complete",
+			commandId = commandId
+		}, "error")
 	end
 	return ok, response
 end
@@ -539,6 +543,10 @@ local function handleCommand(command)
 					timestamp = entry.timestamp
 				})
 			end
+		elseif not ok then
+			reportPluginError(logHistory, "PLUGIN-OUTPUT-LOG", {
+				source = "LogService:GetLogHistory"
+			}, "warning")
 		end
 		postCommandResult(command.id, true, {
 			entries = entries,

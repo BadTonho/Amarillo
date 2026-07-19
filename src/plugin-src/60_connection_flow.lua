@@ -20,6 +20,12 @@ local function syncSnapshot(reason)
 
 	local snapshot = snapshotCurrentProject()
 	if not snapshot then
+		if reason ~= "initial_accept" then
+			reportPluginError("Snapshot unavailable.", "PLUGIN-SNAPSHOT", {
+				reason = reason or "auto",
+				route = "/studio/snapshot"
+			}, "error")
+		end
 		return false, "Snapshot unavailable."
 	end
 	-- OPT-005: Build the full body JSON once, reuse for comparison and HTTP send
@@ -38,6 +44,12 @@ local function syncSnapshot(reason)
 	state.treeCache = snapshot
 	local ok, response = requestRawBody("POST", "/studio/snapshot", bodyJson)
 	appendLog(ok and ("Sending snapshot: " .. (reason or "auto")) or ("Failed to send snapshot: " .. tostring(response)))
+	if not ok and reason ~= "initial_accept" then
+		reportPluginError(response, "PLUGIN-SNAPSHOT", {
+			reason = reason or "auto",
+			route = "/studio/snapshot"
+		}, "error")
+	end
 	return ok, response
 end
 

@@ -55,3 +55,49 @@ test("ErrorTracker loads legacy single-file logs when daily logs do not exist", 
 
   assert.equal(tracker.query({ limit: 1 })[0].code, "LEGACY");
 });
+
+test("ErrorTracker deduplicates retried reports by eventId", () => {
+  const workspace = createTempWorkspace();
+  const tracker = new ErrorTracker({ workspaceRoot: workspace });
+  const first = tracker.add({
+    component: "plugin",
+    severity: "error",
+    code: "PLUGIN-RETRY",
+    eventId: "event-123",
+    message: "first delivery"
+  });
+  const retry = tracker.add({
+    component: "plugin",
+    severity: "error",
+    code: "PLUGIN-RETRY",
+    eventId: "event-123",
+    message: "same event delivered again"
+  });
+
+  assert.equal(retry.id, first.id);
+  assert.equal(tracker.query({}).length, 1);
+  assert.equal(tracker.query({})[0].message, "first delivery");
+});
+
+test("ErrorTracker keeps historical daily entries beyond the in-memory window", () => {
+  const workspace = createTempWorkspace();
+  const tracker = new ErrorTracker({ workspaceRoot: workspace, maxEntries: 1 });
+  const first = tracker.add({
+    component: "plugin",
+    severity: "error",
+    code: "PLUGIN-HISTORY-1",
+    message: "older error"
+  });
+  tracker.add({
+    component: "plugin",
+    severity: "error",
+    code: "PLUGIN-HISTORY-2",
+    message: "newer error"
+  });
+
+  const day = first.timestamp.slice(0, 10);
+  const dailyPath = path.join(workspace, ".amarillo", "errors", day, "error-tracker.json");
+  const parsed = JSON.parse(fs.readFileSync(dailyPath, "utf8"));
+  assert.equal(parsed.entries.length, 2);
+  assert.deepEqual(parsed.entries.map((entry) => entry.code), ["PLUGIN-HISTORY-2", "PLUGIN-HISTORY-1"]);
+});
