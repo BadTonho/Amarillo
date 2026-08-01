@@ -51,6 +51,8 @@ The Amarillo plugin can:
 - **Path Traversal Protection**: Rejects unsafe path segments in source patching (e.g. `..` or subpath escapes) to maintain sandbox and directory integrity
 - **Snapshot Path Sanitization**: Automatically escapes and sanitizes unsafe node names (such as `..\outside`) into safe filesystem filenames (like `__outside`), storing the original Roblox name in `init.meta.json`
 - **Security-Hardened Local Daemon**: Enforces strict CORS preflight validation, only allowing local origins to prevent unauthorized web browsers from calling administrative or MCP API routes
+- **JSON Payload Compression**: Automatically compresses high-traffic HTTP synchronization payloads using Brotli and Gzip to accelerate deep instance tree synchronization between disk and Roblox Studio
+- **Intelligent Error Deduplication**: Enforces deduplication logic with structured event ID tracking to prevent repetitive Studio engine errors from flooding logs or stalling the daemon
 
 **Diagnostics & Introspection:**
 - Health checks and connection diagnostics
@@ -227,3 +229,7 @@ The final file will be created in `dist/`. Packaging includes only the generated
 - Daily diagnostics live under `.amarillo/activity/YYYY-MM-DD/`, including file activity logs and dedicated MCP audit logs (`mcp.jsonl` and `mcp.md`).
 - Path traversal protection rejects unsafe path segments in source patching and sanitizes Roblox node names to safe filesystem representations, ensuring files outside authorized mounts are never overwritten.
 - Strict CORS validation allows only local origins (`localhost`, `127.0.0.1`, etc.) to call the administrative API routes and MCP endpoints.
+
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.

@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.2.0
+
+- Implements **JSON Payload Compression** via HTTP utilities using Brotli and Gzip, dramatically reducing data traffic and accelerating deep instance tree synchronization between disk and Roblox Studio.
+- Enforces **Intelligent Error Reporting & Deduplication** with structured `eventId` tagging to prevent error loops in the Roblox engine from flooding the console or stalling the daemon.
+- Expands continuous integration workflows to support automated builds, testing, and multi-platform VSIX packaging validation.
+- Introduces formal architectural overview documentation (`ARCHITECTURE.md`), enriches community contribution guidelines (`CONTRIBUTING.md`), and adopts the open-source MIT License.
+- Removes hardcoded machine absolute paths and local system usernames across scripts and manuals prior to public GitHub release.
+
+## 1.1.49
+
+- Refactors core TypeScript type definitions and hardens validation across HTTP authentication endpoints to prevent runtime failures on malformed external payloads.
+- Refines internal daemon caching mechanisms to reduce latency during real-time IDE syntax checking and Studio bridge evaluations.
+
+## 1.1.48
+
+- Introduces the native **`connect_session` MCP Tool**, allowing AI agents to programmatically attach to active studio sessions and execute instance manipulation workflows.
+- Documents instance manipulation methods and streamlines VSIX generator testing protocols.
+
+## 1.1.47
+
+- Implements foundational **Snapshot Synchronization** architecture and project discovery infrastructure inspired by Rojo for seamless project mirroring.
+- Initializes the Amarillo VS Code extension bridge and modular Roblox Studio plugin infrastructure.
+
 ## 1.1.46
 
 - Implements **Path Traversal Protection** rejecting unsafe path segments (e.g. `..` or subpath escapes) in source patching (`/studio/patch-source`) to protect directory integrity.

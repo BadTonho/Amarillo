@@ -37,7 +37,7 @@ VS Code MCP bootstrap ----> local MCP proxy
 1. The daemon discovers Argon project files and their mounts in the workspace.
 2. The VS Code extension starts the daemon and writes only portable MCP bootstrap configuration into the workspace.
 3. The Studio plugin establishes a session, reports its snapshot, and receives a session token.
-4. MCP calls are translated into daemon operations or Studio commands.
+4. MCP calls are translated into daemon operations or Studio commands, utilizing high-speed HTTP payload compression (Brotli/Gzip) and intelligent error deduplication to optimize bandwidth and console logs.
 5. Studio replies with results and verification snapshots; the daemon updates local project state when the selected source of truth requires it.
 
 ## Code ownership
