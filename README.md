@@ -1,6 +1,20 @@
-# Amarillo
+<div align="center">
+  <img src="assets/icon.png" alt="Amarillo Logo" width="140" />
 
-Roblox Studio bridge inspired by Argon's architecture.
+  # ⚡ Amarillo — Roblox Studio & VS Code Bridge
+
+  **A modern, high-speed, and intelligent bidirectional bridge inspired by Argon's architecture.**
+  *Engineered with TypeScript, Luau, and native MCP tooling for advanced AI and IDE workflows in Roblox Studio.*
+
+  [![Release](https://img.shields.io/badge/OFFICIAL%20RELEASE-V1.2.0-00E599?style=for-the-badge&logo=github&logoColor=white)](https://github.com/)
+  [![Node.js](https://img.shields.io/badge/RUNTIME-NODE%2022+-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+  [![TypeScript & Luau](https://img.shields.io/badge/LANGUAGE-TYPESCRIPT%20%26%20LUAU-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+  <br />
+  [![Roblox Studio](https://img.shields.io/badge/BRIDGE-ROBLOX%20STUDIO-00A2FF?style=for-the-badge&logo=roblox&logoColor=white)](https://create.roblox.com/)
+  [![Platform](https://img.shields.io/badge/PLATFORM-WINDOWS%2010%20%7C%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
+  [![License: MIT](https://img.shields.io/badge/LICENSE-MIT-8A2BE2?style=for-the-badge&logo=open-source-initiative&logoColor=white)](LICENSE)
+</div>
+<br />
 
 This repository contains the **source code for the bridge and the VS Code extension**. It should not be treated as the main Roblox workspace for a real game project.
 
