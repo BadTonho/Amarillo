@@ -2,7 +2,7 @@
 
 This file is an operational checklist. Use it when creating a new Amarillo VSIX and installing it locally while keeping MCP portable across machines.
 
-Before preparing a public release, ensure that all tests pass (including [plugin-version.test.ts](file:///c:/Users/Admin/Desktop/amarillo/amarillo/tests/plugin-version.test.ts), which validates that Roblox Studio plugin UI construction keeps local registers below Luau limits to avoid `Out of local registers` failures in shared installs).
+Before preparing a public release, ensure that all tests pass (including [plugin-version.test.ts](tests/plugin-version.test.ts), which validates that Roblox Studio plugin UI construction keeps local registers below Luau limits to avoid `Out of local registers` failures in shared installs).
 
 Run this from the folder that contains the workspace, then enter the Amarillo repo:
 
@@ -55,7 +55,7 @@ ${workspaceFolder}/.vscode/amarillo-mcp-bootstrap.cjs
 
 The bootstrap reads `.amarillo/mcp-local.json`, which is generated per machine and stores the installed extension path plus bridge token. Commit `.vscode/mcp.json` and `.vscode/amarillo-mcp-bootstrap.cjs` if this is a shared Roblox workspace; never commit `.amarillo/mcp-local.json`.
 
-From the workspace root (`C:\Users\Admin\Desktop\amarillo`), verify the generated MCP config and tool discovery:
+From the workspace root, verify the generated MCP config and tool discovery:
 
 ```powershell
 cd ..
