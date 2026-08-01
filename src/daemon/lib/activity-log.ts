@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -60,6 +60,7 @@ function getFileInfo(filePath, options: any = {}) {
 
 function markdownCell(value) {
   return String(value ?? "")
+    .replace(/\\/g, "\\\\")
     .replace(/\r?\n/g, " ")
     .replace(/\|/g, "\\|");
 }
