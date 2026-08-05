@@ -30,9 +30,7 @@ const extensionFiles = [
   "sidebar-render.js",
   "sidebar-state.js",
   "sidebar-styles.js",
-  "sourcemap.js",
-  "README.md",
-  "CHANGELOG.md"
+  "sourcemap.js"
 ];
 
 function ensurePathExists(targetPath, label) {
@@ -160,6 +158,8 @@ function main() {
   for (const fileName of extensionFiles) {
     copyFile(path.join(extensionSource, fileName), path.join(stagingExtension, fileName));
   }
+  copyFile(path.join(extensionSource, "README.md"), path.join(stagingExtension, "readme.md"));
+  copyFile(path.join(extensionSource, "CHANGELOG.md"), path.join(stagingExtension, "changelog.md"));
   copyFile(path.join(extensionSource, ".mcp.json"), path.join(stagingExtension, ".mcp.json"));
   copyFile(path.join(extensionSource, ".codex-plugin", "plugin.json"), path.join(codexPluginDir, "plugin.json"));
   copyFile(path.join(repoRoot, "amarillo-version.json"), path.join(stagingExtension, "amarillo-version.json"));
@@ -174,7 +174,7 @@ function main() {
   copyFile(pluginSourcePath, path.join(runtimePlugin, "Amarillo.lua"));
 
   const extensionPackage = JSON.parse(fs.readFileSync(path.join(extensionSource, "package.json"), "utf8"));
-  const extensionId = `${extensionPackage.publisher}.${extensionPackage.name}`;
+  const extensionId = extensionPackage.name;
   const tags = Array.isArray(extensionPackage.keywords) ? extensionPackage.keywords.join(",") : "";
   const engineVersion = String(extensionPackage.engines?.vscode || "");
 
@@ -186,18 +186,20 @@ function main() {
     <Description xml:space="preserve">${xmlEscape(extensionPackage.description)}</Description>
     <Tags>${xmlEscape(tags)}</Tags>
     <Categories>Other</Categories>
+    <GalleryFlags>Public</GalleryFlags>
+    <Icon>extension/media/icon.png</Icon>
     <Properties>
       <Property Id="Microsoft.VisualStudio.Code.Engine" Value="${xmlEscape(engineVersion)}" />
     </Properties>
   </Metadata>
   <Installation>
-    <InstallationTarget Id="Microsoft.VisualStudio.Code" Version="${xmlEscape(engineVersion)}" />
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
   </Installation>
   <Dependencies />
   <Assets>
     <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
-    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/README.md" Addressable="true" />
-    <Asset Type="Microsoft.VisualStudio.Code.Changelog" Path="extension/CHANGELOG.md" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Content.Details" Path="extension/readme.md" Addressable="true" />
+    <Asset Type="Microsoft.VisualStudio.Services.Content.Changelog" Path="extension/changelog.md" Addressable="true" />
   </Assets>
 </PackageManifest>
 `;
