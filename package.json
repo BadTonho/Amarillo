@@ -1,6 +1,6 @@
 {
   "name": "amarillo-argon-bridge",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Windows-first Roblox Studio Amarillo plugin + local daemon inspired by Argon.",
   "license": "MIT",
   "private": true,
