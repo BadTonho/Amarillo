@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
@@ -150,6 +150,10 @@ function appendLimitedOutput(current, chunk, maxBytes) {
   };
 }
 
+interface ProcessError extends Error {
+  code?: number | string | null;
+}
+
 function defaultRunCommand(command, args, options: any = {}) {
   return new Promise((resolve, reject) => {
     const maxOutputBytes = Number(options.maxOutputBytes) > 0
@@ -184,9 +188,9 @@ function defaultRunCommand(command, args, options: any = {}) {
         });
         return;
       }
-      const error: any = new Error(stderr.trim() || stdout.trim() || `Command exited with code ${code}`);
-      error.code = code;
-      reject(error);
+      const runError = new Error(stderr.trim() || stdout.trim() || `Command exited with code ${code}`) as ProcessError;
+      runError.code = code;
+      reject(runError);
     });
   });
 }
@@ -216,8 +220,9 @@ async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, 
       };
     } catch (error) {
       lastError = error;
-      if (error && (error.code === "ENOENT" || error.code === "UNKNOWN")) {
-        continue;
+      // If the candidate executable is missing (ENOENT/UNKNOWN), try the next candidate.
+      if (error && ((error as ProcessError).code === "ENOENT" || (error as ProcessError).code === "UNKNOWN")) {
+        // noop
       }
     }
   }

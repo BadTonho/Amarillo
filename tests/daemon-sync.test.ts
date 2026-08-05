@@ -1470,7 +1470,13 @@ test("Studio snapshot writes coalesce bursts and persist the latest snapshot", a
   }, "auto");
 
   assert.equal(app.pendingStudioWrites.size, 1);
-  await wait(360);
+  const pendingWrite = app.pendingStudioWrites.get(session.id);
+  if (pendingWrite?.promise) {
+    await pendingWrite.promise;
+  }
+  if (app.pendingStudioWrites.size > 0) {
+    await wait(600);
+  }
 
   assert.equal(app.pendingStudioWrites.size, 0);
   assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 3");
