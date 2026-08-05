@@ -12,7 +12,10 @@ const MCP_VISIBILITY_FILE_NAME = "mcp-codex-visibility.md";
 const MCP_WORKSPACE_VARIABLE = "${workspaceFolder}";
 const MCP_BOOTSTRAP_RELATIVE_PATH = `.vscode/${MCP_BOOTSTRAP_FILE_NAME}`;
 const MCP_LOCAL_RELATIVE_PATH = `.amarillo/${MCP_LOCAL_FILE_NAME}`;
-const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
+const EXTENSION_FOLDER_PREFIXES = [
+  "TonhoStudios.amarillo-vscode-",
+  "amarillo.amarillo-vscode-"
+];
 
 function isLoopbackHost(host) {
   const normalized = String(host || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
@@ -54,7 +57,10 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 
 const LOCAL_STATE_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
-const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
+const EXTENSION_FOLDER_PREFIXES = [
+  "TonhoStudios.amarillo-vscode-",
+  "amarillo.amarillo-vscode-"
+];
 
 function isLoopbackHost(host) {
   const normalized = String(host || "").trim().replace(/^\\[|\\]$/g, "").toLowerCase();
@@ -103,8 +109,9 @@ function mcpProxyEntryForExtensionPath(extensionPath) {
 
 function extensionVersionFromPath(extensionPath) {
   const folderName = path.basename(String(extensionPath || ""));
-  return folderName.startsWith(EXTENSION_FOLDER_PREFIX)
-    ? folderName.slice(EXTENSION_FOLDER_PREFIX.length)
+  const prefix = EXTENSION_FOLDER_PREFIXES.find((candidate) => folderName.startsWith(candidate));
+  return prefix
+    ? folderName.slice(prefix.length)
     : "unknown";
 }
 
@@ -141,7 +148,8 @@ function findNewestInstalledExtension() {
       continue;
     }
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory() || !entry.name.startsWith(EXTENSION_FOLDER_PREFIX)) {
+      const prefix = EXTENSION_FOLDER_PREFIXES.find((candidate) => entry.name.startsWith(candidate));
+      if (!entry.isDirectory() || !prefix) {
         continue;
       }
       const extensionPath = path.join(root, entry.name);
@@ -149,7 +157,7 @@ function findNewestInstalledExtension() {
       if (!fs.existsSync(proxyEntry)) {
         continue;
       }
-      const extensionVersion = entry.name.slice(EXTENSION_FOLDER_PREFIX.length);
+      const extensionVersion = entry.name.slice(prefix.length);
       if (!best || compareVersions(extensionVersion, best.extensionVersion) > 0) {
         best = {
           extensionPath,
