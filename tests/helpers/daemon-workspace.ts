@@ -1,13 +1,40 @@
 "use strict";
 
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { Readable } = require("node:stream");
+const { PluginRobloxApp } = require("../../src/daemon/app");
 const { readLocalProjectState } = require("../../src/daemon/project");
+const { createTempDirectory, registerTestCleanup } = require("./test-temp");
+
+const trackedApps = new Set<any>();
+
+for (const methodName of ["refreshWorkspace", "start", "openSession"]) {
+  const prototype = PluginRobloxApp.prototype;
+  const originalMethod = prototype[methodName];
+  if (typeof originalMethod !== "function" || originalMethod.__amarilloTestTracked) {
+    continue;
+  }
+  const trackedMethod = function (...args) {
+    trackedApps.add(this);
+    return originalMethod.apply(this, args);
+  };
+  trackedMethod.__amarilloTestTracked = true;
+  prototype[methodName] = trackedMethod;
+}
+
+registerTestCleanup(async () => {
+  const apps = Array.from(trackedApps);
+  trackedApps.clear();
+  await Promise.all(apps.map(async (app) => {
+    if (typeof app.stop === "function") {
+      await app.stop();
+    }
+  }));
+});
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-daemon-"));
+  return createTempDirectory("amarillo-daemon-");
 }
 
 function createWorkspaceWithProject() {

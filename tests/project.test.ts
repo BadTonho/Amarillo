@@ -3,7 +3,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {
   buildNodeFromDirectory,
@@ -19,9 +18,10 @@ const {
   writeStudioProjectState,
   writeStudioProjectStateAsync
 } = require("../src/daemon/project");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-"));
+  return createTempDirectory("amarillo-");
 }
 
 test("parse argon config and project mounts", () => {

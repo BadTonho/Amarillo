@@ -3,16 +3,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {
   buildInstructionsMarkdown,
   ensurePluginInstructionsFile
 } = require("../src/daemon/lib/instructions");
 const { PluginRobloxApp } = require("../src/daemon/app");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-instructions-"));
+  return createTempDirectory("amarillo-instructions-");
 }
 
 function createWorkspaceWithProject() {

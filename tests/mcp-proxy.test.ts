@@ -5,7 +5,6 @@ const assert = require("node:assert/strict");
 const events = require("node:events");
 const fs = require("node:fs");
 const http = require("node:http");
-const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
@@ -13,9 +12,10 @@ const { TOOL_DEFINITIONS } = require("../src/daemon/mcp-tools");
 const { TOOL_HANDLERS } = require("../src/daemon/mcp");
 const { textContent } = require("../src/daemon/mcp-stdio");
 const { isLoopbackHost, hostForUrl, resolveBridgeOptions, requestJson } = require("../src/mcp-proxy");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-proxy-"));
+  return createTempDirectory("amarillo-mcp-proxy-");
 }
 
 function writeJson(response, statusCode, payload) {

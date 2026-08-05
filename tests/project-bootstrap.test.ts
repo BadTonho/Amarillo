@@ -3,15 +3,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {
   buildDefaultProjectPath,
   ensureWorkspaceProjectFile
 } = require("../vscode-extension/project-bootstrap");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-bootstrap-"));
+  return createTempDirectory("amarillo-bootstrap-");
 }
 
 test("ensureWorkspaceProjectFile creates a default project scaffold when the workspace is empty", async () => {

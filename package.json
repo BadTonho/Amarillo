@@ -15,6 +15,7 @@
     "version:sync": "npm run build:scripts && node scripts/sync-version.js",
     "version:set": "npm run build:scripts && node scripts/sync-version.js",
     "diagnose:mcp": "npm run build:scripts && node scripts/diagnose-mcp.js",
+    "clean:test-temp": "npm run build:scripts && node scripts/clean-test-temp.js",
     "clean:generated": "npm run build:scripts && node scripts/clean-generated.js",
     "check:sources": "npm run build:scripts && node scripts/check-sources.js",
     "lint": "biome lint .",

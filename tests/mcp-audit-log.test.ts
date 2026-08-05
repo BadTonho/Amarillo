@@ -3,12 +3,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { McpAuditLog } = require("../src/daemon/lib/mcp-audit-log");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-audit-"));
+  return createTempDirectory("amarillo-mcp-audit-");
 }
 
 test("McpAuditLog writes daily JSONL and Markdown audit files", () => {

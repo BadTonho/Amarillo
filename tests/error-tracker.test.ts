@@ -3,12 +3,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const { ErrorTracker } = require("../src/daemon/lib/error-tracker");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-errors-"));
+  return createTempDirectory("amarillo-errors-");
 }
 
 test("ErrorTracker writes daily error files under .amarillo/errors", () => {

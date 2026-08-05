@@ -3,7 +3,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {
   buildRojoSourcemapArgs,
@@ -11,9 +10,10 @@ const {
   resolveSourcemapProjectFile,
   sourcemapNeedsGeneration
 } = require("../vscode-extension/sourcemap");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-sourcemap-"));
+  return createTempDirectory("amarillo-sourcemap-");
 }
 
 test("resolveSourcemapProjectFile prefers workspace-named project", () => {

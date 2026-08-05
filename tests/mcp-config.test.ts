@@ -4,7 +4,6 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
 const {
   MCP_BOOTSTRAP_FILE_NAME,
@@ -18,9 +17,10 @@ const {
   ensureWorkspaceMcpConfig,
   repairExistingWorkspaceMcpConfig
 } = require("../vscode-extension/mcp-config");
+const { createTempDirectory } = require("./helpers/test-temp");
 
 function createTempWorkspace() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-config-"));
+  return createTempDirectory("amarillo-mcp-config-");
 }
 
 function writeJson(filePath, value) {
@@ -308,7 +308,7 @@ test("ensureWorkspaceMcpConfig replaces an old bootstrap and records proxyEntry"
 
 test("bootstrap uses a valid saved proxyEntry", async () => {
   const workspace = createTempWorkspace();
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-profile-"));
+  const profile = createTempDirectory("amarillo-profile-");
   const install = createFakeExtensionInstall(profile, "1.2.3");
 
   await ensureWorkspaceMcpConfig(workspace, {
@@ -336,7 +336,7 @@ test("bootstrap uses a valid saved proxyEntry", async () => {
 
 test("bootstrap derives proxyEntry from extensionPath for older local state", async () => {
   const workspace = createTempWorkspace();
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-profile-"));
+  const profile = createTempDirectory("amarillo-profile-");
   const install = createFakeExtensionInstall(profile, "1.2.3");
 
   await ensureWorkspaceMcpConfig(workspace, {
@@ -363,7 +363,7 @@ test("bootstrap derives proxyEntry from extensionPath for older local state", as
 
 test("bootstrap recovers stale extension paths from the newest installed Amarillo extension", () => {
   const workspace = createTempWorkspace();
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-profile-"));
+  const profile = createTempDirectory("amarillo-profile-");
   createFakeExtensionInstall(profile, "1.2.4");
   const newest = createFakeExtensionInstall(profile, "1.10.0");
   fs.mkdirSync(path.join(workspace, ".vscode"), { recursive: true });
@@ -394,7 +394,7 @@ test("bootstrap recovers stale extension paths from the newest installed Amarill
 
 test("bootstrap fails clearly when no saved or installed proxy exists", () => {
   const workspace = createTempWorkspace();
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-profile-"));
+  const profile = createTempDirectory("amarillo-profile-");
   fs.mkdirSync(path.join(workspace, ".vscode"), { recursive: true });
   fs.writeFileSync(path.join(workspace, ".vscode", MCP_BOOTSTRAP_FILE_NAME), buildMcpBootstrapScript(), "utf8");
   writeJson(path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME), {
