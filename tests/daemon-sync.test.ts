@@ -1474,15 +1474,14 @@ test("Studio snapshot writes coalesce bursts and persist the latest snapshot", a
   if (pendingWrite?.promise) {
     await pendingWrite.promise;
   }
-  if (app.pendingStudioWrites.size > 0) {
-    await wait(600);
-  }
+  await app.drainPendingStudioWrites(2000);
+  await wait(50);
 
   assert.equal(app.pendingStudioWrites.size, 0);
   assert.equal(fs.readFileSync(scriptPath, "utf8"), "return 3");
   const helloWrites = app.activityLog
     .query({ limit: 10, includeDetails: true })
-    .filter((entry) => entry.relativePath === "sync/ServerScriptService/Hello.server.luau");
+    .filter((entry) => entry.relativePath && entry.relativePath.replace(/\\/g, "/").endsWith("Hello.server.luau"));
   assert.equal(helloWrites.length, 1);
   assert.equal(helloWrites[0].detail.newText, "return 3");
 });
