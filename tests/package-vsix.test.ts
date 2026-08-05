@@ -107,5 +107,6 @@ test("package-vsix PowerShell entrypoint is a thin TypeScript CLI wrapper", () =
   assert.match(wrapperScript, /scripts\\package-vsix\.js/);
   assert.match(wrapperScript, /npm\.cmd run build:scripts/);
   assert.doesNotMatch(wrapperScript, /Compress-Archive/);
-  assert.match(packageCli, /Compress-Archive/);
+  assert.match(packageCli, /ZipFileExtensions/);
+  assert.match(packageCli, /Replace\('\\\\', '\/'\)/);
 });

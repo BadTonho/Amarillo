@@ -125,7 +125,26 @@ function writeVsixArchive(sourcePaths, zipPath, vsixPath) {
   const sourceList = sourcePaths.map(psQuote).join(", ");
   const command = [
     "$ErrorActionPreference = 'Stop'",
-    `Compress-Archive -LiteralPath @(${sourceList}) -DestinationPath ${psQuote(zipPath)} -Force`,
+    "Add-Type -AssemblyName System.IO.Compression",
+    "Add-Type -AssemblyName System.IO.Compression.FileSystem",
+    `$archive = [System.IO.Compression.ZipFile]::Open(${psQuote(zipPath)}, [System.IO.Compression.ZipArchiveMode]::Create)`,
+    "try {",
+    `  foreach ($sourcePath in @(${sourceList})) {`,
+    "    $resolvedSource = [System.IO.Path]::GetFullPath($sourcePath)",
+    "    if ([System.IO.Directory]::Exists($resolvedSource)) {",
+    "      $rootName = [System.IO.Path]::GetFileName($resolvedSource.TrimEnd('\\'))",
+    "      Get-ChildItem -LiteralPath $resolvedSource -File -Recurse | ForEach-Object {",
+    "        $relativePath = $_.FullName.Substring($resolvedSource.Length).TrimStart('\\', '/')",
+    "        $entryName = ($rootName + '/' + $relativePath).Replace('\\', '/')",
+    "        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $entryName, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null",
+    "      }",
+    "    } else {",
+    "      [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $resolvedSource, [System.IO.Path]::GetFileName($resolvedSource), [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null",
+    "    }",
+    "  }",
+    "} finally {",
+    "  $archive.Dispose()",
+    "}",
     `Move-Item -LiteralPath ${psQuote(zipPath)} -Destination ${psQuote(vsixPath)} -Force`
   ].join("; ");
   const result = spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command], {
