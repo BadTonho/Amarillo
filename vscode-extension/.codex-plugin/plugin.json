@@ -3,7 +3,7 @@
   "version": "1.2.2",
   "description": "Amarillo VS Code extension tools for Codex.",
   "author": {
-    "name": "Amarillo"
+    "name": "TonhoStudios"
   },
   "keywords": [
     "amarillo",
@@ -16,7 +16,7 @@
     "displayName": "Amarillo",
     "shortDescription": "Read-only Amarillo extension tools for Codex.",
     "longDescription": "Adds read-only Codex MCP tools for inspecting the Amarillo VS Code extension manifest and changelog.",
-    "developerName": "Amarillo",
+    "developerName": "TonhoStudios",
     "category": "Development",
     "capabilities": [
       "Read"

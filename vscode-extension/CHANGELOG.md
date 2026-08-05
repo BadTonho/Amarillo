@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.2
+
+- Removed the bridge token requirement for loopback connections (`localhost`, `127.0.0.1`, and `::1`) while keeping authentication mandatory for external hosts.
+- Improved bridge health diagnostics so authentication mode, workspace ownership, offline daemons, and missing Studio sessions are reported clearly.
+- Updated the MCP bootstrap and proxy to ignore legacy bridge tokens in local mode and preserve token forwarding for external bridges.
+- Added automatic cleanup for test temporary directories and a safe `npm run clean:test-temp` command with dry-run support.
+- Updated VSIX metadata and publisher information for the TonhoStudios Marketplace publisher.
+- Reduced the bundled read-only extension MCP server to a small dependency-free stdio implementation to make the Marketplace package easier to audit.
+
 ## 1.2.0
 
 - Implements **JSON Payload Compression** via HTTP utilities using Brotli and Gzip, dramatically reducing data traffic and accelerating deep instance tree synchronization between disk and Roblox Studio.

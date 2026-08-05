@@ -5,6 +5,15 @@
   "version": "1.2.2",
   "icon": "media/icon.png",
   "publisher": "TonhoStudios",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BadTonho/Amarillo.git"
+  },
+  "homepage": "https://github.com/BadTonho/Amarillo",
+  "bugs": {
+    "url": "https://github.com/BadTonho/Amarillo/issues"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
