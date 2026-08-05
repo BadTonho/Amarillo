@@ -14,6 +14,11 @@ const MCP_BOOTSTRAP_RELATIVE_PATH = `.vscode/${MCP_BOOTSTRAP_FILE_NAME}`;
 const MCP_LOCAL_RELATIVE_PATH = `.amarillo/${MCP_LOCAL_FILE_NAME}`;
 const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
 
+function isLoopbackHost(host) {
+  const normalized = String(host || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
 function mcpProxyEntryForExtensionPath(extensionPath) {
   return extensionPath ? path.join(extensionPath, "runtime", "mcp-proxy", "index.js") : "";
 }
@@ -50,6 +55,11 @@ const { spawn } = require("node:child_process");
 
 const LOCAL_STATE_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
 const EXTENSION_FOLDER_PREFIX = "amarillo.amarillo-vscode-";
+
+function isLoopbackHost(host) {
+  const normalized = String(host || "").trim().replace(/^\\[|\\]$/g, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
 
 function parseArgs(argv) {
   const options = {
@@ -232,8 +242,9 @@ function main() {
   const host = typeof state.host === "string" && state.host ? state.host : "127.0.0.1";
   const port = Number(state.port || 8323);
   const bridgeToken = typeof state.bridgeToken === "string" ? state.bridgeToken : "";
+  const bridgeAuthRequired = !isLoopbackHost(host);
 
-  if (!bridgeToken) {
+  if (bridgeAuthRequired && !bridgeToken) {
     fail("Local MCP state does not contain bridgeToken.");
   }
   const resolved = resolveMcpProxy(state, localStatePath);
@@ -245,9 +256,11 @@ function main() {
     resolved.proxyEntry,
     "--workspace", options.workspaceRoot,
     "--host", host,
-    "--port", String(port),
-    "--bridge-token", bridgeToken
+    "--port", String(port)
   ];
+  if (bridgeAuthRequired) {
+    args.push("--bridge-token", bridgeToken);
+  }
 
   const child = spawn(process.execPath, args, {
     cwd: options.workspaceRoot,
@@ -324,7 +337,7 @@ function buildMcpCodexVisibilityMarkdown() {
     codexAddCommand,
     "```",
     "",
-    "This command registers only the portable bootstrap path. It does not copy the local bridge token or installed extension path into shared config.",
+    "This command registers only the portable bootstrap path. It does not copy the local bridge token or installed extension path into shared config. Loopback bridges do not require a bridge token; external bridges still do.",
     "",
     "## Expected native tools",
     "",
@@ -337,7 +350,7 @@ function buildMcpCodexVisibilityMarkdown() {
     "- `get_services`",
     "- `run_code`",
     "",
-    "Do not copy values from `.amarillo/mcp-local.json` into shared configs. That local state contains the installed extension path and bridge token for this machine."
+    "Do not copy values from `.amarillo/mcp-local.json` into shared configs. That local state contains the installed extension path and may contain a compatibility bridge token for this machine; loopback mode ignores it."
   ].join("\n");
 }
 
@@ -517,8 +530,9 @@ async function repairExistingWorkspaceMcpConfig(workspaceRoot, options) {
     };
   }
 
+  const host = valueOrFallback(options.host, currentLocalState?.host, "127.0.0.1");
   const bridgeToken = valueOrFallback(options.bridgeToken, currentLocalState?.bridgeToken);
-  if (!bridgeToken) {
+  if (!bridgeToken && !isLoopbackHost(host)) {
     return {
       status: "skipped",
       reason: "missing_bridge_token",
@@ -531,7 +545,7 @@ async function repairExistingWorkspaceMcpConfig(workspaceRoot, options) {
     ...currentLocalState,
     ...options,
     bridgeToken,
-    host: valueOrFallback(options.host, currentLocalState?.host, "127.0.0.1"),
+    host,
     port: valueOrFallback(options.port, currentLocalState?.port, "8323"),
     extensionPath: valueOrFallback(options.extensionPath, currentLocalState?.extensionPath),
     extensionVersion: valueOrFallback(options.extensionVersion, currentLocalState?.extensionVersion, "unknown"),
@@ -545,6 +559,7 @@ module.exports = {
   MCP_LOCAL_FILE_NAME,
   MCP_LOCAL_RELATIVE_PATH,
   MCP_VISIBILITY_FILE_NAME,
+  isLoopbackHost,
   buildMcpCodexVisibilityMarkdown,
   buildWorkspaceMcpConfig,
   buildMcpBootstrapScript,

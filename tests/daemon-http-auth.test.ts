@@ -238,6 +238,77 @@ test("bridge token protects administrative and MCP HTTP routes", async () => {
   assert.match(bearerAuthorized.payload.mcp.fallback.example.alternativeAuthorizationHeader, /Authorization: Bearer/);
 });
 
+test("loopback daemon accepts MCP calls without a bridge token and reports disabled auth", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "127.0.0.1",
+    port: 8323
+  });
+  app.refreshWorkspace();
+
+  const health = await invoke(app, "GET", "/health");
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.payload.bridgeAuthRequired, false);
+
+  const mcpCall = await invoke(app, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  });
+  assert.equal(mcpCall.statusCode, 200);
+  assert.equal(mcpCall.payload.ok, true);
+});
+
+test("external daemon requires a token before startup and reports auth when configured", async () => {
+  const workspace = createWorkspaceWithProject();
+  const missingTokenApp = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "0.0.0.0",
+    port: 8323
+  });
+  await assert.rejects(
+    () => missingTokenApp.start(),
+    /A bridge token is required when the daemon listens outside loopback\./
+  );
+
+  const configuredApp = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "0.0.0.0",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  configuredApp.refreshWorkspace();
+  const health = await invoke(configuredApp, "GET", "/health");
+  assert.equal(health.statusCode, 200);
+  assert.equal(health.payload.bridgeAuthRequired, true);
+
+  const missingTokenCall = await invoke(configuredApp, "POST", "/mcp/call", {
+    name: "health",
+    arguments: {}
+  });
+  assert.equal(missingTokenCall.statusCode, 401);
+});
+
+test("controlled bridge shutdown rejects a different workspace", async () => {
+  const workspace = createWorkspaceWithProject();
+  const app = new PluginRobloxApp({
+    workspaceRoot: workspace,
+    host: "0.0.0.0",
+    port: 8323,
+    bridgeToken: "secret-token"
+  });
+  app.refreshWorkspace();
+
+  const response = await invoke(app, "POST", "/bridge/shutdown", {
+    workspaceRoot: path.join(workspace, "other-workspace")
+  }, {
+    headers: { "x-amarillo-bridge-token": "secret-token" }
+  });
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.payload.code, "WORKSPACE_MISMATCH");
+  assert.equal(app.shuttingDown, false);
+});
+
 test("daemon requires a bridge token for connection routes outside loopback", async () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({

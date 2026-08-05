@@ -10,6 +10,7 @@ const {
   MCP_BOOTSTRAP_FILE_NAME,
   MCP_LOCAL_FILE_NAME,
   MCP_VISIBILITY_FILE_NAME,
+  isLoopbackHost,
   buildMcpBootstrapScript,
   buildMcpCodexVisibilityMarkdown,
   buildMcpLocalState,
@@ -96,6 +97,53 @@ test("buildWorkspaceMcpConfig creates the portable stdio bootstrap shape", () =>
   assert.doesNotMatch(JSON.stringify(config), /bridge-token/);
   assert.doesNotMatch(JSON.stringify(config), /amarillo\.amarillo-vscode-/);
   assert.equal(Object.prototype.hasOwnProperty.call(config, "mcpServers"), false);
+});
+
+test("loopback detection accepts localhost, IPv4 loopback, and IPv6 loopback only", () => {
+  assert.equal(isLoopbackHost("localhost"), true);
+  assert.equal(isLoopbackHost("127.0.0.1"), true);
+  assert.equal(isLoopbackHost("[::1]"), true);
+  assert.equal(isLoopbackHost("0.0.0.0"), false);
+  assert.equal(isLoopbackHost("192.168.1.10"), false);
+});
+
+test("loopback bootstrap starts without bridgeToken in local state", async () => {
+  const workspace = createTempWorkspace();
+  const fake = createFakeExtensionInstall(workspace, "1.2.3");
+  await ensureWorkspaceMcpConfig(workspace, {
+    proxyEntry: fake.proxyEntry,
+    host: "127.0.0.1",
+    port: 8323,
+    extensionPath: fake.extensionPath,
+    extensionVersion: fake.version
+  });
+  const state = readLocalState(workspace);
+  delete state.bridgeToken;
+  writeJson(path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME), state);
+
+  const result = runBootstrap(workspace);
+  assert.equal(result.status, 0, result.stderr);
+  const launched = JSON.parse(result.stdout.trim());
+  assert.equal(launched.argv.includes("--bridge-token"), false);
+});
+
+test("external bootstrap refuses local state without bridgeToken", async () => {
+  const workspace = createTempWorkspace();
+  const fake = createFakeExtensionInstall(workspace, "1.2.3");
+  await ensureWorkspaceMcpConfig(workspace, {
+    proxyEntry: fake.proxyEntry,
+    host: "0.0.0.0",
+    port: 8323,
+    extensionPath: fake.extensionPath,
+    extensionVersion: fake.version
+  });
+  const state = readLocalState(workspace);
+  delete state.bridgeToken;
+  writeJson(path.join(workspace, ".amarillo", MCP_LOCAL_FILE_NAME), state);
+
+  const result = runBootstrap(workspace);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /does not contain bridgeToken/);
 });
 
 test("buildMcpCodexVisibilityMarkdown describes native tool visibility without local secrets", () => {
@@ -282,8 +330,7 @@ test("bootstrap uses a valid saved proxyEntry", async () => {
   assert.deepEqual(payload.argv, [
     "--workspace", workspace,
     "--host", "127.0.0.1",
-    "--port", "8323",
-    "--bridge-token", "test-token"
+    "--port", "8323"
   ]);
 });
 

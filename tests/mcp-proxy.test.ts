@@ -12,6 +12,7 @@ const { spawn } = require("node:child_process");
 const { TOOL_DEFINITIONS } = require("../src/daemon/mcp-tools");
 const { TOOL_HANDLERS } = require("../src/daemon/mcp");
 const { textContent } = require("../src/daemon/mcp-stdio");
+const { isLoopbackHost, hostForUrl, resolveBridgeOptions, requestJson } = require("../src/mcp-proxy");
 
 function createTempWorkspace() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "amarillo-mcp-proxy-"));
@@ -33,8 +34,8 @@ async function startMockServer(handler) {
   };
 }
 
-function createRpcClient(workspaceRoot, port) {
-  const child = spawn(process.execPath, [
+function createRpcClient(workspaceRoot, port, bridgeToken = null) {
+  const args = [
     path.join(__dirname, "..", "src", "mcp-proxy", "index.js"),
     "--workspace",
     workspaceRoot,
@@ -42,7 +43,11 @@ function createRpcClient(workspaceRoot, port) {
     "127.0.0.1",
     "--port",
     String(port)
-  ], {
+  ];
+  if (bridgeToken) {
+    args.push("--bridge-token", bridgeToken);
+  }
+  const child = spawn(process.execPath, args, {
     cwd: path.join(__dirname, ".."),
     stdio: ["pipe", "pipe", "pipe"]
   });
@@ -99,6 +104,38 @@ function toolText(result) {
   return JSON.parse(result.content[0].text);
 }
 
+test("proxy auth mode ignores loopback tokens and preserves external tokens", async () => {
+  assert.equal(isLoopbackHost("localhost"), true);
+  assert.equal(isLoopbackHost("::1"), true);
+  assert.equal(hostForUrl("::1"), "[::1]");
+  assert.equal(resolveBridgeOptions({
+    workspaceRoot: createTempWorkspace(),
+    host: "127.0.0.1",
+    port: 8323,
+    bridgeToken: "local-token"
+  }).bridgeToken, null);
+  assert.equal(resolveBridgeOptions({
+    workspaceRoot: createTempWorkspace(),
+    host: "0.0.0.0",
+    port: 8323,
+    bridgeToken: "external-token"
+  }).bridgeToken, "external-token");
+
+  let receivedHeader;
+  const { server, port } = await startMockServer(async (request, response) => {
+    receivedHeader = request.headers["x-amarillo-bridge-token"];
+    writeJson(response, 200, { ok: true });
+  });
+  try {
+    await requestJson(`http://127.0.0.1:${port}`, "POST", "/mcp/call", {}, {
+      bridgeToken: "external-token"
+    });
+    assert.equal(receivedHeader, "external-token");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("advertised MCP tools are implemented by the daemon and generic proxy handler", () => {
   const proxySource = fs.readFileSync(path.join(__dirname, "..", "src", "mcp-proxy", "index.js"), "utf8");
 
@@ -112,6 +149,7 @@ test("advertised MCP tools are implemented by the daemon and generic proxy handl
 test("mcp proxy answers initialize, tools/list and health through HTTP", async () => {
   const workspace = createTempWorkspace();
   const seenRequests = [];
+  const seenHeaders = [];
   const { server, port } = await startMockServer(async (request, response) => {
     let body = "";
     for await (const chunk of request) {
@@ -122,6 +160,7 @@ test("mcp proxy answers initialize, tools/list and health through HTTP", async (
       url: request.url,
       body: body ? JSON.parse(body) : null
     });
+    seenHeaders.push(request.headers["x-amarillo-bridge-token"]);
     if (request.method === "POST" && request.url === "/mcp/call") {
       writeJson(response, 200, {
         ok: true,
@@ -147,7 +186,7 @@ test("mcp proxy answers initialize, tools/list and health through HTTP", async (
     writeJson(response, 404, { ok: false, error: "not found" });
   });
 
-  const client = createRpcClient(workspace, port);
+  const client = createRpcClient(workspace, port, "saved-local-token");
 
   try {
     const initialize = await client.request({
@@ -201,6 +240,7 @@ test("mcp proxy answers initialize, tools/list and health through HTTP", async (
         }
       }
     ]);
+    assert.deepEqual(seenHeaders, [undefined]);
   } finally {
     await client.close();
     await new Promise((resolve) => server.close(resolve));

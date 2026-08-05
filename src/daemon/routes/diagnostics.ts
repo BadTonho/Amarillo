@@ -1,5 +1,6 @@
 ﻿"use strict";
 
+import path from "node:path";
 import type { DiagnosticErrorEntry, HealthPayload } from "../contracts/diagnostics";
 
 const { mcpShieldSummary } = require("../mcp-shield");
@@ -36,12 +37,42 @@ function sessionSyncDebugPayload(app, session) {
 }
 
 async function handleDiagnosticsRoutes(app, request, response, requestUrl) {
+  if (request.method === "POST" && requestUrl.pathname === "/bridge/shutdown") {
+    try {
+      const body = await readJsonBody(request);
+      if (body.workspaceRoot && path.resolve(String(body.workspaceRoot)) !== path.resolve(app.workspaceRoot)) {
+        jsonResponse(response, 409, {
+          ok: false,
+          code: "WORKSPACE_MISMATCH",
+          error: "The requested bridge workspace does not match the active daemon workspace."
+        });
+        return true;
+      }
+      jsonResponse(response, 200, {
+        ok: true,
+        workspaceRoot: app.workspaceRoot,
+        shuttingDown: true
+      });
+      setImmediate(() => {
+        void app.stop();
+      });
+    } catch (error) {
+      jsonResponse(response, error.statusCode || 400, {
+        ok: false,
+        code: error.code || "BRIDGE_SHUTDOWN_FAILED",
+        error: error.message
+      });
+    }
+    return true;
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/health") {
     const payload: HealthPayload = {
       ok: true,
       workspaceRoot: app.workspaceRoot,
       host: app.host,
       port: app.port,
+      bridgeAuthRequired: Boolean(app.bridgeToken),
       versions: app.versionPayload(),
       autoSyncToStudio: app.autoSyncToStudio,
       syncTargets: app.syncTargets,

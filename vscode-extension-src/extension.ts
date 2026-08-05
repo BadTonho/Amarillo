@@ -84,6 +84,7 @@ type ExtensionJsonObject = Record<string, unknown>;
 interface RequestJsonOptions {
   timeout?: number;
   bridgeToken?: string | null;
+  forceBridgeToken?: boolean;
   maxResponseBytes?: number;
 }
 
@@ -465,6 +466,23 @@ function getBridgeSettings() {
   };
 }
 
+function isLoopbackHost(host) {
+  const normalized = String(host || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function hostForUrl(host) {
+  const value = String(host || "").trim();
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return value;
+  }
+  return value.includes(":") ? `[${value}]` : value;
+}
+
+function bridgeAuthRequiredForHost(host) {
+  return !isLoopbackHost(host);
+}
+
 function workspaceRelativePath(workspaceRoot, targetPath) {
   const relativePath = path.relative(workspaceRoot, targetPath).replace(/\\/g, "/");
   if (!relativePath || relativePath.startsWith("..")) {
@@ -510,7 +528,11 @@ function verifyWorkspaceMcpLocalState(workspaceRoot, mcpConfigResult) {
     throw new Error(`MCP local state could not be read at ${localStateLabel}: ${error.message}`);
   }
 
-  const requiredFields = ["bridgeToken", "extensionPath", "extensionVersion", "proxyEntry"];
+  const localHost = localState?.host || mcpConfigResult.localState?.host || "127.0.0.1";
+  const requiredFields = ["extensionPath", "extensionVersion", "proxyEntry"];
+  if (bridgeAuthRequiredForHost(localHost)) {
+    requiredFields.unshift("bridgeToken");
+  }
   const missingFields = requiredFields.filter((field) => {
     const value = localState?.[field];
     return typeof value !== "string" || value.length === 0;
@@ -1407,7 +1429,7 @@ function refreshSidebar() {
 
 function bridgeBaseUrl() {
   const { host, port } = getBridgeSettings();
-  return `http://${host}:${port}`;
+  return `http://${hostForUrl(host)}:${port}`;
 }
 
 function requestJson<TResponse = ExtensionJsonObject>(
@@ -1416,12 +1438,15 @@ function requestJson<TResponse = ExtensionJsonObject>(
   body: unknown = undefined,
   options: RequestJsonOptions = {}
 ): Promise<TResponse> {
-  const url = new URL(route, `${bridgeBaseUrl()}/`);
+  const settings = getBridgeSettings();
+  const url = new URL(route, `http://${hostForUrl(settings.host)}:${settings.port}/`);
   const timeout = options.timeout ?? 5000;
   const headers: Record<string, string> = {
     "Content-Type": "application/json"
   };
-  const token = options.bridgeToken || getOrCreateBridgeToken();
+  const token = bridgeAuthRequiredForHost(settings.host) || options.forceBridgeToken === true
+    ? (options.bridgeToken || getOrCreateBridgeToken())
+    : null;
   if (token) {
     headers["X-Amarillo-Bridge-Token"] = token;
   }
@@ -1694,6 +1719,19 @@ async function waitForDaemonOnline(timeoutMs = 10000) {
     }
   }
   throw lastError || new Error("Timed out waiting for the Amarillo daemon to come online.");
+}
+
+async function waitForDaemonOffline(timeoutMs = 5000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      await fetchDaemonHealth({ timeout: 1000 });
+    } catch (_error) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
 }
 
 async function requestConnectionOffer(requestedBy = "vscode") {
@@ -2172,20 +2210,73 @@ async function installRobloxPlugin(context) {
 async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
   const { workspaceRoot, host, port, nodePath, autoSyncToStudio, privilegedActionConfirmation } = getBridgeSettings();
   const daemonEntry = runtimePath(context, "daemon", "index.js");
-  const token = getOrCreateBridgeToken(context);
+  const bridgeAuthRequired = bridgeAuthRequiredForHost(host);
+  const token = bridgeAuthRequired ? getOrCreateBridgeToken(context) : null;
+  const reuseResult = (extra = {}): any => ({
+    alreadyRunning: true,
+    started: false,
+    workspaceRoot,
+    host,
+    port,
+    autoSyncToStudio,
+    privilegedActionConfirmation,
+    configCreated: false,
+    projectState: { created: false, projectFilePath: null },
+    ...extra
+  });
 
   if (bridgeState.hasLiveProcess) {
-    return {
-      alreadyRunning: true,
-      started: false,
-      workspaceRoot,
-      host,
-      port,
-      autoSyncToStudio,
-      privilegedActionConfirmation,
-      configCreated: false,
-      projectState: { created: false, projectFilePath: null }
-    };
+    let liveHealth = null;
+    try {
+      liveHealth = await fetchDaemonHealth({ timeout: 1500 });
+    } catch (_error) {
+      // Keep an owned process when its health endpoint is temporarily unavailable.
+    }
+    const sameWorkspace = liveHealth?.workspaceRoot
+      ? samePath(workspaceRoot, liveHealth.workspaceRoot)
+      : false;
+    if (liveHealth?.ok && sameWorkspace && liveHealth.bridgeAuthRequired !== bridgeAuthRequired) {
+      log(`Restarting the current workspace bridge because authentication mode is incompatible (expected ${bridgeAuthRequired ? "token" : "loopback/no-token"}, daemon reported ${liveHealth.bridgeAuthRequired === true ? "token" : "legacy/unknown"}).`);
+      bridgeState.killProcess();
+      await waitForDaemonOffline();
+    } else {
+      if (liveHealth?.ok && !sameWorkspace) {
+        log("Keeping the running bridge because it belongs to another workspace.");
+      }
+      return reuseResult(liveHealth?.ok && !sameWorkspace ? { workspaceConflict: true } : {});
+    }
+  } else {
+    let existingHealth = null;
+    try {
+      existingHealth = await fetchDaemonHealth({ timeout: 1500 });
+    } catch (_error) {
+      // No daemon is listening yet; continue with the normal start path.
+    }
+    if (existingHealth?.ok) {
+      const sameWorkspace = samePath(workspaceRoot, existingHealth.workspaceRoot);
+      if (!sameWorkspace) {
+        log("Found a running bridge for another workspace; it will not be stopped or replaced.");
+        return reuseResult({ workspaceConflict: true });
+      }
+      if (existingHealth.bridgeAuthRequired === bridgeAuthRequired) {
+        return reuseResult();
+      }
+
+      log(`Existing bridge authentication is incompatible for this workspace; requesting a controlled restart (expected ${bridgeAuthRequired ? "token" : "loopback/no-token"}, daemon reported ${existingHealth.bridgeAuthRequired === true ? "token" : "legacy/unknown"}).`);
+      try {
+        await requestJson("POST", "/bridge/shutdown", { workspaceRoot }, {
+          timeout: 2000,
+          forceBridgeToken: true
+        });
+        if (!await waitForDaemonOffline()) {
+          log("The incompatible bridge did not go offline after the restart request.");
+          return reuseResult({ authenticationMismatch: true });
+        }
+      } catch (error) {
+        log(`Could not restart the incompatible bridge safely: ${error.message}`);
+        return reuseResult({ authenticationMismatch: true });
+      }
+    }
   }
 
   await ensurePathExists(workspaceRoot, "Roblox workspace");
@@ -2222,12 +2313,16 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
     "--port", String(port),
     "--extension-version", extensionVersion(context),
     "--extension-protocol", String(AMARILLO_PROTOCOL_VERSION),
-    "--bridge-token", token,
+  ];
+  if (token) {
+    args.push("--bridge-token", token);
+  }
+  args.push(
     "--strict-port",
     "--no-mcp",
     autoSyncToStudio ? "--auto-sync-to-studio" : "--no-auto-sync-to-studio",
     privilegedActionConfirmation ? "--privileged-action-confirmation" : "--no-privileged-action-confirmation"
-  ];
+  );
 
   const daemonProcess = spawn(nodePath, args, {
     cwd: workspaceRoot,
@@ -2270,7 +2365,7 @@ async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
     const relativeProjectPath = path.relative(workspaceRoot, projectState.projectFilePath).replace(/\\/g, "/");
     log(`No .project.json found. Created a default project at ${relativeProjectPath}`);
   }
-  log(`Starting bridge at http://${host}:${port} for ${workspaceDisplayName(workspaceRoot)}`);
+  log(`Starting bridge at http://${host}:${port} for ${workspaceDisplayName(workspaceRoot)}; bridge authentication ${bridgeAuthRequired ? "required" : "disabled for loopback"}.`);
   log(`Auto-sync VS Code -> Studio: ${autoSyncToStudio ? "enabled" : "disabled"}`);
   log(`Privileged action confirmation: ${privilegedActionConfirmation ? "enabled" : "disabled"}`);
   updateStatusBar();
@@ -2315,7 +2410,8 @@ function bridgeStartMessage(startResult) {
 async function ensureWorkspaceMcp(context) {
   const { workspaceRoot, host, port } = getBridgeSettings();
   const proxyEntry = runtimePath(context, "mcp-proxy", "index.js");
-  const token = getOrCreateBridgeToken(context);
+  const bridgeAuthRequired = bridgeAuthRequiredForHost(host);
+  const token = bridgeAuthRequired ? getOrCreateBridgeToken(context) : null;
 
   await ensurePathExists(workspaceRoot, "Roblox workspace");
   await ensurePathExists(proxyEntry, "Amarillo MCP proxy");
@@ -2331,7 +2427,7 @@ async function ensureWorkspaceMcp(context) {
   const verifiedLocalState = verifyWorkspaceMcpLocalState(workspaceRoot, mcpConfigResult);
   const message = describeMcpConfigResult(mcpConfigResult, workspaceRoot);
   log(message);
-  log(`MCP local state verified for ${workspaceDisplayName(workspaceRoot)} at ${workspaceRelativePath(workspaceRoot, mcpConfigResult.localStatePath)}: extension ${verifiedLocalState.extensionVersion}; bridge token present; proxy entry present.`);
+  log(`MCP local state verified for ${workspaceDisplayName(workspaceRoot)} at ${workspaceRelativePath(workspaceRoot, mcpConfigResult.localStatePath)}: extension ${verifiedLocalState.extensionVersion}; bridge authentication ${bridgeAuthRequired ? "required" : "disabled for loopback"}; proxy entry present.`);
   if (mcpConfigResult.status !== "unchanged") {
     log("If your AI/MCP client was already open, reopen the session to reload the server.");
   }
@@ -2360,7 +2456,9 @@ async function repairExistingWorkspaceMcpOnActivate(context) {
   }
 
   try {
-    const currentBridgeToken = getOrCreateBridgeToken(context);
+    const currentBridgeToken = bridgeAuthRequiredForHost(settings.host)
+      ? getOrCreateBridgeToken(context)
+      : null;
     const result = await repairExistingWorkspaceMcpConfig(settings.workspaceRoot, {
       proxyEntry,
       host: settings.host,
@@ -2383,9 +2481,9 @@ async function startBridge(context, options: BridgeStartOptions = {}) {
   // Auto-install the plugin before starting the bridge
   await silentPluginInstall(context);
 
-  // Write the bridge token to mcp-local.json BEFORE starting the daemon.
-  // This ensures any MCP proxy that VS Code launches automatically can read
-  // the correct token, preventing HTTP-UNAUTHORIZED race conditions.
+  // Synchronize the workspace MCP state BEFORE starting the daemon. A token is
+  // required only for non-loopback bridges; local state may retain an older
+  // token for compatibility, but the local proxy will ignore it.
   const mcpSetup = await ensureWorkspaceMcp(context);
 
   const startResult = await ensureBridgeStarted(context, options);
@@ -2398,6 +2496,18 @@ async function startBridge(context, options: BridgeStartOptions = {}) {
     } catch (_error) {
       daemonHealth = null;
     }
+  }
+  if (startResult.workspaceConflict || startResult.authenticationMismatch) {
+    const warning = startResult.workspaceConflict
+      ? "Another workspace owns the daemon on this port; it was left untouched."
+      : "The daemon authentication mode is incompatible and could not be restarted automatically.";
+    log(warning);
+    vscode.window.showWarningMessage(`Amarillo bridge not reused. ${warning}`, "Show Output").then((action) => {
+      if (action === "Show Output") {
+        outputChannel.show(true);
+      }
+    });
+    return;
   }
   if (daemonHealth?.ok && samePath(daemonHealth.workspaceRoot, startResult.workspaceRoot)) {
     try {
@@ -2455,10 +2565,12 @@ async function runHealthcheck() {
   const pluginHealth = describePluginHealth(payload);
   const failedRoutes = routeResults.filter((result) => !result.ok);
   const routeSummary = ` Routes: ${routeResults.length - failedRoutes.length}/${routeResults.length} OK.`;
-  const workspaceWarning = daemonMatchesWorkspace(settings, payload)
+  const workspaceMatches = daemonMatchesWorkspace(settings, payload);
+  const authMismatch = workspaceMatches && payload.bridgeAuthRequired !== bridgeAuthRequiredForHost(settings.host);
+  const workspaceWarning = workspaceMatches
     ? ""
     : " Warning: another workspace has an active daemon on this port.";
-  const daemonWorkspaceLabel = daemonMatchesWorkspace(settings, payload)
+  const daemonWorkspaceLabel = workspaceMatches
     ? workspaceDisplayName(payload.workspaceRoot)
     : "another workspace is active on this port";
   const projectWarning = Number(payload.projectCount || 0) === 0
@@ -2472,8 +2584,17 @@ async function runHealthcheck() {
   const mcpInfo = payload.mcpShield
     ? ` MCP: ${mcpStateLabel(payload.mcpShield)}.`
     : "";
+  const authInfo = authMismatch
+    ? ` Bridge authentication mismatch: expected ${bridgeAuthRequiredForHost(settings.host) ? "token" : "loopback/no-token"}, daemon reported ${payload.bridgeAuthRequired === true ? "token" : "legacy/unknown"}.`
+    : ` Bridge authentication: ${payload.bridgeAuthRequired === true ? "required" : "disabled"}.`;
+  const studioInfo = Array.isArray(payload.sessions) && payload.sessions.length === 0
+    ? " Studio session: absent."
+    : "";
 
-  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0} plugin=${pluginHealth.headline} mcp=${payload.mcpShield?.state || "unknown"}`);
+  log(`Healthcheck OK: workspace=${daemonWorkspaceLabel} projects=${payload.projectCount ?? 0} sessions=${payload.sessions?.length ?? 0} plugin=${pluginHealth.headline} mcp=${payload.mcpShield?.state || "unknown"}${authMismatch ? " auth-mismatch" : ""}`);
+  if (authMismatch) {
+    log(`Healthcheck authentication mismatch: expected ${bridgeAuthRequiredForHost(settings.host) ? "token" : "loopback/no-token"}, daemon reported ${payload.bridgeAuthRequired === true ? "token" : "legacy/unknown"}. Restart the bridge from this workspace.`);
+  }
   log(`Healthcheck plugin: ${pluginHealth.message}`);
   for (const detail of pluginHealth.details || []) {
     log(`Healthcheck plugin detail: ${detail}`);
@@ -2484,8 +2605,8 @@ async function runHealthcheck() {
   const failedRouteInfo = failedRoutes.length > 0
     ? ` Failed route(s): ${failedRoutes.map((result) => `${result.method} ${result.route}`).join(", ")}.`
     : "";
-  const message = `Amarillo healthcheck. ${pluginHealth.message} Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${routeSummary}${autoSyncInfo}${confirmationInfo}${mcpInfo}${projectWarning}${offerInfo}${workspaceWarning}${failedRouteInfo}`;
-  if (pluginHealth.tone === "success" && failedRoutes.length === 0) {
+  const message = `Amarillo healthcheck. ${pluginHealth.message} Daemon workspace: ${daemonWorkspaceLabel}. Projects: ${payload.projectCount ?? 0}. Sessions: ${payload.sessions?.length ?? 0}.${routeSummary}${autoSyncInfo}${confirmationInfo}${mcpInfo}${authInfo}${studioInfo}${projectWarning}${offerInfo}${workspaceWarning}${failedRouteInfo}`;
+  if (pluginHealth.tone === "success" && failedRoutes.length === 0 && !authMismatch) {
     vscode.window.showInformationMessage(message);
   } else {
     vscode.window.showWarningMessage(message, "Show Output").then((action) => {

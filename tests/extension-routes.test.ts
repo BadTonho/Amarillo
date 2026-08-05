@@ -87,6 +87,20 @@ test("VS Code healthcheck probes safe daemon routes", () => {
   assert.match(extensionSource, /Healthcheck routes:/);
 });
 
+test("VS Code bridge start detects auth mismatches and never stops another workspace", () => {
+  const extensionSource = fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "extension.js"),
+    "utf8"
+  );
+
+  assert.match(extensionSource, /bridgeAuthRequired/);
+  assert.match(extensionSource, /authentication mode is incompatible/);
+  assert.match(extensionSource, /\/bridge\/shutdown/);
+  assert.match(extensionSource, /workspaceConflict/);
+  assert.match(extensionSource, /Keeping the running bridge because it belongs to another workspace/);
+  assert.match(extensionSource, /forceBridgeToken/);
+});
+
 test("VS Code Doctor command calls /doctor and daemon receives extension protocol args", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),

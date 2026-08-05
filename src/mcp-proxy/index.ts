@@ -11,7 +11,21 @@ const MCP_LOCAL_RELATIVE_PATH = path.join(".amarillo", "mcp-local.json");
 
 // Module-level mutable state for token auto-refresh on auth failures.
 let currentWorkspaceRoot = "";
+let currentBridgeHost = "";
 let currentBridgeToken: string | null = null;
+
+function isLoopbackHost(host) {
+  const normalized = String(host || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
+}
+
+function hostForUrl(host) {
+  const value = String(host || "").trim();
+  if (value.startsWith("[") && value.endsWith("]")) {
+    return value;
+  }
+  return value.includes(":") ? `[${value}]` : value;
+}
 
 function readCurrentBridgeTokenFromFile(workspaceRoot) {
   try {
@@ -63,11 +77,12 @@ function parseArgs(argv) {
 
 function resolveBridgeOptions(options) {
   const config = readWorkspaceConfig(options.workspaceRoot);
+  const host = options.host || config.argon.host || "127.0.0.1";
   return {
     workspaceRoot: options.workspaceRoot,
-    host: options.host || config.argon.host || "127.0.0.1",
+    host,
     port: Number(options.port || config.plugin.daemonPort || config.argon.port || 8323),
-    bridgeToken: options.bridgeToken || null
+    bridgeToken: isLoopbackHost(host) ? null : (options.bridgeToken || null)
   };
 }
 
@@ -141,7 +156,7 @@ async function requestJsonWithTokenRefresh(baseUrl, method, route, body, bridgeT
   try {
     return await requestJson(baseUrl, method, route, body, { bridgeToken });
   } catch (error) {
-    if (isAuthError(error) && currentWorkspaceRoot) {
+    if (!isLoopbackHost(currentBridgeHost) && isAuthError(error) && currentWorkspaceRoot) {
       const freshToken = readCurrentBridgeTokenFromFile(currentWorkspaceRoot);
       if (freshToken && freshToken !== bridgeToken) {
         currentBridgeToken = freshToken;
@@ -178,8 +193,9 @@ async function callProxyTool(baseUrl, bridgeToken, name, args) {
 
 async function main() {
   const options = resolveBridgeOptions(parseArgs(process.argv.slice(2)));
-  const baseUrl = `http://${options.host}:${options.port}`;
+  const baseUrl = `http://${hostForUrl(options.host)}:${options.port}`;
   currentWorkspaceRoot = options.workspaceRoot;
+  currentBridgeHost = options.host;
   currentBridgeToken = options.bridgeToken;
 
   await startStdioMcpServer({
@@ -192,8 +208,20 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  isLoopbackHost,
+  hostForUrl,
+  resolveBridgeOptions,
+  requestJson,
+  requestJsonWithTokenRefresh,
+  readCurrentBridgeTokenFromFile,
+  parseArgs
+};
 

@@ -89,6 +89,7 @@ export interface HealthPayload {
   workspaceRoot: string;
   host: string;
   port: number;
+  bridgeAuthRequired: boolean;
   versions: Record<string, unknown>;
   autoSyncToStudio: boolean;
   syncTargets?: Record<string, unknown>;
