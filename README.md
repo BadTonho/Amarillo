@@ -13,6 +13,10 @@
   [![Roblox Studio](https://img.shields.io/badge/BRIDGE-ROBLOX%20STUDIO-00A2FF?style=for-the-badge&logo=roblox&logoColor=white)](https://create.roblox.com/)
   [![Platform](https://img.shields.io/badge/PLATFORM-WINDOWS%2010%20%7C%2011-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://www.microsoft.com/windows)
   [![License: MIT](https://img.shields.io/badge/LICENSE-MIT-8A2BE2?style=for-the-badge&logo=open-source-initiative&logoColor=white)](LICENSE)
+
+  <p align="center">
+    <b>🇺🇸 English</b> | <a href="README.pt-BR.md">🇧🇷 Português (Brasil)</a> | <a href="README.es.md">🇪🇸 Español</a> | <a href="README.zh-CN.md">🇨🇳 简体中文</a>
+  </p>
 </div>
 <br />
 
