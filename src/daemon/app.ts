@@ -1489,6 +1489,12 @@ class PluginRobloxApp {
       );
       this.queuePrivilegedActionConfirmationPreference(session, "plugin_report");
     }
+    if (Object.prototype.hasOwnProperty.call(metadata, "detectModels")) {
+      session.detectModels = coerceBoolean(
+        (metadata as Record<string, unknown>).detectModels,
+        session.detectModels ?? false
+      );
+    }
     if (Object.prototype.hasOwnProperty.call(metadata, "syncTargets")) {
       session.syncTargets = normalizeSyncTargets((metadata as Record<string, unknown>).syncTargets);
     }
@@ -2212,6 +2218,7 @@ class PluginRobloxApp {
       options.privilegedActionConfirmationEnabled,
       null
     );
+    session.detectModels = coerceBoolean(options.detectModels, false);
     session.lastPluginVersionSeenAt = session.pluginVersion || session.pluginProtocolVersion !== null
       ? new Date().toISOString()
       : null;
@@ -3043,6 +3050,7 @@ class PluginRobloxApp {
       pluginVersion: normalizeVersion(options.pluginVersion),
       pluginProtocolVersion: normalizeProtocolVersion(options.pluginProtocolVersion),
       syncTargets: normalizeSyncTargets(options.syncTargets),
+      detectModels: coerceBoolean(options.detectModels, false),
       privilegedActionConfirmationEnabled: coerceBoolean(
         options.privilegedActionConfirmationEnabled,
         null
@@ -3121,6 +3129,7 @@ class PluginRobloxApp {
     pluginVersion = null,
     pluginProtocolVersion = null,
     privilegedActionConfirmationEnabled = null,
+    detectModels = null,
     syncTargets = null,
     requirePluginVersion = false
   }) {
@@ -3163,6 +3172,7 @@ class PluginRobloxApp {
         pluginVersion,
         pluginProtocolVersion,
         privilegedActionConfirmationEnabled,
+        detectModels,
         syncTargets,
         requirePluginVersion
       });
@@ -4291,6 +4301,7 @@ class PluginRobloxApp {
       privilegedActionReasonCode: privileged.reasonCode,
       privilegedActionMessage: privileged.allowed ? null : privileged.message,
       privilegedActionConfirmationEnabled: session.privilegedActionConfirmationEnabled ?? null,
+      detectModels: session.detectModels === true,
       syncTargets: this.syncTargetsForSession(session),
       destructiveConfirmationPending: session.destructiveConfirmationPending === true,
       destructiveConfirmationType: session.destructiveConfirmationType || null,

@@ -352,8 +352,56 @@ function normalizeProperties(properties, node = null) {
   return normalizeSemanticValue(props);
 }
 
+function normalizeModelDescriptorData(modelData) {
+  if (!isPlainObject(modelData)) {
+    return null;
+  }
+  const normalized: any = {};
+  if (Number.isInteger(modelData.descriptorVersion) && modelData.descriptorVersion > 0) {
+    normalized.descriptorVersion = modelData.descriptorVersion;
+  }
+  if (typeof modelData.fullName === "string") {
+    normalized.fullName = modelData.fullName;
+  }
+  if (Number.isInteger(modelData.childCount) && modelData.childCount >= 0) {
+    normalized.childCount = modelData.childCount;
+  }
+  if (Number.isInteger(modelData.descendantCount) && modelData.descendantCount >= 0) {
+    normalized.descendantCount = modelData.descendantCount;
+  }
+  if (typeof modelData.primaryPart === "string") {
+    normalized.primaryPart = modelData.primaryPart;
+  }
+  if (Array.isArray(modelData.children)) {
+    normalized.children = modelData.children
+      .filter((child) => isPlainObject(child))
+      .map((child) => {
+        const summary: any = {};
+        if (typeof child.name === "string") {
+          summary.name = child.name;
+        }
+        if (typeof child.className === "string") {
+          summary.className = child.className;
+        }
+        if (Number.isInteger(child.childCount) && child.childCount >= 0) {
+          summary.childCount = child.childCount;
+        }
+        return summary;
+      })
+      .filter((child) => child.name !== undefined || child.className !== undefined)
+      .sort((left, right) => `${left.name || ""}\u0000${left.className || ""}`.localeCompare(`${right.name || ""}\u0000${right.className || ""}`));
+  }
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function isModelDescriptorNode(node, className = null) {
+  return (className || normalizeClassName(node, normalizeFileKind(node))) === "Model"
+    && node?.modelDescriptor === true;
+}
+
 function isOpaqueModelNode(node, fileKind = null) {
-  return normalizeClassName(node, fileKind ?? normalizeFileKind(node)) === "Model";
+  return normalizeClassName(node, fileKind ?? normalizeFileKind(node)) === "Model"
+    && node?.modelDescriptor !== true;
 }
 
 function canonicalNodeSortKey(node) {
@@ -371,6 +419,20 @@ function normalizeNode(node, context: any = {}) {
   const className = normalizeClassName(value, fileKind);
   if (isOpaqueModelNode(value, fileKind)) {
     return null;
+  }
+  if (isModelDescriptorNode(value, className)) {
+    const normalized: any = {
+      name: typeof value.name === "string" ? value.name : "",
+      className,
+      properties: normalizeProperties(value.properties, { className, fileKind }),
+      children: [],
+      modelDescriptor: true
+    };
+    const modelData = normalizeModelDescriptorData(value.modelData);
+    if (modelData) {
+      normalized.modelData = modelData;
+    }
+    return normalized;
   }
   const insideModel = context.insideModel === true;
   const isModel = className === "Model";
@@ -581,6 +643,16 @@ function diffSnapshots(expectedSnapshot, observedSnapshot, options: any = {}) {
         type: "properties",
         expected: compactValue(expectedNormalized.properties || {}),
         observed: compactValue(observedNormalized.properties || {})
+      });
+    }
+
+    if ((expectedNormalized.modelDescriptor === true || observedNormalized.modelDescriptor === true)
+      && stringifySorted(expectedNormalized.modelData || {}) !== stringifySorted(observedNormalized.modelData || {})) {
+      addChange({
+        path: pathLabel,
+        type: "model_descriptor",
+        expected: compactValue(expectedNormalized.modelData || {}),
+        observed: compactValue(observedNormalized.modelData || {})
       });
     }
 

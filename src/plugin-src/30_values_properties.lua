@@ -502,6 +502,9 @@ local function propertyNamesForInstance(instance)
 		propertyNames.TextureID = true
 		propertyNames.RenderFidelity = true
 	end
+	if instance:IsA("Model") then
+		propertyNames.WorldPivot = true
+	end
 
 	propertyNameCache[className] = propertyNames
 	return propertyNames
@@ -523,6 +526,21 @@ local function syncableAttributes(attributes)
 	return filtered, hasAttributes
 end
 
+local function serializedSyncableAttributes(attributes)
+	local filtered = {}
+	local hasAttributes = false
+	for attributeName, attributeValue in pairs(attributes or {}) do
+		if not isReservedAttributeName(attributeName) then
+			local serialized = serializeValue(attributeValue)
+			if serialized ~= nil then
+				filtered[attributeName] = serialized
+				hasAttributes = true
+			end
+		end
+	end
+	return filtered, hasAttributes
+end
+
 local function collectProperties(instance)
 	local propertyNames = propertyNamesForInstance(instance)
 	local properties = {}
@@ -539,6 +557,17 @@ local function collectProperties(instance)
 		properties.Attributes = attributes
 	end
 
+	return properties
+end
+
+local function collectModelDescriptorProperties(instance)
+	local properties = collectProperties(instance)
+	local attributes, hasAttributes = serializedSyncableAttributes(instance:GetAttributes())
+	if hasAttributes then
+		properties.Attributes = attributes
+	else
+		properties.Attributes = nil
+	end
 	return properties
 end
 

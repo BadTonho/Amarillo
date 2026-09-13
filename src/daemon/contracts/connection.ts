@@ -32,6 +32,7 @@ export interface ConnectionAcceptBody {
   pluginVersion?: unknown;
   pluginProtocolVersion?: unknown;
   privilegedActionConfirmationEnabled?: unknown;
+  detectModels?: unknown;
   syncTargets?: unknown;
 }
 
@@ -41,6 +42,7 @@ export interface ConnectionDiffBody {
   projectId?: unknown;
   studioSnapshot?: unknown;
   truthSource?: unknown;
+  detectModels?: unknown;
   syncTargets?: unknown;
 }
 
@@ -63,6 +65,7 @@ export interface NormalizedConnectionAccept {
   pluginVersion: string | null;
   pluginProtocolVersion: string | number | null;
   privilegedActionConfirmationEnabled: boolean | null;
+  detectModels: boolean | null;
   syncTargets: SyncTargetsPayload;
 }
 
@@ -72,6 +75,7 @@ export interface NormalizedConnectionDiff {
   projectId: string | null;
   studioSnapshot: StudioSnapshot;
   truthSource: TruthSource;
+  detectModels: boolean | null;
   syncTargets: SyncTargetsPayload;
 }
 
@@ -189,6 +193,7 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
     pluginVersion: optionalString(body.pluginVersion),
     pluginProtocolVersion: optionalVersion(body.pluginProtocolVersion),
     privilegedActionConfirmationEnabled: optionalBoolean(body.privilegedActionConfirmationEnabled),
+    detectModels: optionalBoolean(body.detectModels),
     syncTargets: optionalObject(body.syncTargets)
   };
 }
@@ -200,6 +205,7 @@ export function normalizeConnectionDiffBody(body: ConnectionDiffBody): Normalize
     projectId: optionalString(body.projectId),
     studioSnapshot: normalizeStudioSnapshot(body.studioSnapshot),
     truthSource: normalizeTruthSource(body.truthSource),
+    detectModels: optionalBoolean(body.detectModels),
     syncTargets: optionalObject(body.syncTargets)
   };
 }

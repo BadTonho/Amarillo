@@ -474,6 +474,50 @@ test("semantic snapshot hash ignores opaque Models and accepts duplicate folders
   assert.equal(diffSnapshots(emptyExpectedSnapshot, observedModelOnlySnapshot).changeCount, 0);
 });
 
+test("semantic snapshot hash includes compact Model descriptors but ignores their raw children", () => {
+  const descriptor = {
+    name: "Vehicle",
+    className: "Model",
+    modelDescriptor: true,
+    properties: { Attributes: { Category: "Vehicle" } },
+    modelData: {
+      descriptorVersion: 1,
+      fullName: "game.ReplicatedStorage.Vehicle",
+      childCount: 1,
+      descendantCount: 2,
+      primaryPart: "Hull",
+      children: [{ name: "Hull", className: "MeshPart", childCount: 1 }]
+    },
+    children: [{
+      name: "AssetThatMustNotBeCompared",
+      className: "MeshPart",
+      properties: { MeshId: "rbxassetid://1" },
+      children: []
+    }]
+  };
+  const sameDescriptorWithDifferentRawTree = {
+    ...descriptor,
+    children: [{
+      name: "DifferentAsset",
+      className: "Part",
+      properties: { Size: [100, 100, 100] },
+      children: []
+    }]
+  };
+  const changedDescriptor = {
+    ...descriptor,
+    modelData: { ...descriptor.modelData, descendantCount: 3 }
+  };
+  const snapshot = (child) => ({
+    projectId: "Game.project.json",
+    mounts: [{ id: "ReplicatedStorage", children: [child] }]
+  });
+
+  assert.equal(hashSnapshot(snapshot(descriptor)), hashSnapshot(snapshot(sameDescriptorWithDifferentRawTree)));
+  assert.notEqual(hashSnapshot(snapshot(descriptor)), hashSnapshot(snapshot(changedDescriptor)));
+  assert.match(JSON.stringify(diffSnapshots(snapshot(descriptor), snapshot(changedDescriptor))), /model_descriptor/);
+});
+
 test("failed initial PC sync can be retried by the same Studio window", () => {
   const workspace = createWorkspaceWithProject();
   const app = new PluginRobloxApp({ workspaceRoot: workspace, host: "127.0.0.1", port: 8323 });

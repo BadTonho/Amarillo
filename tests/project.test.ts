@@ -1160,6 +1160,82 @@ test("local Model directories are pruned from snapshots and preserved during syn
   assert.equal(fs.readFileSync(path.join(modelRoot, "Legacy.server.luau"), "utf8"), "return 'keep me'");
 });
 
+test("Model descriptors persist compact metadata while preserving opaque assets", () => {
+  const workspace = createTempWorkspace();
+  const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");
+  const modelRoot = path.join(syncRoot, "Vehicle");
+  fs.mkdirSync(modelRoot, { recursive: true });
+  fs.writeFileSync(path.join(modelRoot, "init.meta.json"), JSON.stringify({
+    className: "Model",
+    modelDescriptor: true,
+    modelData: {
+      descriptorVersion: 1,
+      fullName: "game.ReplicatedStorage.Vehicle",
+      childCount: 2,
+      descendantCount: 4,
+      primaryPart: "Hull",
+      children: [
+        { name: "Hull", className: "MeshPart", childCount: 1 },
+        { name: "Controller", className: "Script", childCount: 0 }
+      ],
+      source: "must not persist"
+    },
+    properties: {
+      Attributes: { Category: "Vehicle" },
+      WorldPivot: { type: "CFrame", value: "compact" }
+    },
+    keepUnknowns: true
+  }, null, 2));
+  fs.writeFileSync(path.join(modelRoot, "LegacyAsset.rbxm"), "opaque asset", "utf8");
+  fs.writeFileSync(path.join(workspace, "Game.project.json"), JSON.stringify({
+    name: "Game",
+    tree: {
+      $className: "DataModel",
+      ReplicatedStorage: {
+        $path: "sync/ReplicatedStorage"
+      }
+    }
+  }, null, 2));
+
+  const project = parseProjectFile(path.join(workspace, "Game.project.json"), workspace);
+  const snapshot = readLocalProjectState(project);
+  const model = snapshot.mounts[0].children.find((child) => child.name === "Vehicle");
+  assert.equal(model.modelDescriptor, true);
+  assert.deepEqual(model.children, []);
+  assert.equal(model.modelData.children[0].name, "Controller");
+  assert.equal(model.modelData.source, undefined);
+
+  writeStudioProjectState(project, {
+    mounts: [{
+      id: "ReplicatedStorage",
+      children: [{
+        name: "Vehicle",
+        className: "Model",
+        modelDescriptor: true,
+        keepUnknowns: true,
+        properties: { Attributes: { Category: "Vehicle" } },
+        modelData: {
+          descriptorVersion: 1,
+          fullName: "game.ReplicatedStorage.Vehicle",
+          childCount: 2,
+          descendantCount: 4,
+          children: [
+            { name: "Hull", className: "MeshPart", childCount: 1 },
+            { name: "Controller", className: "Script", childCount: 0 }
+          ]
+        },
+        children: []
+      }]
+    }]
+  });
+
+  const writtenMeta = JSON.parse(fs.readFileSync(path.join(modelRoot, "init.meta.json"), "utf8"));
+  assert.equal(writtenMeta.modelDescriptor, true);
+  assert.equal(writtenMeta.modelData.childCount, 2);
+  assert.equal(writtenMeta.modelData.source, undefined);
+  assert.equal(fs.existsSync(path.join(modelRoot, "LegacyAsset.rbxm")), true);
+});
+
 test("studio snapshot preserves explicit Folder init metadata markers", () => {
   const workspace = createTempWorkspace();
   const syncRoot = path.join(workspace, "sync", "ReplicatedStorage");

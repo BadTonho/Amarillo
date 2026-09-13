@@ -99,6 +99,7 @@ local function acceptPendingConnection(truthSource)
 		pluginVersion = PLUGIN_VERSION,
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
 		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
+		detectModels = state.detectModels == true,
 		syncTargets = syncTargetsPayload()
 	})
 	if not ok or not response or response.ok ~= true then
@@ -256,6 +257,7 @@ local function fetchAndShowDiff(truthSource)
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		studioSnapshot = studioSnapshot,
+		detectModels = state.detectModels == true,
 		syncTargets = syncTargetsPayload()
 	})
 
@@ -564,6 +566,37 @@ local function toggleWorkspaceSync()
 	setWorkspaceSyncEnabled(not (state.syncTargets and state.syncTargets.Workspace == true), "Studio")
 end
 
+updateModelDetectionUi = function()
+	local enabled = state.detectModels == true
+	local button = state.ui.modelDetectionToggle
+	if button then
+		button.Text = enabled and "Enabled" or "Disabled"
+		setButtonStyle(button, enabled and "primary" or "secondary")
+	end
+end
+
+setModelDetectionEnabled = function(enabled, source)
+	state.detectModels = enabled == true
+	state.lastSnapshotBodyJson = nil
+	state.treeCache = nil
+	updateModelDetectionUi()
+	saveSettings()
+	if state.connected then
+		local okRefresh, refreshErr = pcall(function()
+			syncSnapshot("model_detection_changed")
+		end)
+		if not okRefresh then
+			appendLog("Failed to refresh snapshot after Model detection change: " .. tostring(refreshErr))
+			reportPluginError(tostring(refreshErr), "MODEL-DETECTION-SNAPSHOT")
+		end
+	end
+	appendLog("Model detection " .. (state.detectModels and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
+end
+
+local function toggleModelDetection()
+	setModelDetectionEnabled(not (state.detectModels == true), "Studio")
+end
+
 local function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
@@ -660,6 +693,7 @@ local function openSettingsView()
 	updateEndpointSummary()
 	updateProjectTargetSummary()
 	updateSyncTargetsUi()
+	updateModelDetectionUi()
 	showView("settings")
 end
 
@@ -746,8 +780,12 @@ local function buildPluginShell()
 	state.ui.homePage.Size = UDim2.fromScale(1, 1)
 	safeSetParent(state.ui.homePage, root, "UI home page parent")
 
-	state.ui.settingsPage = Instance.new("Frame")
+	state.ui.settingsPage = Instance.new("ScrollingFrame")
 	state.ui.settingsPage.BackgroundTransparency = 1
+	state.ui.settingsPage.BorderSizePixel = 0
+	state.ui.settingsPage.ScrollBarThickness = 6
+	state.ui.settingsPage.ScrollingDirection = Enum.ScrollingDirection.Y
+	state.ui.settingsPage.CanvasSize = UDim2.new(0, 0, 0, 920)
 	state.ui.settingsPage.Size = UDim2.fromScale(1, 1)
 	state.ui.settingsPage.Visible = false
 	safeSetParent(state.ui.settingsPage, root, "UI settings page parent")
@@ -876,15 +914,22 @@ local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, W
 workspaceSyncHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 638), toggleWorkspaceSync)
 
+-- Optional Model detection toggle
+local modelDetectionTitle = makeTextLabel(state.ui.settingsPage, "Detect Models", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 14)
+modelDetectionTitle.Font = Enum.Font.GothamSemibold
+local modelDetectionHint = makeTextLabel(state.ui.settingsPage, "When enabled, active mounts include compact Model metadata without downloading assets.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 712), 12)
+modelDetectionHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+state.ui.modelDetectionToggle = makeButton(state.ui.settingsPage, state.detectModels and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 712), toggleModelDetection)
+
 -- Confirm privileged actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 14)
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 764), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 712), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 786), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 712), togglePrivilegedActionConfirmation)
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 786), togglePrivilegedActionConfirmation)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 760), 12)
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 834), 12)
 settingsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 end
 
@@ -1288,6 +1333,7 @@ local function createPluginUi()
 	loadSettings()
 	updatePrivilegedActionConfirmationUi()
 	updateSyncTargetsUi()
+	updateModelDetectionUi()
 	updateEndpointSummary()
 	appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
 	pcall(fetchDaemonHealth)

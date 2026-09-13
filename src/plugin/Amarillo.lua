@@ -77,6 +77,7 @@ local state = {
 	pendingDestructiveCommand = nil,
 	pendingDestructiveSinceAt = nil,
 	confirmPrivilegedActions = true,
+	detectModels = false,
 	syncTargets = {
 		Workspace = false
 	},
@@ -142,6 +143,8 @@ local setPrivilegedActionConfirmation
 local updatePrivilegedActionConfirmationUi
 local setWorkspaceSyncEnabled
 local updateSyncTargetsUi
+local setModelDetectionEnabled
+local updateModelDetectionUi
 -- <<< src/plugin-src/00_bootstrap.lua
 
 -- >>> src/plugin-src/10_settings_status.lua
@@ -178,6 +181,7 @@ local function addVersionPayload(body)
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
 	body.privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+	body.detectModels = state.detectModels == true
 	body.syncTargets = {
 		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
 	}
@@ -187,9 +191,11 @@ end
 
 local function pluginVersionQuery()
 	local workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false
+	local detectModels = state.detectModels == true
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
 		.. "&privilegedActionConfirmationEnabled=" .. tostring(state.confirmPrivilegedActions == true)
+		.. "&detectModels=" .. tostring(detectModels)
 		.. "&syncTargets.Workspace=" .. tostring(workspaceSyncEnabled)
 	if state.pendingDestructiveCommand then
 		query = query
@@ -573,6 +579,7 @@ local function saveSettings()
 		portCustomized = state.portCustomized,
 		syncTargets = syncTargetsPayload(),
 		workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false,
+		detectModels = state.detectModels == true,
 		confirmPrivilegedActions = state.confirmPrivilegedActions,
 		confirmDestructiveActions = state.confirmPrivilegedActions,
 		confirmPropertyChanges = state.confirmPrivilegedActions
@@ -602,6 +609,7 @@ local function loadSettings()
 		else
 			state.syncTargets.Workspace = false
 		end
+		state.detectModels = saved.detectModels == true
 		if saved.confirmPrivilegedActions ~= nil then
 			state.confirmPrivilegedActions = saved.confirmPrivilegedActions
 		elseif saved.confirmDestructiveActions ~= nil then
@@ -1373,6 +1381,9 @@ local function propertyNamesForInstance(instance)
 		propertyNames.TextureID = true
 		propertyNames.RenderFidelity = true
 	end
+	if instance:IsA("Model") then
+		propertyNames.WorldPivot = true
+	end
 
 	propertyNameCache[className] = propertyNames
 	return propertyNames
@@ -1394,6 +1405,21 @@ local function syncableAttributes(attributes)
 	return filtered, hasAttributes
 end
 
+local function serializedSyncableAttributes(attributes)
+	local filtered = {}
+	local hasAttributes = false
+	for attributeName, attributeValue in pairs(attributes or {}) do
+		if not isReservedAttributeName(attributeName) then
+			local serialized = serializeValue(attributeValue)
+			if serialized ~= nil then
+				filtered[attributeName] = serialized
+				hasAttributes = true
+			end
+		end
+	end
+	return filtered, hasAttributes
+end
+
 local function collectProperties(instance)
 	local propertyNames = propertyNamesForInstance(instance)
 	local properties = {}
@@ -1410,6 +1436,17 @@ local function collectProperties(instance)
 		properties.Attributes = attributes
 	end
 
+	return properties
+end
+
+local function collectModelDescriptorProperties(instance)
+	local properties = collectProperties(instance)
+	local attributes, hasAttributes = serializedSyncableAttributes(instance:GetAttributes())
+	if hasAttributes then
+		properties.Attributes = attributes
+	else
+		properties.Attributes = nil
+	end
 	return properties
 end
 
@@ -1732,8 +1769,12 @@ local function isProtectedSyncInstance(instance)
 	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
-local function isOpaqueModelInstance(instance)
-	return instance and instance:IsA("Model")
+local function isModelDetectionEnabled(options)
+	return state.detectModels == true and not (options and options.omitModels == true)
+end
+
+local function isOpaqueModelInstance(instance, options)
+	return instance and instance:IsA("Model") and not isModelDetectionEnabled(options)
 end
 
 local shouldDestroyUnexpectedChild = nil
@@ -1752,7 +1793,7 @@ local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredCh
 	if isPlayerControlledInstance(instance) then
 		return false
 	end
-	if isOpaqueModelInstance(instance) then
+	if isOpaqueModelInstance(instance, options) then
 		return false
 	end
 	if desiredChild then
@@ -1814,9 +1855,84 @@ local function describeInstanceForLog(instance)
 	return fullName
 end
 
-local function snapshotNode(instance, openDocumentSources, desiredNode, options)
-	if isOpaqueModelInstance(instance) then
+local function countModelDescendants(instance)
+	local count = 0
+	for _, child in ipairs(instance:GetChildren()) do
+		count = count + 1 + countModelDescendants(child)
+	end
+	return count
+end
+
+local function relativeModelChildPath(model, child)
+	if not model or not child then
 		return nil
+	end
+	local segments = {}
+	local current = child
+	while current and current ~= model do
+		table.insert(segments, 1, current.Name)
+		current = current.Parent
+	end
+	if current ~= model or #segments == 0 then
+		return nil
+	end
+	return table.concat(segments, ".")
+end
+
+local function snapshotModelDescriptor(instance, options)
+	local amarilloId = reserveSnapshotAmarilloId(instance, options)
+	local childSummary = {}
+	for _, child in ipairs(instance:GetChildren()) do
+		local childCount = 0
+		pcall(function()
+			childCount = #child:GetChildren()
+		end)
+		table.insert(childSummary, {
+			name = child.Name,
+			className = child.ClassName,
+			childCount = childCount
+		})
+	end
+	table.sort(childSummary, function(left, right)
+		local leftKey = tostring(left.name or "") .. "\0" .. tostring(left.className or "")
+		local rightKey = tostring(right.name or "") .. "\0" .. tostring(right.className or "")
+		return leftKey < rightKey
+	end)
+
+	local primaryPart = nil
+	pcall(function()
+		primaryPart = relativeModelChildPath(instance, instance.PrimaryPart)
+	end)
+
+	local node = {
+		name = instance.Name,
+		className = instance.ClassName,
+		classNameSource = "studio",
+		modelDescriptor = true,
+		keepUnknowns = true,
+		properties = collectModelDescriptorProperties(instance),
+		children = {},
+		modelData = {
+			descriptorVersion = 1,
+			fullName = describeInstanceForLog(instance),
+			childCount = #childSummary,
+			descendantCount = countModelDescendants(instance),
+			primaryPart = primaryPart,
+			children = childSummary
+		}
+	}
+	if amarilloId then
+		node.amarilloId = amarilloId
+	end
+	return node
+end
+
+local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+	if instance:IsA("Model") then
+		if isOpaqueModelInstance(instance, options) then
+			return nil
+		end
+		return snapshotModelDescriptor(instance, options)
 	end
 	local amarilloId = reserveSnapshotAmarilloId(instance, options)
 	local node = {
@@ -2170,7 +2286,7 @@ local function setProperty(instance, propertyName, rawValue)
 			return false, tostring(currentAttributes)
 		end
 		local desiredAttributes = syncableAttributes(rawValue)
-		local currentSyncableAttributes = syncableAttributes(currentAttributes)
+		local currentSyncableAttributes = serializedSyncableAttributes(currentAttributes)
 		if valuesEqual(currentSyncableAttributes, desiredAttributes) then
 			return true
 		end
@@ -2184,7 +2300,8 @@ local function setProperty(instance, propertyName, rawValue)
 		end
 		for attributeName, attributeValue in pairs(desiredAttributes) do
 			if not valuesEqual(currentAttributes[attributeName], attributeValue) then
-				local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, attributeValue, "sync set attribute")
+			local convertedAttribute = convertIncomingValue(currentAttributes[attributeName], attributeValue)
+			local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, convertedAttribute, "sync set attribute")
 				if not okAttribute then
 					return false, tostring(attributeErr)
 				end
@@ -2364,7 +2481,37 @@ local function ensureInstance(parent, desiredNode, claimedChildren)
 	return existing, corrected
 end
 
+local function isModelDescriptorNode(desiredNode)
+	return type(desiredNode) == "table"
+		and desiredNode.modelDescriptor == true
+		and desiredNode.className == "Model"
+end
+
+local function applyModelDescriptor(parent, desiredNode, claimedSiblings)
+	local existing = findExistingChildForDesired(parent, desiredNode, claimedSiblings)
+	if existing and isPlayerControlledInstance(existing) then
+		appendLog("Model descriptor ignored player-controlled instance: " .. describeInstanceForLog(existing))
+		return true
+	end
+	if not existing or not existing:IsA("Model") then
+		appendLog("Model descriptor ignored; existing Model not found: " .. tostring(desiredNode.name or "?"))
+		return true
+	end
+
+	if claimedSiblings then
+		claimedSiblings[existing] = true
+	end
+	if type(desiredNode.amarilloId) == "string" and desiredNode.amarilloId ~= "" then
+		setAmarilloId(existing, desiredNode.amarilloId, "model descriptor identity")
+	end
+	local okProperties = applyProperties(existing, desiredNode.properties)
+	return not okProperties
+end
+
 local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings)
+	if isModelDescriptorNode(desiredNode) then
+		return applyModelDescriptor(parent, desiredNode, claimedSiblings)
+	end
 	local instance, corrected = ensureInstance(parent, desiredNode, claimedSiblings)
 	if not instance then
 		return corrected
@@ -3996,6 +4143,7 @@ local function acceptPendingConnection(truthSource)
 		pluginVersion = PLUGIN_VERSION,
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
 		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
+		detectModels = state.detectModels == true,
 		syncTargets = syncTargetsPayload()
 	})
 	if not ok or not response or response.ok ~= true then
@@ -4153,6 +4301,7 @@ local function fetchAndShowDiff(truthSource)
 		projectId = state.selectedProjectId,
 		truthSource = truthSource,
 		studioSnapshot = studioSnapshot,
+		detectModels = state.detectModels == true,
 		syncTargets = syncTargetsPayload()
 	})
 
@@ -4461,6 +4610,37 @@ local function toggleWorkspaceSync()
 	setWorkspaceSyncEnabled(not (state.syncTargets and state.syncTargets.Workspace == true), "Studio")
 end
 
+updateModelDetectionUi = function()
+	local enabled = state.detectModels == true
+	local button = state.ui.modelDetectionToggle
+	if button then
+		button.Text = enabled and "Enabled" or "Disabled"
+		setButtonStyle(button, enabled and "primary" or "secondary")
+	end
+end
+
+setModelDetectionEnabled = function(enabled, source)
+	state.detectModels = enabled == true
+	state.lastSnapshotBodyJson = nil
+	state.treeCache = nil
+	updateModelDetectionUi()
+	saveSettings()
+	if state.connected then
+		local okRefresh, refreshErr = pcall(function()
+			syncSnapshot("model_detection_changed")
+		end)
+		if not okRefresh then
+			appendLog("Failed to refresh snapshot after Model detection change: " .. tostring(refreshErr))
+			reportPluginError(tostring(refreshErr), "MODEL-DETECTION-SNAPSHOT")
+		end
+	end
+	appendLog("Model detection " .. (state.detectModels and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
+end
+
+local function toggleModelDetection()
+	setModelDetectionEnabled(not (state.detectModels == true), "Studio")
+end
+
 local function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
@@ -4557,6 +4737,7 @@ local function openSettingsView()
 	updateEndpointSummary()
 	updateProjectTargetSummary()
 	updateSyncTargetsUi()
+	updateModelDetectionUi()
 	showView("settings")
 end
 
@@ -4643,8 +4824,12 @@ local function buildPluginShell()
 	state.ui.homePage.Size = UDim2.fromScale(1, 1)
 	safeSetParent(state.ui.homePage, root, "UI home page parent")
 
-	state.ui.settingsPage = Instance.new("Frame")
+	state.ui.settingsPage = Instance.new("ScrollingFrame")
 	state.ui.settingsPage.BackgroundTransparency = 1
+	state.ui.settingsPage.BorderSizePixel = 0
+	state.ui.settingsPage.ScrollBarThickness = 6
+	state.ui.settingsPage.ScrollingDirection = Enum.ScrollingDirection.Y
+	state.ui.settingsPage.CanvasSize = UDim2.new(0, 0, 0, 920)
 	state.ui.settingsPage.Size = UDim2.fromScale(1, 1)
 	state.ui.settingsPage.Visible = false
 	safeSetParent(state.ui.settingsPage, root, "UI settings page parent")
@@ -4773,15 +4958,22 @@ local workspaceSyncHint = makeTextLabel(state.ui.settingsPage, "When disabled, W
 workspaceSyncHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.workspaceSyncToggle = makeButton(state.ui.settingsPage, state.syncTargets and state.syncTargets.Workspace and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 638), toggleWorkspaceSync)
 
+-- Optional Model detection toggle
+local modelDetectionTitle = makeTextLabel(state.ui.settingsPage, "Detect Models", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 14)
+modelDetectionTitle.Font = Enum.Font.GothamSemibold
+local modelDetectionHint = makeTextLabel(state.ui.settingsPage, "When enabled, active mounts include compact Model metadata without downloading assets.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 712), 12)
+modelDetectionHint.TextColor3 = Color3.fromRGB(139, 148, 158)
+state.ui.modelDetectionToggle = makeButton(state.ui.settingsPage, state.detectModels and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 712), toggleModelDetection)
+
 -- Confirm privileged actions toggle
-local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 690), 14)
+local confirmPropTitle = makeTextLabel(state.ui.settingsPage, "Privileged action confirmation", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 764), 14)
 confirmPropTitle.Font = Enum.Font.GothamSemibold
-local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 712), 12)
+local confirmPropHint = makeTextLabel(state.ui.settingsPage, "Confirms run_code, modify_property, create_instance, delete_instance, or insert_model.", UDim2.new(1, -160, 0, 32), UDim2.fromOffset(10, 786), 12)
 confirmPropHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 
-state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 712), togglePrivilegedActionConfirmation)
+state.ui.confirmPropToggle = makeButton(state.ui.settingsPage, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(120, 30), UDim2.new(1, -138, 0, 786), togglePrivilegedActionConfirmation)
 
-local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 760), 12)
+local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint or project requires reconnecting the plugin to the daemon.", UDim2.new(1, -20, 0, 18), UDim2.fromOffset(10, 834), 12)
 settingsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 end
 
@@ -5185,6 +5377,7 @@ local function createPluginUi()
 	loadSettings()
 	updatePrivilegedActionConfirmationUi()
 	updateSyncTargetsUi()
+	updateModelDetectionUi()
 	updateEndpointSummary()
 	appendLog("Amarillo loaded. Host " .. state.host .. ":" .. tostring(state.port))
 	pcall(fetchDaemonHealth)

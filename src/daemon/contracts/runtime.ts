@@ -150,6 +150,7 @@ export interface RuntimeSession {
   pluginVersion: string | null;
   pluginProtocolVersion: number | null;
   privilegedActionConfirmationEnabled: boolean | null;
+  detectModels: boolean | null;
   lastPluginVersionSeenAt: string | null;
   lastCommandError: string | null;
   destructiveConfirmationPending: boolean;
@@ -170,6 +171,7 @@ export interface SessionOpenOptions {
   pluginVersion?: string | number | null;
   pluginProtocolVersion?: string | number | null;
   privilegedActionConfirmationEnabled?: boolean | string | number | null;
+  detectModels?: boolean | string | number | null;
   syncTargets?: unknown;
 }
 

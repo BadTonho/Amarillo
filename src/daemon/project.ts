@@ -132,6 +132,48 @@ function sanitizeSyncProperties(properties) {
   return sanitized;
 }
 
+function normalizeModelDescriptorData(modelData) {
+  if (!isPlainObject(modelData)) {
+    return null;
+  }
+  const normalized: any = {};
+  if (Number.isInteger(modelData.descriptorVersion) && modelData.descriptorVersion > 0) {
+    normalized.descriptorVersion = modelData.descriptorVersion;
+  }
+  if (typeof modelData.fullName === "string") {
+    normalized.fullName = modelData.fullName;
+  }
+  if (Number.isInteger(modelData.childCount) && modelData.childCount >= 0) {
+    normalized.childCount = modelData.childCount;
+  }
+  if (Number.isInteger(modelData.descendantCount) && modelData.descendantCount >= 0) {
+    normalized.descendantCount = modelData.descendantCount;
+  }
+  if (typeof modelData.primaryPart === "string") {
+    normalized.primaryPart = modelData.primaryPart;
+  }
+  if (Array.isArray(modelData.children)) {
+    normalized.children = modelData.children
+      .filter((child) => isPlainObject(child))
+      .map((child) => {
+        const summary: any = {};
+        if (typeof child.name === "string") {
+          summary.name = child.name;
+        }
+        if (typeof child.className === "string") {
+          summary.className = child.className;
+        }
+        if (Number.isInteger(child.childCount) && child.childCount >= 0) {
+          summary.childCount = child.childCount;
+        }
+        return summary;
+      })
+      .filter((child) => child.name !== undefined || child.className !== undefined)
+      .sort((left, right) => `${left.name || ""}\u0000${left.className || ""}`.localeCompare(`${right.name || ""}\u0000${right.className || ""}`));
+  }
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
 function parseJsonFile(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
@@ -467,8 +509,12 @@ function readMetaFile(metaPath) {
   }
 }
 
+function isModelDescriptorNode(node) {
+  return node?.className === "Model" && node?.modelDescriptor === true;
+}
+
 function isOpaqueModelNode(node) {
-  return node?.className === "Model";
+  return node?.className === "Model" && !isModelDescriptorNode(node);
 }
 
 function isModelAssetFileName(fileName) {
@@ -484,7 +530,7 @@ function isOpaqueModelDirectory(dirPath) {
   if (fs.existsSync(metaPath)) {
     try {
       const meta = parseJsonFile(metaPath);
-      if (meta?.className === "Model") {
+      if (meta?.className === "Model" && meta?.modelDescriptor !== true) {
         return true;
       }
     } catch (_error) {
@@ -495,12 +541,36 @@ function isOpaqueModelDirectory(dirPath) {
     .some((entry) => entry.isFile() && isInitModelAssetFileName(entry.name));
 }
 
+function isModelDescriptorDirectory(dirPath) {
+  const metaPath = path.join(dirPath, `init${META_SUFFIX}`);
+  if (!fs.existsSync(metaPath)) {
+    return false;
+  }
+  try {
+    const meta = parseJsonFile(metaPath);
+    return meta?.className === "Model" && meta?.modelDescriptor === true;
+  } catch (_error) {
+    return false;
+  }
+}
+
 function isOpaqueModelEntry(fullPath, entryName = path.basename(fullPath)) {
   if (isModelAssetFileName(entryName)) {
     return true;
   }
   try {
     return fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory() && isOpaqueModelDirectory(fullPath);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function isModelDescriptorEntry(fullPath, entryName = path.basename(fullPath)) {
+  if (isModelAssetFileName(entryName)) {
+    return false;
+  }
+  try {
+    return fs.existsSync(fullPath) && fs.statSync(fullPath).isDirectory() && isModelDescriptorDirectory(fullPath);
   } catch (_error) {
     return false;
   }
@@ -1189,6 +1259,18 @@ function buildNodeFromDirectory(dirPath, options: any = {}) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
   applyIdentityMeta(baseNode, meta, dirName);
+  if (meta.modelDescriptor === true && baseNode.className === "Model") {
+    baseNode.modelDescriptor = true;
+    baseNode.keepUnknowns = true;
+    const modelData = normalizeModelDescriptorData(meta.modelData);
+    if (modelData) {
+      baseNode.modelData = modelData;
+    }
+  }
+  if (isModelDescriptorNode(baseNode)) {
+    baseNode.children = [];
+    return baseNode;
+  }
   if (isOpaqueModelNode(baseNode)) {
     baseNode.children = [];
     return baseNode;
@@ -1453,6 +1535,18 @@ async function buildNodeFromDirectoryAsync(dirPath, options: any = {}) {
     baseNode.keepUnknowns = meta.keepUnknowns;
   }
   applyIdentityMeta(baseNode, meta, dirName);
+  if (meta.modelDescriptor === true && baseNode.className === "Model") {
+    baseNode.modelDescriptor = true;
+    baseNode.keepUnknowns = true;
+    const modelData = normalizeModelDescriptorData(meta.modelData);
+    if (modelData) {
+      baseNode.modelData = modelData;
+    }
+  }
+  if (isModelDescriptorNode(baseNode)) {
+    baseNode.children = [];
+    return baseNode;
+  }
   if (isOpaqueModelNode(baseNode)) {
     baseNode.children = [];
     return baseNode;
@@ -1736,6 +1830,20 @@ function filterModelScriptOnlyNode(node, context: any = {}) {
   if (!node) {
     return null;
   }
+  if (isModelDescriptorNode(node)) {
+    const next = {
+      ...node,
+      children: [],
+      keepUnknowns: true
+    };
+    const modelData = normalizeModelDescriptorData(node.modelData);
+    if (modelData) {
+      next.modelData = modelData;
+    } else {
+      delete next.modelData;
+    }
+    return next;
+  }
   if (isOpaqueModelNode(node)) {
     return null;
   }
@@ -1811,7 +1919,7 @@ function syncbackEntryBaseName(entryName) {
 }
 
 function shouldPreserveSyncbackEntry(fullPath, entryName, options: any = {}) {
-  if (isOpaqueModelEntry(fullPath, entryName)) {
+  if (isOpaqueModelEntry(fullPath, entryName) || isModelDescriptorEntry(fullPath, entryName)) {
     return true;
   }
   const syncback = syncbackConfig(options);
@@ -1859,6 +1967,13 @@ function metaForNode(node, options: any = {}) {
   }
   if (node.keepUnknowns !== undefined) {
     meta.keepUnknowns = node.keepUnknowns;
+  }
+  if (isModelDescriptorNode(node)) {
+    meta.modelDescriptor = true;
+    const modelData = normalizeModelDescriptorData(node.modelData);
+    if (modelData) {
+      meta.modelData = modelData;
+    }
   }
   return meta;
 }
@@ -2146,7 +2261,7 @@ async function removePathAsync(targetPath, options: any = {}) {
 }
 
 async function shouldPreserveSyncbackEntryAsync(fullPath, entryName, options: any = {}) {
-  if (isOpaqueModelEntry(fullPath, entryName)) {
+  if (isOpaqueModelEntry(fullPath, entryName) || isModelDescriptorEntry(fullPath, entryName)) {
     return true;
   }
   const syncback = syncbackConfig(options);

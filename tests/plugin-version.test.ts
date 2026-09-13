@@ -312,12 +312,31 @@ test("Roblox plugin resolves exclusive mount folders as real Studio containers",
 
 test("Roblox plugin verifies apply snapshots against the applied tree without preserved Studio-only nodes", () => {
   assert.match(pluginSource, /local shouldDestroyUnexpectedChild = nil/);
-  assert.match(pluginSource, /local function isOpaqueModelInstance\(instance\)/);
-  assert.match(pluginSource, /if isOpaqueModelInstance\(instance\) then\s+return false\s+end/);
+  assert.match(pluginSource, /local function isOpaqueModelInstance\(instance, options\)/);
+  assert.match(pluginSource, /if isOpaqueModelInstance\(instance, options\) then\s+return false\s+end/);
   assert.match(pluginSource, /local function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
   assert.match(pluginSource, /options and options\.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply/);
   assert.match(pluginSource, /local referenceSnapshot = options\.desiredSnapshot or state\.treeCache/);
   assert.match(pluginSource, /appliedSnapshot = snapshotCurrentProject\(\{\s+desiredSnapshot = projectSnapshot,\s+omitPreservedUnknowns = true\s+\}\)/);
+});
+
+test("Roblox plugin supports optional compact Model descriptors", () => {
+  assert.match(pluginSource, /detectModels = false/);
+  assert.match(pluginSource, /body\.detectModels = state\.detectModels == true/);
+  assert.match(pluginSource, /detectModels = state\.detectModels == true/);
+  assert.match(pluginSource, /state\.detectModels = saved\.detectModels == true/);
+  assert.match(pluginSource, /state\.ui\.modelDetectionToggle = makeButton/);
+  assert.match(pluginSource, /Detect Models/);
+  assert.match(pluginSource, /local function snapshotModelDescriptor\(instance, options\)/);
+  assert.match(pluginSource, /modelDescriptor = true/);
+  assert.match(pluginSource, /descriptorVersion = 1/);
+  assert.match(pluginSource, /descendantCount = countModelDescendants\(instance\)/);
+  assert.match(pluginSource, /childCount = childCount/);
+  assert.match(pluginSource, /children = \{\}/);
+  assert.match(pluginSource, /local function applyModelDescriptor\(parent, desiredNode, claimedSiblings\)/);
+  assert.match(pluginSource, /Model descriptor ignored; existing Model not found/);
+  assert.match(pluginSource, /if isModelDescriptorNode\(desiredNode\) then\s+return applyModelDescriptor/);
+  assert.match(pluginSource, /setModelDetectionEnabled = function\(enabled, source\)/);
 });
 
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {

@@ -313,8 +313,12 @@ local function isProtectedSyncInstance(instance)
 	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
-local function isOpaqueModelInstance(instance)
-	return instance and instance:IsA("Model")
+local function isModelDetectionEnabled(options)
+	return state.detectModels == true and not (options and options.omitModels == true)
+end
+
+local function isOpaqueModelInstance(instance, options)
+	return instance and instance:IsA("Model") and not isModelDetectionEnabled(options)
 end
 
 local shouldDestroyUnexpectedChild = nil
@@ -333,7 +337,7 @@ local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredCh
 	if isPlayerControlledInstance(instance) then
 		return false
 	end
-	if isOpaqueModelInstance(instance) then
+	if isOpaqueModelInstance(instance, options) then
 		return false
 	end
 	if desiredChild then
@@ -395,9 +399,84 @@ local function describeInstanceForLog(instance)
 	return fullName
 end
 
-local function snapshotNode(instance, openDocumentSources, desiredNode, options)
-	if isOpaqueModelInstance(instance) then
+local function countModelDescendants(instance)
+	local count = 0
+	for _, child in ipairs(instance:GetChildren()) do
+		count = count + 1 + countModelDescendants(child)
+	end
+	return count
+end
+
+local function relativeModelChildPath(model, child)
+	if not model or not child then
 		return nil
+	end
+	local segments = {}
+	local current = child
+	while current and current ~= model do
+		table.insert(segments, 1, current.Name)
+		current = current.Parent
+	end
+	if current ~= model or #segments == 0 then
+		return nil
+	end
+	return table.concat(segments, ".")
+end
+
+local function snapshotModelDescriptor(instance, options)
+	local amarilloId = reserveSnapshotAmarilloId(instance, options)
+	local childSummary = {}
+	for _, child in ipairs(instance:GetChildren()) do
+		local childCount = 0
+		pcall(function()
+			childCount = #child:GetChildren()
+		end)
+		table.insert(childSummary, {
+			name = child.Name,
+			className = child.ClassName,
+			childCount = childCount
+		})
+	end
+	table.sort(childSummary, function(left, right)
+		local leftKey = tostring(left.name or "") .. "\0" .. tostring(left.className or "")
+		local rightKey = tostring(right.name or "") .. "\0" .. tostring(right.className or "")
+		return leftKey < rightKey
+	end)
+
+	local primaryPart = nil
+	pcall(function()
+		primaryPart = relativeModelChildPath(instance, instance.PrimaryPart)
+	end)
+
+	local node = {
+		name = instance.Name,
+		className = instance.ClassName,
+		classNameSource = "studio",
+		modelDescriptor = true,
+		keepUnknowns = true,
+		properties = collectModelDescriptorProperties(instance),
+		children = {},
+		modelData = {
+			descriptorVersion = 1,
+			fullName = describeInstanceForLog(instance),
+			childCount = #childSummary,
+			descendantCount = countModelDescendants(instance),
+			primaryPart = primaryPart,
+			children = childSummary
+		}
+	}
+	if amarilloId then
+		node.amarilloId = amarilloId
+	end
+	return node
+end
+
+local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+	if instance:IsA("Model") then
+		if isOpaqueModelInstance(instance, options) then
+			return nil
+		end
+		return snapshotModelDescriptor(instance, options)
 	end
 	local amarilloId = reserveSnapshotAmarilloId(instance, options)
 	local node = {
@@ -751,7 +830,7 @@ local function setProperty(instance, propertyName, rawValue)
 			return false, tostring(currentAttributes)
 		end
 		local desiredAttributes = syncableAttributes(rawValue)
-		local currentSyncableAttributes = syncableAttributes(currentAttributes)
+		local currentSyncableAttributes = serializedSyncableAttributes(currentAttributes)
 		if valuesEqual(currentSyncableAttributes, desiredAttributes) then
 			return true
 		end
@@ -765,7 +844,8 @@ local function setProperty(instance, propertyName, rawValue)
 		end
 		for attributeName, attributeValue in pairs(desiredAttributes) do
 			if not valuesEqual(currentAttributes[attributeName], attributeValue) then
-				local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, attributeValue, "sync set attribute")
+			local convertedAttribute = convertIncomingValue(currentAttributes[attributeName], attributeValue)
+			local okAttribute, attributeErr = safeSetAttribute(instance, attributeName, convertedAttribute, "sync set attribute")
 				if not okAttribute then
 					return false, tostring(attributeErr)
 				end
@@ -945,7 +1025,37 @@ local function ensureInstance(parent, desiredNode, claimedChildren)
 	return existing, corrected
 end
 
+local function isModelDescriptorNode(desiredNode)
+	return type(desiredNode) == "table"
+		and desiredNode.modelDescriptor == true
+		and desiredNode.className == "Model"
+end
+
+local function applyModelDescriptor(parent, desiredNode, claimedSiblings)
+	local existing = findExistingChildForDesired(parent, desiredNode, claimedSiblings)
+	if existing and isPlayerControlledInstance(existing) then
+		appendLog("Model descriptor ignored player-controlled instance: " .. describeInstanceForLog(existing))
+		return true
+	end
+	if not existing or not existing:IsA("Model") then
+		appendLog("Model descriptor ignored; existing Model not found: " .. tostring(desiredNode.name or "?"))
+		return true
+	end
+
+	if claimedSiblings then
+		claimedSiblings[existing] = true
+	end
+	if type(desiredNode.amarilloId) == "string" and desiredNode.amarilloId ~= "" then
+		setAmarilloId(existing, desiredNode.amarilloId, "model descriptor identity")
+	end
+	local okProperties = applyProperties(existing, desiredNode.properties)
+	return not okProperties
+end
+
 local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings)
+	if isModelDescriptorNode(desiredNode) then
+		return applyModelDescriptor(parent, desiredNode, claimedSiblings)
+	end
 	local instance, corrected = ensureInstance(parent, desiredNode, claimedSiblings)
 	if not instance then
 		return corrected

@@ -31,6 +31,7 @@ local function addVersionPayload(body)
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
 	body.privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true
+	body.detectModels = state.detectModels == true
 	body.syncTargets = {
 		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
 	}
@@ -40,9 +41,11 @@ end
 
 local function pluginVersionQuery()
 	local workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false
+	local detectModels = state.detectModels == true
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
 		.. "&pluginProtocolVersion=" .. tostring(AMARILLO_PROTOCOL_VERSION)
 		.. "&privilegedActionConfirmationEnabled=" .. tostring(state.confirmPrivilegedActions == true)
+		.. "&detectModels=" .. tostring(detectModels)
 		.. "&syncTargets.Workspace=" .. tostring(workspaceSyncEnabled)
 	if state.pendingDestructiveCommand then
 		query = query
@@ -426,6 +429,7 @@ local function saveSettings()
 		portCustomized = state.portCustomized,
 		syncTargets = syncTargetsPayload(),
 		workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false,
+		detectModels = state.detectModels == true,
 		confirmPrivilegedActions = state.confirmPrivilegedActions,
 		confirmDestructiveActions = state.confirmPrivilegedActions,
 		confirmPropertyChanges = state.confirmPrivilegedActions
@@ -455,6 +459,7 @@ local function loadSettings()
 		else
 			state.syncTargets.Workspace = false
 		end
+		state.detectModels = saved.detectModels == true
 		if saved.confirmPrivilegedActions ~= nil then
 			state.confirmPrivilegedActions = saved.confirmPrivilegedActions
 		elseif saved.confirmDestructiveActions ~= nil then

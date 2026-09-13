@@ -87,6 +87,7 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       pluginVersion: requestUrl.searchParams.get("pluginVersion"),
       pluginProtocolVersion: requestUrl.searchParams.get("pluginProtocolVersion"),
       privilegedActionConfirmationEnabled: requestUrl.searchParams.get("privilegedActionConfirmationEnabled"),
+      detectModels: requestUrl.searchParams.get("detectModels"),
       syncTargets: syncTargetsFromPollParams(requestUrl.searchParams)
     });
     app.updateDestructiveConfirmationState(session, {

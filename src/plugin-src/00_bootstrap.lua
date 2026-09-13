@@ -74,6 +74,7 @@ local state = {
 	pendingDestructiveCommand = nil,
 	pendingDestructiveSinceAt = nil,
 	confirmPrivilegedActions = true,
+	detectModels = false,
 	syncTargets = {
 		Workspace = false
 	},
@@ -139,3 +140,5 @@ local setPrivilegedActionConfirmation
 local updatePrivilegedActionConfirmationUi
 local setWorkspaceSyncEnabled
 local updateSyncTargetsUi
+local setModelDetectionEnabled
+local updateModelDetectionUi
