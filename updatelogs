@@ -37,3 +37,14 @@ Data do registro: 2026-09-13
 - O gerador mantem as funcoes locais nos arquivos-fonte, mas gera as funcoes de modulo sem exceder o limite de 200 registradores do Studio.
 - Regenerado `src/plugin/Amarillo.lua`.
 - Validado com a suite completa: 307 testes aprovados.
+
+## Versao 1.2.3 - Sourcemap opcional sem dependencia obrigatoria de Rojo
+
+Data do registro: 2026-09-13
+
+- A geracao automatica de sourcemap do Amarillo passou a ficar desativada por padrao.
+- A configuracao do Luau LSP nao ativa mais `autogenerate`, evitando chamadas independentes ao Rojo.
+- Configuracoes existentes com `luau-lsp.sourcemap.autogenerate` ativo passam a ser alinhadas para `false` sem executar Rojo.
+- Quando a opcao e ativada, ausencia de Rojo ou Aftman e tratada como skip opcional, sem falhar a inicializacao ou a sincronizacao.
+- Erros reais de projeto do Rojo continuam sendo reportados normalmente.
+- Adicionados testes para ausencia de Rojo/Aftman e para erros reais de geracao.

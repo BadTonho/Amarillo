@@ -368,14 +368,22 @@ test("activation sourcemap check is delayed and respects autoGenerateSourcemap",
     path.join(__dirname, "..", "vscode-extension", "extension.js"),
     "utf8"
   );
+  const extensionPackage = JSON.parse(fs.readFileSync(
+    path.join(__dirname, "..", "vscode-extension", "package.json"),
+    "utf8"
+  ));
 
   assert.match(extensionSource, /SOURCEMAP_ACTIVATION_DELAY_MS = 3000/);
   assert.match(extensionSource, /scheduleExistingWorkspaceSourcemapOnActivate/);
+  assert.match(extensionSource, /autoGenerateSourcemapEnabled\(\)/);
+  assert.match(extensionSource, /get\("autoGenerateSourcemap", false\)/);
   assert.match(extensionSource, /autoGenerateSourcemap/);
   assert.match(extensionSource, /Skipping activation sourcemap check because amarillo\.autoGenerateSourcemap is disabled/);
+  assert.match(extensionSource, /Skipped optional Luau sourcemap generation/);
   assert.match(extensionSource, /Scheduling activation sourcemap check in/);
   assert.match(extensionSource, /setTimeout\(\(\) =>/);
   assert.doesNotMatch(extensionSource, /log\("Amarillo extension activated\."\);\s*void ensureExistingWorkspaceSourcemapOnActivate\(\);/);
+  assert.equal(extensionPackage.contributes.configuration.properties["amarillo.autoGenerateSourcemap"].default, false);
 });
 
 test("sidebar visual status tones and compact layout rules are present", () => {

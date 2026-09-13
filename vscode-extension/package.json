@@ -211,8 +211,8 @@
         },
         "amarillo.autoGenerateSourcemap": {
           "type": "boolean",
-          "default": true,
-          "description": "Automatically generate sourcemap.json for Luau LSP on project load.",
+          "default": false,
+          "description": "Optionally generate sourcemap.json for Luau LSP when Rojo is available.",
           "order": 6
         },
         "amarillo.autoSyncToStudio": {

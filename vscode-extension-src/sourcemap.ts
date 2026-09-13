@@ -9,7 +9,7 @@ const SOURCEMAP_FILE_NAME = "sourcemap.json";
 const DEFAULT_MAX_PROCESS_OUTPUT_BYTES = 1024 * 1024;
 const DEFAULT_SETTINGS = {
   "luau-lsp.sourcemap.enabled": true,
-  "luau-lsp.sourcemap.autogenerate": true,
+  "luau-lsp.sourcemap.autogenerate": false,
   "luau-lsp.sourcemap.includeNonScripts": true,
   "luau-lsp.sourcemap.sourcemapFile": SOURCEMAP_FILE_NAME
 };
@@ -204,6 +204,16 @@ function rojoCommandCandidates(userProfile = process.env.USERPROFILE || "") {
   return candidates.filter((value, index, values) => values.indexOf(value) === index);
 }
 
+function isRojoUnavailableError(error) {
+  const code = error && error.code;
+  if (code === "ENOENT" || code === "UNKNOWN") {
+    return true;
+  }
+
+  const message = String(error?.message || error || "");
+  return /aftman error|no aftman\.toml files list this tool|rojo was not found|command not found|not recognized as an internal or external command/i.test(message);
+}
+
 async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, options: any = {}) {
   const runCommand = options.runCommand || defaultRunCommand;
   const candidates = options.commandCandidates || rojoCommandCandidates(options.userProfile);
@@ -220,11 +230,19 @@ async function generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, 
       };
     } catch (error) {
       lastError = error;
-      // If the candidate executable is missing (ENOENT/UNKNOWN), try the next candidate.
-      if (error && ((error as ProcessError).code === "ENOENT" || (error as ProcessError).code === "UNKNOWN")) {
-        // noop
+      if (!isRojoUnavailableError(error)) {
+        throw error;
       }
     }
+  }
+
+  if (!lastError || isRojoUnavailableError(lastError)) {
+    return {
+      generated: false,
+      skipped: true,
+      reason: "rojo_unavailable",
+      args
+    };
   }
 
   throw lastError || new Error("Rojo was not found to generate the sourcemap.");
@@ -243,6 +261,8 @@ async function ensureWorkspaceSourcemap(workspaceRoot, options: any = {}) {
       sourcemapPath: path.join(workspaceRoot, SOURCEMAP_FILE_NAME),
       settingsUpdated: false,
       sourcemapGenerated: false,
+      sourcemapSkipped: false,
+      sourcemapSkipReason: null,
       settingsError: null
     };
   }
@@ -251,9 +271,13 @@ async function ensureWorkspaceSourcemap(workspaceRoot, options: any = {}) {
   const settingsResult = await ensureLuauSourcemapSettings(workspaceRoot, projectFilePath);
 
   let sourcemapGenerated = false;
-  if (sourcemapNeedsGeneration(sourcemapPath) || settingsResult.projectChanged || options.forceGenerate === true) {
+  let sourcemapSkipped = false;
+  let sourcemapSkipReason = null;
+  if (options.generate !== false && (sourcemapNeedsGeneration(sourcemapPath) || settingsResult.projectChanged || options.forceGenerate === true)) {
     const generationResult = await generateSourcemap(workspaceRoot, projectFilePath, sourcemapPath, options);
     sourcemapGenerated = generationResult.generated === true;
+    sourcemapSkipped = generationResult.skipped === true;
+    sourcemapSkipReason = generationResult.reason || null;
   }
 
   return {
@@ -261,6 +285,8 @@ async function ensureWorkspaceSourcemap(workspaceRoot, options: any = {}) {
     sourcemapPath,
     settingsUpdated: settingsResult.updated,
     sourcemapGenerated,
+    sourcemapSkipped,
+    sourcemapSkipReason,
     settingsError: settingsResult.error,
     projectChanged: settingsResult.projectChanged
   };
@@ -272,6 +298,7 @@ module.exports = {
   ensureLuauSourcemapSettings,
   ensureWorkspaceSourcemap,
   generateSourcemap,
+  isRojoUnavailableError,
   resolveSourcemapProjectFile,
   rojoCommandCandidates,
   sourcemapNeedsGeneration

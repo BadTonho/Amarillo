@@ -7,6 +7,7 @@ const path = require("node:path");
 const {
   buildRojoSourcemapArgs,
   ensureWorkspaceSourcemap,
+  generateSourcemap,
   resolveSourcemapProjectFile,
   sourcemapNeedsGeneration
 } = require("../vscode-extension/sourcemap");
@@ -85,6 +86,7 @@ test("ensureWorkspaceSourcemap updates luau settings and generates missing sourc
   ]);
 
   const settings = JSON.parse(fs.readFileSync(path.join(workspace, ".vscode", "settings.json"), "utf8"));
+  assert.equal(settings["luau-lsp.sourcemap.autogenerate"], false);
   assert.equal(settings["luau-lsp.sourcemap.rojoProjectFile"], "Game.project.json");
   assert.equal(settings["luau-lsp.sourcemap.sourcemapFile"], "sourcemap.json");
 });
@@ -126,5 +128,67 @@ test("ensureWorkspaceSourcemap regenerates when the active project changes", asy
   ]);
 
   const settings = JSON.parse(fs.readFileSync(path.join(workspace, ".vscode", "settings.json"), "utf8"));
+  assert.equal(settings["luau-lsp.sourcemap.autogenerate"], false);
   assert.equal(settings["luau-lsp.sourcemap.rojoProjectFile"], "Lobby.project.json");
+});
+
+test("sourcemap generation skips missing Rojo or Aftman without failing Amarillo", async () => {
+  const workspace = createTempWorkspace();
+  const projectPath = path.join(workspace, "Game.project.json");
+  fs.writeFileSync(projectPath, JSON.stringify({ name: "Game", tree: {} }, null, 2), "utf8");
+
+  const result = await ensureWorkspaceSourcemap(workspace, {
+    projectFiles: [projectPath],
+    runCommand: async () => {
+      throw Object.assign(new Error("Aftman error: no aftman.toml files list this tool"), { code: 1 });
+    },
+    commandCandidates: ["rojo", "rojo-fallback"]
+  });
+
+  assert.equal(result.sourcemapGenerated, false);
+  assert.equal(result.sourcemapSkipped, true);
+  assert.equal(result.sourcemapSkipReason, "rojo_unavailable");
+  assert.equal(fs.existsSync(path.join(workspace, "sourcemap.json")), false);
+
+  const settings = JSON.parse(fs.readFileSync(path.join(workspace, ".vscode", "settings.json"), "utf8"));
+  assert.equal(settings["luau-lsp.sourcemap.autogenerate"], false);
+});
+
+test("sourcemap generation still reports real Rojo project errors", async () => {
+  const workspace = createTempWorkspace();
+  const projectPath = path.join(workspace, "Game.project.json");
+  const sourcemapPath = path.join(workspace, "sourcemap.json");
+
+  await assert.rejects(
+    generateSourcemap(workspace, projectPath, sourcemapPath, {
+      commandCandidates: ["rojo"],
+      runCommand: async () => {
+        throw new Error("Invalid project file: malformed tree");
+      }
+    }),
+    /Invalid project file: malformed tree/
+  );
+});
+
+test("sourcemap settings can be aligned without invoking Rojo", async () => {
+  const workspace = createTempWorkspace();
+  const projectPath = path.join(workspace, "Game.project.json");
+  fs.writeFileSync(projectPath, JSON.stringify({ name: "Game", tree: {} }, null, 2), "utf8");
+
+  let commandCalled = false;
+  const result = await ensureWorkspaceSourcemap(workspace, {
+    projectFiles: [projectPath],
+    generate: false,
+    runCommand: async () => {
+      commandCalled = true;
+      throw new Error("Rojo must not run when generation is disabled");
+    }
+  });
+
+  assert.equal(result.settingsUpdated, true);
+  assert.equal(result.sourcemapGenerated, false);
+  assert.equal(commandCalled, false);
+
+  const settings = JSON.parse(fs.readFileSync(path.join(workspace, ".vscode", "settings.json"), "utf8"));
+  assert.equal(settings["luau-lsp.sourcemap.autogenerate"], false);
 });

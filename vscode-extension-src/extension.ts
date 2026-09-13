@@ -441,13 +441,25 @@ async function ensurePluginConfig(workspaceRoot) {
   }
 }
 
+function autoGenerateSourcemapEnabled() {
+  return vscode.workspace.getConfiguration("amarillo").get("autoGenerateSourcemap", false) === true;
+}
+
 async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState: ProjectStateHint, options: SourcemapEnsureOptions = {}) {
+  const generationEnabled = autoGenerateSourcemapEnabled();
+
   const result = await ensureWorkspaceSourcemap(workspaceRoot, {
     projectFilePath: projectState?.projectFilePath || null,
     projectFiles: projectState?.projectFiles || collectProjectFiles(workspaceRoot),
     userProfile: process.env.USERPROFILE,
+    generate: generationEnabled,
     ...options
   });
+
+  if (!generationEnabled) {
+    result.sourcemapSkipped = true;
+    result.sourcemapSkipReason = "disabled";
+  }
 
   const silent = options.silent === true;
   if (!silent && result.settingsUpdated) {
@@ -455,6 +467,12 @@ async function ensureWorkspaceLuauSourcemap(workspaceRoot, projectState: Project
   }
   if (!silent && result.sourcemapGenerated) {
     log(`Generated sourcemap.json for ${path.basename(result.projectFilePath)}.`);
+  }
+  if (!silent && result.sourcemapSkipped) {
+    const reason = result.sourcemapSkipReason === "rojo_unavailable"
+      ? "Rojo/Aftman is unavailable"
+      : "automatic generation is disabled";
+    log(`Skipped optional Luau sourcemap generation: ${reason}. Amarillo sync is unaffected.`);
   }
   if (!silent && result.settingsError) {
     log(result.settingsError);
@@ -2163,7 +2181,7 @@ async function handleSidebarVisible(context, runtimeState: SidebarRuntimeState |
 }
 
 async function ensureExistingWorkspaceSourcemapOnActivate() {
-  const autoGenerateSourcemap = vscode.workspace.getConfiguration("amarillo").get("autoGenerateSourcemap", true);
+  const autoGenerateSourcemap = autoGenerateSourcemapEnabled();
   if (!autoGenerateSourcemap) {
     log("Skipping activation sourcemap check because amarillo.autoGenerateSourcemap is disabled.");
     return;
@@ -2208,7 +2226,7 @@ async function ensureExistingWorkspaceSourcemapOnActivate() {
 }
 
 function scheduleExistingWorkspaceSourcemapOnActivate(context) {
-  const autoGenerateSourcemap = vscode.workspace.getConfiguration("amarillo").get("autoGenerateSourcemap", true);
+  const autoGenerateSourcemap = autoGenerateSourcemapEnabled();
   if (!autoGenerateSourcemap) {
     log("Skipping activation sourcemap check because amarillo.autoGenerateSourcemap is disabled.");
     return;
