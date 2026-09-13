@@ -1,0 +1,24 @@
+# Update Logs
+
+## Versão 1.2.3 — Detecção opcional de Models
+
+Data do registro: 2026-09-13
+
+- Mantido o `Workspace` desativado por padrão.
+- Adicionada a configuração persistente `detectModels`, desativada por padrão.
+- Adicionado o toggle `Detect Models` na página de Settings do plugin.
+- O estado de detecção passou a ser enviado nos payloads de conexão e snapshot.
+- Models são procurados somente dentro dos mounts ativos.
+- O snapshot coleta apenas um descriptor compacto do Model: nome, identidade/caminho, classe, atributos, propriedades serializáveis e resumo dos filhos.
+- O snapshot não baixa MeshParts, texturas, assets, arquivos binários, Source ou a hierarquia completa.
+- A sincronização grava descriptors em `init.meta.json` com `modelDescriptor: true`.
+- Descriptors atualizam somente Models já existentes; nunca criam, removem ou limpam filhos.
+- Models antigos sem `modelDescriptor` continuam sendo tratados como objetos opacos.
+- `search_instances`, `get_descendants` e `get_instance_info` continuam consultando Models independentemente da opção.
+- Regenerado `src/plugin/Amarillo.lua`.
+
+### Verificação
+
+- Suíte completa: `npm.cmd test` — 306 testes aprovados.
+- Verificação do projeto: `npm.cmd run check` — concluída com sucesso.
+- Build do plugin e teste de versão executados com sucesso.
