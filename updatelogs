@@ -16,9 +16,3 @@ Data do registro: 2026-09-13
 - Models antigos sem `modelDescriptor` continuam sendo tratados como objetos opacos.
 - `search_instances`, `get_descendants` e `get_instance_info` continuam consultando Models independentemente da opção.
 - Regenerado `src/plugin/Amarillo.lua`.
-
-### Verificação
-
-- Suíte completa: `npm.cmd test` — 306 testes aprovados.
-- Verificação do projeto: `npm.cmd run check` — concluída com sucesso.
-- Build do plugin e teste de versão executados com sucesso.
