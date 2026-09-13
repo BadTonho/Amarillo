@@ -1,7 +1,0 @@
-# Regras do agente
-
-- Nao criar o VSIX automaticamente.
-- Antes de rodar `npm.cmd run package:vsix`, confirmar explicitamente com o usuario.
-- Eu preciso mudar a versao toda vez antes de gerar um VSIX.
-- Se o VSIX for gerado sem mudar a versao, a versao antiga pode ser sobrescrita/perdida.
-- Para validar mudancas, rode build/testes; empacotamento VSIX so com pedido explicito depois do bump de versao.
