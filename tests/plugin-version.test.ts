@@ -57,13 +57,13 @@ test("Roblox plugin enriches and retries structured error reports", () => {
   assert.match(pluginSource, /pendingErrorReports = \{\}/);
   assert.match(pluginSource, /eventId = generateErrorEventId\(\)/);
   assert.match(pluginSource, /stack = captureErrorStack\(normalizedMessage\)/);
-  assert.match(pluginSource, /local function flushPluginErrorReports\(force\)/);
+  assert.match(pluginSource, /function flushPluginErrorReports\(force\)/);
   assert.match(pluginSource, /pluginVersion = PLUGIN_VERSION/);
   assert.match(pluginSource, /studioInstanceId = state\.studioInstanceId/);
 });
 
 test("Roblox plugin classifies Script snapshots by RunContext", () => {
-  const helperStart = pluginSource.indexOf("local function scriptFileKind(instance)");
+  const helperStart = pluginSource.indexOf("function scriptFileKind(instance)");
   const localScriptCheck = pluginSource.indexOf("instance:IsA(\"LocalScript\")", helperStart);
   const moduleScriptCheck = pluginSource.indexOf("instance:IsA(\"ModuleScript\")", helperStart);
   const scriptCheck = pluginSource.indexOf("instance:IsA(\"Script\")", helperStart);
@@ -71,7 +71,7 @@ test("Roblox plugin classifies Script snapshots by RunContext", () => {
   assert.ok(helperStart >= 0, "expected scriptFileKind helper");
   assert.ok(localScriptCheck > helperStart && localScriptCheck < scriptCheck, "LocalScript must be checked before Script");
   assert.ok(moduleScriptCheck > helperStart && moduleScriptCheck < scriptCheck, "ModuleScript must be checked before Script");
-  assert.match(pluginSource, /local function scriptFileKind\(instance\)[\s\S]+instance\.RunContext[\s\S]+runContext == Enum\.RunContext\.Client[\s\S]+return "client"[\s\S]+return "server"/);
+  assert.match(pluginSource, /function scriptFileKind\(instance\)[\s\S]+instance\.RunContext[\s\S]+runContext == Enum\.RunContext\.Client[\s\S]+return "client"[\s\S]+return "server"/);
   assert.match(pluginSource, /node\.fileKind = scriptFileKind\(instance\)/);
   assert.doesNotMatch(pluginSource, /if instance:IsA\("Script"\) then\s+node\.fileKind = "server"/);
 });
@@ -99,8 +99,8 @@ test("Roblox plugin gates run_code behind privileged action confirmation", () =>
 });
 
 test("Roblox plugin keeps its dock widget hidden during playtest", () => {
-  assert.match(pluginSource, /local function isExperienceRunning\(\)[\s\S]+RunService:IsRunning\(\)/);
-  assert.match(pluginSource, /local function showPluginWidget\(\)[\s\S]+if isExperienceRunning\(\) then\s+hidePluginWidget\(\)\s+return false/);
+  assert.match(pluginSource, /function isExperienceRunning\(\)[\s\S]+RunService:IsRunning\(\)/);
+  assert.match(pluginSource, /function showPluginWidget\(\)[\s\S]+if isExperienceRunning\(\) then\s+hidePluginWidget\(\)\s+return false/);
   assert.match(pluginSource, /DockWidgetPluginGuiInfo\.new\(\s+Enum\.InitialDockState\.Right,\s+false,\s+true,/);
   assert.match(pluginSource, /toolbarButton\.Click:Connect\(function\(\)\s+togglePluginWidget\(\)\s+end\)/);
   assert.match(pluginSource, /if isExperienceRunning\(\) and widget and widget\.Enabled then\s+hidePluginWidget\(\)\s+end/);
@@ -120,9 +120,9 @@ test("Roblox plugin keeps the privileged action confirmation toggle in Settings"
 });
 
 test("Roblox plugin preflights and safely recovers missing sync mounts", () => {
-  assert.match(pluginSource, /local function preflightProjectMounts\(projectSnapshot\)/);
-  assert.match(pluginSource, /local function validateMountContainerRecovery\(segments\)/);
-  assert.match(pluginSource, /local function ensureRecoverableMountContainer\(segments\)/);
+  assert.match(pluginSource, /function preflightProjectMounts\(projectSnapshot\)/);
+  assert.match(pluginSource, /function validateMountContainerRecovery\(segments\)/);
+  assert.match(pluginSource, /function ensureRecoverableMountContainer\(segments\)/);
   assert.match(pluginSource, /return game:GetService\(segment\)/);
   assert.match(pluginSource, /Instance\.new\("Folder"\)/);
   assert.match(pluginSource, /Mount integrity found:/);
@@ -144,8 +144,8 @@ test("Roblox plugin does not fail create_instance after successful parenting bec
 });
 
 test("Roblox plugin blocks path-based destructive actions outside active sync mounts", () => {
-  assert.match(pluginSource, /local function isPathInsideActiveSyncMount\(pathSegments\)/);
-  assert.match(pluginSource, /local function syncMountGuardMessage\(actionName, pathSegments\)/);
+  assert.match(pluginSource, /function isPathInsideActiveSyncMount\(pathSegments\)/);
+  assert.match(pluginSource, /function syncMountGuardMessage\(actionName, pathSegments\)/);
   assert.match(pluginSource, /reasonCode = "OUTSIDE_SYNC_MOUNT"/);
   assert.match(pluginSource, /postOutsideSyncMountResult\(command, "modify_property", targetSegments\)/);
   assert.match(pluginSource, /postOutsideSyncMountResult\(command, "create_instance", targetSegments\)/);
@@ -153,8 +153,8 @@ test("Roblox plugin blocks path-based destructive actions outside active sync mo
 });
 
 test("Roblox plugin blocks duplicate exclusive mount roots before mutations", () => {
-  assert.match(pluginSource, /local function duplicateMountRootIssueForPath\(pathSegments\)/);
-  assert.match(pluginSource, /local function duplicateMountRootIssueForSnapshot\(projectSnapshot\)/);
+  assert.match(pluginSource, /function duplicateMountRootIssueForPath\(pathSegments\)/);
+  assert.match(pluginSource, /function duplicateMountRootIssueForSnapshot\(projectSnapshot\)/);
   assert.match(pluginSource, /reasonCode = "DUPLICATE_MOUNT_ROOT"/);
   assert.match(pluginSource, /postDuplicateMountRootResult\(command, "modify_property", targetSegments\)/);
   assert.match(pluginSource, /postDuplicateMountRootResult\(command, "create_instance", targetSegments\)/);
@@ -164,7 +164,7 @@ test("Roblox plugin blocks duplicate exclusive mount roots before mutations", ()
 });
 
 test("Roblox plugin regenerates copied AmarilloId attributes during snapshots", () => {
-  assert.match(pluginSource, /local function reserveSnapshotAmarilloId\(instance, options\)/);
+  assert.match(pluginSource, /function reserveSnapshotAmarilloId\(instance, options\)/);
   assert.match(pluginSource, /options\.seenAmarilloIds = options\.seenAmarilloIds or \{\}/);
   assert.match(pluginSource, /HttpService:GenerateGUID\(false\)/);
   assert.match(pluginSource, /Regenerated duplicated AmarilloId during snapshot/);
@@ -189,7 +189,7 @@ test("Roblox plugin refreshes open document cache after file patches", () => {
   assert.match(pluginSource, /ScriptEditorService:GetScriptDocuments\(\)/);
   assert.match(pluginSource, /ScriptEditorService:GetEditorSource\(instance\)/);
   assert.doesNotMatch(pluginSource, /GetEditorDocuments/);
-  assert.match(pluginSource, /local function updateScriptSourceIfChanged\(instance, desiredSource, openDocumentSources, force\)/);
+  assert.match(pluginSource, /function updateScriptSourceIfChanged\(instance, desiredSource, openDocumentSources, force\)/);
   assert.match(pluginSource, /if not force and currentSource == desiredSource then\s+return false, true, nil/);
   assert.match(pluginSource, /local changed, updateOk, updateErr = updateScriptSourceIfChanged\(container, desiredSource, nil, true\)/);
   assert.match(pluginSource, /if not updateOk then\s+error\("Failed to update script source: " \.\. tostring\(updateErr\)\)\s+end/);
@@ -234,16 +234,16 @@ test("Roblox plugin watcher module avoids top-level locals", () => {
 
 test("Roblox plugin caches property metadata while reading live values", () => {
   assert.match(pluginSource, /local propertyNameCache = \{\}/);
-  assert.match(pluginSource, /local function propertyNamesForInstance\(instance\)/);
+  assert.match(pluginSource, /function propertyNamesForInstance\(instance\)/);
   assert.match(pluginSource, /local className = instance\.ClassName/);
   assert.match(pluginSource, /propertyNameCache\[className\] = propertyNames/);
-  assert.match(pluginSource, /local function collectProperties\(instance\)\s+local propertyNames = propertyNamesForInstance\(instance\)/);
+  assert.match(pluginSource, /function collectProperties\(instance\)\s+local propertyNames = propertyNamesForInstance\(instance\)/);
   assert.match(pluginSource, /for propertyName in pairs\(propertyNames\) do\s+local value = safeGetProperty\(instance, propertyName\)/);
 });
 
 test("Roblox plugin filters reserved RBX attributes during sync", () => {
-  assert.match(pluginSource, /local function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId"\)\s+end/);
-  assert.match(pluginSource, /local function syncableAttributes\(attributes\)/);
+  assert.match(pluginSource, /function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId"\)\s+end/);
+  assert.match(pluginSource, /function syncableAttributes\(attributes\)/);
   assert.equal((pluginSource.match(/syncableAttributes\(instance:GetAttributes\(\)\)/g) || []).length, 2);
   assert.match(pluginSource, /local desiredAttributes = syncableAttributes\(rawValue\)/);
   assert.match(pluginSource, /not isReservedAttributeName\(attributeName\) and desiredAttributes\[attributeName\] == nil/);
@@ -251,9 +251,9 @@ test("Roblox plugin filters reserved RBX attributes during sync", () => {
 });
 
 test("Roblox plugin wraps mutating Studio writes in defensive helpers", () => {
-  assert.match(pluginSource, /local function safeSetProperty\(target, propertyName, value, contextLabel\)/);
-  assert.match(pluginSource, /local function safeSetAttribute\(target, attributeName, value, contextLabel\)/);
-  assert.match(pluginSource, /local function safeSetParent\(target, newParent, contextLabel\)/);
+  assert.match(pluginSource, /function safeSetProperty\(target, propertyName, value, contextLabel\)/);
+  assert.match(pluginSource, /function safeSetAttribute\(target, attributeName, value, contextLabel\)/);
+  assert.match(pluginSource, /function safeSetParent\(target, newParent, contextLabel\)/);
   assert.match(pluginSource, /local okProperty, propertyErr = setProperty\(instance, propName, rawValue\)/);
   assert.match(pluginSource, /local okParent, parentErr = safeSetParent\(newInstance, parent, "MCP create parent"\)/);
   assert.doesNotMatch(pluginSource, /instance\[propertyName\]\s*=/);
@@ -264,9 +264,9 @@ test("Roblox plugin wraps mutating Studio writes in defensive helpers", () => {
 test("Roblox plugin aggregates safe-set failures for Doctor diagnostics", () => {
   assert.match(pluginSource, /local SAFE_SET_ERROR_DEDUPE_SECONDS = 30\.0/);
   assert.match(pluginSource, /local SAFE_SET_FAILURE_REPORT_LIMIT = 10/);
-  assert.match(pluginSource, /local function beginSafeSetFailureAggregation\(command\)/);
-  assert.match(pluginSource, /local function recordSafeSetFailure\(operation, target, fieldName, err, contextLabel, extraContext\)/);
-  assert.match(pluginSource, /local function finishSafeSetFailureAggregation\(cycle\)/);
+  assert.match(pluginSource, /function beginSafeSetFailureAggregation\(command\)/);
+  assert.match(pluginSource, /function recordSafeSetFailure\(operation, target, fieldName, err, contextLabel, extraContext\)/);
+  assert.match(pluginSource, /function finishSafeSetFailureAggregation\(cycle\)/);
   assert.match(pluginSource, /recordSafeSetFailure\("property", target, propertyName, err, contextLabel\)/);
   assert.match(pluginSource, /recordSafeSetFailure\("attribute", target, attributeName, err, contextLabel\)/);
   assert.match(pluginSource, /recordSafeSetFailure\("parent", target, "Parent", err, contextLabel/);
@@ -278,31 +278,31 @@ test("Roblox plugin aggregates safe-set failures for Doctor diagnostics", () => 
 });
 
 test("Roblox plugin preserves nested exclusive mount containers during sync", () => {
-  assert.match(pluginSource, /local function buildNestedMountChildIndex\(mounts\)/);
-  assert.match(pluginSource, /local function isNestedMountChild\(indexed, parentSegments, childName\)/);
+  assert.match(pluginSource, /function buildNestedMountChildIndex\(mounts\)/);
+  assert.match(pluginSource, /function isNestedMountChild\(indexed, parentSegments, childName\)/);
   assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mOpts\.mountSegments, child\.Name\) and shouldIncludeSnapshotChild/);
   assert.match(pluginSource, /not isNestedMountChild\(nestedMountChildIndex, mount\.segments or \{\}, child\.Name\) and not isNonSyncableInstance/);
 });
 
 test("Roblox plugin resolves exclusive mount folders as real Studio containers", () => {
-  const resolveStart = pluginSource.indexOf("local function resolveMountContainer(segments)");
-  const resolveEnd = pluginSource.indexOf("local function mountPathLabel(segments)", resolveStart);
+  const resolveStart = pluginSource.indexOf("function resolveMountContainer(segments)");
+  const resolveEnd = pluginSource.indexOf("function mountPathLabel(segments)", resolveStart);
   const resolveSource = pluginSource.slice(resolveStart, resolveEnd);
   assert.ok(resolveStart >= 0, "expected resolveMountContainer helper");
   assert.ok(resolveEnd > resolveStart, "expected resolveMountContainer helper end");
   assert.doesNotMatch(resolveSource, /string\.sub\(segment, 1, 9\) == "Exclusivo"[\s\S]{0,80}break/);
   assert.match(resolveSource, /current = current and current:FindFirstChild\(segment\)/);
 
-  const validateStart = pluginSource.indexOf("local function validateMountContainerRecovery(segments)");
-  const validateEnd = pluginSource.indexOf("local function ensureRecoverableMountContainer(segments)", validateStart);
+  const validateStart = pluginSource.indexOf("function validateMountContainerRecovery(segments)");
+  const validateEnd = pluginSource.indexOf("function ensureRecoverableMountContainer(segments)", validateStart);
   const validateSource = pluginSource.slice(validateStart, validateEnd);
   assert.ok(validateStart >= 0, "expected validateMountContainerRecovery helper");
   assert.ok(validateEnd > validateStart, "expected validateMountContainerRecovery helper end");
   assert.doesNotMatch(validateSource, /string\.sub\(segment, 1, 9\) == "Exclusivo"[\s\S]{0,80}break/);
   assert.match(validateSource, /local child = current:FindFirstChild\(segment\)/);
 
-  const ensureStart = pluginSource.indexOf("local function ensureRecoverableMountContainer(segments)");
-  const ensureEnd = pluginSource.indexOf("local function preflightProjectMounts(projectSnapshot)", ensureStart);
+  const ensureStart = pluginSource.indexOf("function ensureRecoverableMountContainer(segments)");
+  const ensureEnd = pluginSource.indexOf("function preflightProjectMounts(projectSnapshot)", ensureStart);
   const ensureSource = pluginSource.slice(ensureStart, ensureEnd);
   assert.ok(ensureStart >= 0, "expected ensureRecoverableMountContainer helper");
   assert.ok(ensureEnd > ensureStart, "expected ensureRecoverableMountContainer helper end");
@@ -312,9 +312,9 @@ test("Roblox plugin resolves exclusive mount folders as real Studio containers",
 
 test("Roblox plugin verifies apply snapshots against the applied tree without preserved Studio-only nodes", () => {
   assert.match(pluginSource, /local shouldDestroyUnexpectedChild = nil/);
-  assert.match(pluginSource, /local function isOpaqueModelInstance\(instance, options\)/);
+  assert.match(pluginSource, /function isOpaqueModelInstance\(instance, options\)/);
   assert.match(pluginSource, /if isOpaqueModelInstance\(instance, options\) then\s+return false\s+end/);
-  assert.match(pluginSource, /local function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
+  assert.match(pluginSource, /function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
   assert.match(pluginSource, /options and options\.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply/);
   assert.match(pluginSource, /local referenceSnapshot = options\.desiredSnapshot or state\.treeCache/);
   assert.match(pluginSource, /appliedSnapshot = snapshotCurrentProject\(\{\s+desiredSnapshot = projectSnapshot,\s+omitPreservedUnknowns = true,\s+yieldController = yieldController\s+\}\)/);
@@ -328,26 +328,26 @@ test("Roblox plugin supports optional compact Model descriptors", () => {
   assert.match(pluginSource, /state\.detectModels = saved\.detectModels == true/);
   assert.match(pluginSource, /state\.ui\.modelDetectionToggle = makeButton/);
   assert.match(pluginSource, /Detect Models/);
-  assert.match(pluginSource, /local function snapshotModelDescriptor\(instance, options\)/);
+  assert.match(pluginSource, /function snapshotModelDescriptor\(instance, options\)/);
   assert.match(pluginSource, /modelDescriptor = true/);
   assert.match(pluginSource, /descriptorVersion = 1/);
   assert.match(pluginSource, /descendantCount = countModelDescendants\(instance\)/);
   assert.match(pluginSource, /childCount = childCount/);
   assert.match(pluginSource, /children = \{\}/);
-  assert.match(pluginSource, /local function applyModelDescriptor\(parent, desiredNode, claimedSiblings\)/);
+  assert.match(pluginSource, /function applyModelDescriptor\(parent, desiredNode, claimedSiblings\)/);
   assert.match(pluginSource, /Model descriptor ignored; existing Model not found/);
   assert.match(pluginSource, /if isModelDescriptorNode\(desiredNode\) then\s+return applyModelDescriptor/);
   assert.match(pluginSource, /setModelDetectionEnabled = function\(enabled, source\)/);
 });
 
 test("Roblox plugin accepts the selected source of truth without blocking on diff preview", () => {
-  assert.match(pluginSource, /local function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
-  assert.match(pluginSource, /local function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);
+  assert.match(pluginSource, /function choosePcTruth\(\)\s+acceptPendingConnection\("pc"\)\s+end/);
+  assert.match(pluginSource, /function chooseStudioTruth\(\)\s+acceptPendingConnection\("studio"\)\s+end/);
 });
 
 test("Roblox plugin retries the initial Studio source-of-truth snapshot", () => {
   assert.match(pluginSource, /awaitingInitialStudioSync = false/);
-  assert.match(pluginSource, /local function attemptInitialStudioSync/);
+  assert.match(pluginSource, /function attemptInitialStudioSync/);
   assert.match(pluginSource, /syncSnapshot\("initial_accept"\)/);
   assert.match(pluginSource, /Initial Studio sync still pending/);
   assert.match(pluginSource, /attemptInitialStudioSync\("retry", false\)/);
@@ -365,16 +365,16 @@ test("Roblox plugin surfaces sync diagnostics and sends place identity with conn
 });
 
 test("Roblox plugin UI construction keeps local registers below Studio limits", () => {
-  assert.match(pluginSource, /local function initializeUiModule\(\)/);
+  assert.match(pluginSource, /function initializeUiModule\(\)/);
   assert.match(pluginSource, /state\.uiActions = state\.uiActions or \{\}/);
   assert.match(pluginSource, /state\.uiActions\.pollConnectionOffer = function\(\)/);
   assert.match(pluginSource, /local reqOk, reqResponse = state\.uiActions\.pollConnectionOffer\(\)/);
-  assert.match(pluginSource, /local function buildPluginShell\(\)/);
-  assert.match(pluginSource, /local function buildHomePage\(\)\s+local homeHero = makeCard/);
-  assert.match(pluginSource, /local function buildSettingsPage\(\)\s+local settingsHeader = makeCard/);
-  assert.match(pluginSource, /local function buildAdvancedPage\(\)\s+local advancedHeader = makeCard/);
-  assert.match(pluginSource, /local function buildDiffOverlay\(root\)\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
-  assert.match(pluginSource, /local function createPluginUi\(\)/);
+  assert.match(pluginSource, /function buildPluginShell\(\)/);
+  assert.match(pluginSource, /function buildHomePage\(\)\s+local homeHero = makeCard/);
+  assert.match(pluginSource, /function buildSettingsPage\(\)\s+local settingsHeader = makeCard/);
+  assert.match(pluginSource, /function buildAdvancedPage\(\)\s+local advancedHeader = makeCard/);
+  assert.match(pluginSource, /function buildDiffOverlay\(root\)\s+state\.ui\.diffOverlay = Instance\.new\("Frame"\)/);
+  assert.match(pluginSource, /function createPluginUi\(\)/);
   assert.match(pluginSource, /createPluginUi\(\)\s+end\s+initializeUiModule\(\)/);
 });
 

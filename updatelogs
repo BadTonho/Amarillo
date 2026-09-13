@@ -28,3 +28,12 @@ Data do registro: 2026-09-13
 - Snapshots e aplicacoes grandes cedem o processamento periodicamente para reduzir timeouts do Studio.
 - Escritas e remocoes da sincronizacao local repetem erros transitorios do Windows, incluindo `EBUSY`, `EPERM`, `EACCES` e `ENOTEMPTY`.
 - Regenerado `src/plugin/Amarillo.lua` e validado com a suite completa: 307 testes aprovados.
+
+## Versao 1.2.3 - Correcao de carregamento no Roblox Studio
+
+Data do registro: 2026-09-13
+
+- Corrigido o limite de registradores locais do Luau causado pela concatenacao dos modulos do plugin em um unico arquivo.
+- O gerador mantem as funcoes locais nos arquivos-fonte, mas gera as funcoes de modulo sem exceder o limite de 200 registradores do Studio.
+- Regenerado `src/plugin/Amarillo.lua`.
+- Validado com a suite completa: 307 testes aprovados.

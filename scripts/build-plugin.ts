@@ -36,12 +36,20 @@ function readManifest() {
   return modules;
 }
 
+function normalizePluginModuleSource(source) {
+  // Roblox compiles the concatenated plugin as one Luau chunk. Keeping every
+  // module-level helper local eventually exceeds Luau's 200-local-register
+  // limit, so generated module functions stay visible across fragments while
+  // source fragments can keep their normal local-function style.
+  return source.replace(/^local function /gm, "function ");
+}
+
 function readModule(moduleName) {
   const modulePath = path.join(pluginSourceRoot, moduleName);
   if (!fs.existsSync(modulePath)) {
     throw new Error(`Plugin module not found: ${moduleName}`);
   }
-  const source = fs.readFileSync(modulePath, "utf8").replace(/\s+$/g, "");
+  const source = normalizePluginModuleSource(fs.readFileSync(modulePath, "utf8").replace(/\s+$/g, ""));
   return [
     `-- >>> src/plugin-src/${moduleName}`,
     source,
@@ -73,6 +81,7 @@ module.exports = {
   generatedPluginPath,
   generatedBanner,
   readManifest,
+  normalizePluginModuleSource,
   generatePluginSource,
   buildPlugin
 };

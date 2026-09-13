@@ -93,20 +93,20 @@ local disconnectWatcher
 local startWatcher
 local resetSessionState
 local widget
-local function isExperienceRunning()
+function isExperienceRunning()
 	local ok, running = pcall(function()
 		return RunService:IsRunning()
 	end)
 	return ok and running == true
 end
 
-local function hidePluginWidget()
+function hidePluginWidget()
 	if widget then
 		widget.Enabled = false
 	end
 end
 
-local function showPluginWidget()
+function showPluginWidget()
 	if not widget then
 		return false
 	end
@@ -118,7 +118,7 @@ local function showPluginWidget()
 	return true
 end
 
-local function togglePluginWidget()
+function togglePluginWidget()
 	if not widget then
 		return
 	end
@@ -148,11 +148,11 @@ local updateModelDetectionUi
 -- <<< src/plugin-src/00_bootstrap.lua
 
 -- >>> src/plugin-src/10_settings_status.lua
-local function now()
+function now()
 	return os.clock()
 end
 
-local function currentIsoTime()
+function currentIsoTime()
 	local ok, value = pcall(function()
 		return DateTime.now():ToIsoDate()
 	end)
@@ -162,7 +162,7 @@ local function currentIsoTime()
 	return tostring(os.time())
 end
 
-local function addDestructiveConfirmationPayload(body)
+function addDestructiveConfirmationPayload(body)
 	body = body or {}
 	if state.pendingDestructiveCommand then
 		body.destructiveConfirmationPending = true
@@ -176,7 +176,7 @@ local function addDestructiveConfirmationPayload(body)
 	return body
 end
 
-local function addVersionPayload(body)
+function addVersionPayload(body)
 	body = body or {}
 	body.pluginVersion = PLUGIN_VERSION
 	body.pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION
@@ -189,7 +189,7 @@ local function addVersionPayload(body)
 	return body
 end
 
-local function pluginVersionQuery()
+function pluginVersionQuery()
 	local workspaceSyncEnabled = state.syncTargets and state.syncTargets.Workspace == true or false
 	local detectModels = state.detectModels == true
 	local query = "pluginVersion=" .. HttpService:UrlEncode(PLUGIN_VERSION)
@@ -208,13 +208,13 @@ local function pluginVersionQuery()
 	return query
 end
 
-local function syncTargetsPayload()
+function syncTargetsPayload()
 	return {
 		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
 	}
 end
 
-local function mountSegmentsFrom(value)
+function mountSegmentsFrom(value)
 	if type(value) ~= "table" then
 		return {}
 	end
@@ -230,7 +230,7 @@ local function mountSegmentsFrom(value)
 	return value
 end
 
-local function isMountSyncEnabled(value)
+function isMountSyncEnabled(value)
 	local segments = mountSegmentsFrom(value)
 	if segments[1] == "Workspace" then
 		return state.syncTargets and state.syncTargets.Workspace == true or false
@@ -238,7 +238,7 @@ local function isMountSyncEnabled(value)
 	return true
 end
 
-local function pathSegmentsHavePrefix(segments, prefix)
+function pathSegmentsHavePrefix(segments, prefix)
 	if type(segments) ~= "table" or type(prefix) ~= "table" or #prefix > #segments then
 		return false
 	end
@@ -250,7 +250,7 @@ local function pathSegmentsHavePrefix(segments, prefix)
 	return true
 end
 
-local function normalizeInstancePathSegments(value)
+function normalizeInstancePathSegments(value)
 	local segments = {}
 	local sourceSegments = {}
 	if type(value) == "table" then
@@ -269,7 +269,7 @@ local function normalizeInstancePathSegments(value)
 	return segments
 end
 
-local function activeSyncMountSegments()
+function activeSyncMountSegments()
 	local mounts = {}
 	for _, mount in ipairs(state.project and state.project.mounts or {}) do
 		if isMountSyncEnabled(mount) then
@@ -282,14 +282,14 @@ local function activeSyncMountSegments()
 	return mounts
 end
 
-local function instancePathLabelFromSegments(segments)
+function instancePathLabelFromSegments(segments)
 	if type(segments) ~= "table" or #segments == 0 then
 		return "game"
 	end
 	return "game." .. table.concat(segments, ".")
 end
 
-local function activeSyncMountLabels()
+function activeSyncMountLabels()
 	local labels = {}
 	for _, segments in ipairs(activeSyncMountSegments()) do
 		table.insert(labels, instancePathLabelFromSegments(segments))
@@ -300,7 +300,7 @@ local function activeSyncMountLabels()
 	return table.concat(labels, ", ")
 end
 
-local function isPathInsideActiveSyncMount(pathSegments)
+function isPathInsideActiveSyncMount(pathSegments)
 	local segments = normalizeInstancePathSegments(pathSegments)
 	if #segments == 0 then
 		return false
@@ -313,12 +313,12 @@ local function isPathInsideActiveSyncMount(pathSegments)
 	return false
 end
 
-local function syncMountGuardMessage(actionName, pathSegments)
+function syncMountGuardMessage(actionName, pathSegments)
 	local segments = normalizeInstancePathSegments(pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. instancePathLabelFromSegments(segments) .. "' is outside the active sync mounts for this project. Active mounts: " .. activeSyncMountLabels() .. "."
 end
 
-local function duplicateMountRootIssueForPath(pathSegments)
+function duplicateMountRootIssueForPath(pathSegments)
 	local segments = normalizeInstancePathSegments(pathSegments)
 	if #segments == 0 then
 		return nil
@@ -339,7 +339,7 @@ local function duplicateMountRootIssueForPath(pathSegments)
 	return nil
 end
 
-local function duplicateMountRootGuardMessage(actionName, pathSegments)
+function duplicateMountRootGuardMessage(actionName, pathSegments)
 	local issue = duplicateMountRootIssueForPath(pathSegments)
 	if not issue then
 		return nil
@@ -347,7 +347,7 @@ local function duplicateMountRootGuardMessage(actionName, pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. issue.targetPath .. "' would create or mutate duplicate mount root '" .. tostring(issue.duplicateName) .. "' inside active mount '" .. issue.expectedMountPath .. "'. Put children directly under '" .. issue.expectedMountPath .. "' instead."
 end
 
-local function filterSnapshotForSync(snapshot)
+function filterSnapshotForSync(snapshot)
 	if type(snapshot) ~= "table" then
 		return {
 			mounts = {}
@@ -368,13 +368,13 @@ local function filterSnapshotForSync(snapshot)
 	return filtered
 end
 
-local function setTextIfPresent(element, text)
+function setTextIfPresent(element, text)
 	if element then
 		element.Text = text
 	end
 end
 
-local function normalizePort(value)
+function normalizePort(value)
 	local parsed = tonumber(value)
 	if not parsed then
 		return nil
@@ -386,7 +386,7 @@ local function normalizePort(value)
 	return parsed
 end
 
-local function shouldMirrorLogToOutput(message)
+function shouldMirrorLogToOutput(message)
 	local lower = string.lower(tostring(message or ""))
 	local markers = {
 		"failed",
@@ -411,7 +411,7 @@ local function shouldMirrorLogToOutput(message)
 	return false
 end
 
-local function appendLog(message)
+function appendLog(message)
 	local stamped = string.format("[%s] %s", os.date("%H:%M:%S"), message)
 	table.insert(state.logs, 1, stamped)
 	while #state.logs > 18 do
@@ -425,7 +425,7 @@ local function appendLog(message)
 	end
 end
 
-local function updateStatus(text)
+function updateStatus(text)
 	local displayText = "Status: " .. text
 	setTextIfPresent(state.ui.statusLabel, displayText)
 	setTextIfPresent(state.ui.advancedStatusLabel, displayText)
@@ -448,33 +448,33 @@ local function updateStatus(text)
 	end
 end
 
-local function updateProject(text)
+function updateProject(text)
 	setTextIfPresent(state.ui.projectLabel, "Workspace: " .. text)
 	setTextIfPresent(state.ui.advancedProjectLabel, "Workspace: " .. text)
 end
 
-local function updateSession(text)
+function updateSession(text)
 	setTextIfPresent(state.ui.sessionLabel, "Session: " .. text)
 	setTextIfPresent(state.ui.advancedSessionLabel, "Session: " .. text)
 end
 
-local function updateQueue(text)
+function updateQueue(text)
 	setTextIfPresent(state.ui.queueLabel, "Queue: " .. text)
 	setTextIfPresent(state.ui.advancedQueueLabel, "Queue: " .. text)
 end
 
-local function updateConflict(text)
+function updateConflict(text)
 	setTextIfPresent(state.ui.conflictLabel, "Conflicts: " .. text)
 	setTextIfPresent(state.ui.advancedConflictLabel, "Conflicts: " .. text)
 end
 
-local function updateEndpointSummary()
+function updateEndpointSummary()
 	local endpointText = string.format("%s:%d", state.host, state.port)
 	setTextIfPresent(state.ui.endpointLabel, endpointText)
 	setTextIfPresent(state.ui.settingsEndpointLabel, "Current: " .. endpointText)
 end
 
-local function workspaceNameFromRoot(workspaceRoot)
+function workspaceNameFromRoot(workspaceRoot)
 	if type(workspaceRoot) ~= "string" or workspaceRoot == "" then
 		return nil
 	end
@@ -485,7 +485,7 @@ local function workspaceNameFromRoot(workspaceRoot)
 	return folderName or workspaceRoot
 end
 
-local function getInstancePathSegments(instance)
+function getInstancePathSegments(instance)
 	local segments = {}
 	local current = instance
 	while current and current ~= game do
@@ -495,7 +495,7 @@ local function getInstancePathSegments(instance)
 	return segments
 end
 
-local function currentWorkspaceLabel()
+function currentWorkspaceLabel()
 	if state.workspaceName and state.workspaceName ~= "" then
 		return state.workspaceName
 	end
@@ -505,7 +505,7 @@ local function currentWorkspaceLabel()
 	return "-"
 end
 
-local function currentPlaceName()
+function currentPlaceName()
 	local fallback = tostring(game.Name or "")
 	local placeId = tonumber(game.PlaceId) or 0
 	if placeId > 0 then
@@ -522,7 +522,7 @@ local function currentPlaceName()
 	return "Place " .. tostring(placeId)
 end
 
-local function findProjectById(projectId)
+function findProjectById(projectId)
 	for _, project in ipairs(state.availableProjects or {}) do
 		if project.id == projectId then
 			return project
@@ -531,7 +531,7 @@ local function findProjectById(projectId)
 	return nil
 end
 
-local function projectSelectionModeLabel()
+function projectSelectionModeLabel()
 	if state.projectSelectionReason == "preferred_project" then
 		return "manual"
 	end
@@ -544,7 +544,7 @@ local function projectSelectionModeLabel()
 	return nil
 end
 
-local function updateProjectTargetSummary()
+function updateProjectTargetSummary()
 	local targetName = nil
 	local modeLabel = nil
 	if state.connected and state.project and state.project.name then
@@ -571,7 +571,7 @@ local function updateProjectTargetSummary()
 	setTextIfPresent(state.ui.settingsProjectLabel, "Target project: " .. targetName)
 end
 
-local function saveSettings()
+function saveSettings()
 	plugin:SetSetting(SETTINGS_KEY, {
 		host = state.host,
 		port = state.port,
@@ -586,7 +586,7 @@ local function saveSettings()
 	})
 end
 
-local function loadSettings()
+function loadSettings()
 	local saved = plugin:GetSetting(SETTINGS_KEY)
 	if type(saved) == "table" then
 		local migratedLegacyPort = false
@@ -626,11 +626,11 @@ end
 -- <<< src/plugin-src/10_settings_status.lua
 
 -- >>> src/plugin-src/20_http.lua
-local function baseUrl()
+function baseUrl()
 	return string.format("http://%s:%d", state.host, state.port)
 end
 
-local function describeHttpFailure(response)
+function describeHttpFailure(response)
 	local statusLabel = response.StatusMessage
 	if not statusLabel or statusLabel == "" then
 		statusLabel = "HTTP " .. tostring(response.StatusCode or "error")
@@ -655,7 +655,7 @@ local function describeHttpFailure(response)
 	return tostring(statusLabel)
 end
 
-local function requestWithBase(urlBase, method, route, body)
+function requestWithBase(urlBase, method, route, body)
 	local options = {
 		Url = urlBase .. route,
 		Method = method,
@@ -695,11 +695,11 @@ local function requestWithBase(urlBase, method, route, body)
 	return true, parsed or {}
 end
 
-local function request(method, route, body)
+function request(method, route, body)
 	return requestWithBase(baseUrl(), method, route, body)
 end
 
-local function cloneErrorContext(context)
+function cloneErrorContext(context)
 	local result = {}
 	if type(context) == "table" then
 		for key, value in pairs(context) do
@@ -714,7 +714,7 @@ local function cloneErrorContext(context)
 	return result
 end
 
-local function generateErrorEventId()
+function generateErrorEventId()
 	local ok, eventId = pcall(function()
 		return HttpService:GenerateGUID(false)
 	end)
@@ -724,7 +724,7 @@ local function generateErrorEventId()
 	return string.format("%s-%s", tostring(os.time()), tostring(now()))
 end
 
-local function captureErrorStack(message)
+function captureErrorStack(message)
 	local stack = nil
 	pcall(function()
 		if debug and debug.traceback then
@@ -734,7 +734,7 @@ local function captureErrorStack(message)
 	return stack
 end
 
-local function enqueuePluginError(payload)
+function enqueuePluginError(payload)
 	state.pendingErrorReports = state.pendingErrorReports or {}
 	table.insert(state.pendingErrorReports, payload)
 	while #state.pendingErrorReports > ERROR_REPORT_QUEUE_LIMIT do
@@ -742,14 +742,14 @@ local function enqueuePluginError(payload)
 	end
 end
 
-local function sendPluginError(payload)
+function sendPluginError(payload)
 	local callOk, requestOk, response = pcall(function()
 		return request("POST", "/errors/add", payload)
 	end)
 	return callOk and requestOk == true and type(response) == "table" and response.ok == true
 end
 
-local function flushPluginErrorReports(force)
+function flushPluginErrorReports(force)
 	if not state.pendingErrorReports or #state.pendingErrorReports == 0 then
 		return
 	end
@@ -770,7 +770,7 @@ local function flushPluginErrorReports(force)
 	end
 end
 
-local function reportPluginError(message, code, context, severity)
+function reportPluginError(message, code, context, severity)
 	if not message or message == "" then
 		return
 	end
@@ -792,7 +792,7 @@ local function reportPluginError(message, code, context, severity)
 end
 
 -- OPT-005: Send pre-serialized JSON body to avoid double JSONEncode
-local function requestRawBody(method, route, rawJsonBody)
+function requestRawBody(method, route, rawJsonBody)
 	local options = {
 		Url = baseUrl() .. route,
 		Method = method,
@@ -828,7 +828,7 @@ local function requestRawBody(method, route, rawJsonBody)
 	return true, parsed or {}
 end
 
-local function fetchProjectsCatalog()
+function fetchProjectsCatalog()
 	local ok, response = request("GET", "/projects")
 	if not ok then
 		return false, response
@@ -837,7 +837,7 @@ local function fetchProjectsCatalog()
 	return true, response
 end
 
-local function fetchDaemonHealth()
+function fetchDaemonHealth()
 	local ok, response = request("GET", "/health")
 	if not ok then
 		state.workspaceRoot = nil
@@ -852,7 +852,7 @@ local function fetchDaemonHealth()
 	return true, response
 end
 
-local function handshakeStatusText(offer)
+function handshakeStatusText(offer)
 	if not offer or not offer.status then
 		return "no offer"
 	end
@@ -871,13 +871,13 @@ local function handshakeStatusText(offer)
 	return tostring(offer.status)
 end
 
-local function isNoProjectWorkspaceError(message)
+function isNoProjectWorkspaceError(message)
 	return type(message) == "string" and string.find(message, "No compatible Argon project was found in the workspace.", 1, true) ~= nil
 end
 -- <<< src/plugin-src/20_http.lua
 
 -- >>> src/plugin-src/30_values_properties.lua
-local function serializeValue(value)
+function serializeValue(value)
 	local valueType = typeof(value)
 	if valueType == "Color3" then
 		return { value.R, value.G, value.B }
@@ -971,7 +971,7 @@ local function serializeValue(value)
 	return nil
 end
 
-local function valuesEqual(left, right)
+function valuesEqual(left, right)
 	if left == right then
 		return true
 	end
@@ -995,7 +995,7 @@ local function valuesEqual(left, right)
 	return remaining == 0
 end
 
-local function convertIncomingValue(currentValue, raw)
+function convertIncomingValue(currentValue, raw)
 	if raw == nil then
 		return nil
 	end
@@ -1053,7 +1053,7 @@ local function convertIncomingValue(currentValue, raw)
 	return raw
 end
 
-local function safeGetProperty(instance, propertyName)
+function safeGetProperty(instance, propertyName)
 	local ok, value = pcall(function()
 		return instance[propertyName]
 	end)
@@ -1063,7 +1063,7 @@ local function safeGetProperty(instance, propertyName)
 	return nil
 end
 
-local function safeInstanceLabel(target)
+function safeInstanceLabel(target)
 	local label = target and target.Name or "?"
 	pcall(function()
 		label = target:GetFullName()
@@ -1074,11 +1074,11 @@ end
 local safeSetFailureCycle = nil
 local safeSetFailureDedupe = {}
 
-local function safeSetFailureKey(operation, instanceLabel, fieldName, err, reason)
+function safeSetFailureKey(operation, instanceLabel, fieldName, err, reason)
 	return tostring(operation) .. "\n" .. tostring(instanceLabel) .. "\n" .. tostring(fieldName) .. "\n" .. tostring(err) .. "\n" .. tostring(reason or "")
 end
 
-local function beginSafeSetFailureAggregation(command)
+function beginSafeSetFailureAggregation(command)
 	local payload = command and command.payload or nil
 	local cycle = {
 		previous = safeSetFailureCycle,
@@ -1093,7 +1093,7 @@ local function beginSafeSetFailureAggregation(command)
 	return cycle
 end
 
-local function recordSafeSetFailure(operation, target, fieldName, err, contextLabel, extraContext)
+function recordSafeSetFailure(operation, target, fieldName, err, contextLabel, extraContext)
 	local cycle = safeSetFailureCycle
 	if not cycle then
 		return
@@ -1131,7 +1131,7 @@ local function recordSafeSetFailure(operation, target, fieldName, err, contextLa
 	table.insert(cycle.failures, entry)
 end
 
-local function finishSafeSetFailureAggregation(cycle)
+function finishSafeSetFailureAggregation(cycle)
 	if safeSetFailureCycle ~= cycle then
 		return
 	end
@@ -1178,7 +1178,7 @@ local function finishSafeSetFailureAggregation(cycle)
 	}, "warning")
 end
 
-local function safeSetProperty(target, propertyName, value, contextLabel)
+function safeSetProperty(target, propertyName, value, contextLabel)
 	local ok, err = pcall(function()
 		target[propertyName] = value
 	end)
@@ -1189,7 +1189,7 @@ local function safeSetProperty(target, propertyName, value, contextLabel)
 	return ok, err
 end
 
-local function safeSetAttribute(target, attributeName, value, contextLabel)
+function safeSetAttribute(target, attributeName, value, contextLabel)
 	local ok, err = pcall(function()
 		target:SetAttribute(attributeName, value)
 	end)
@@ -1200,7 +1200,7 @@ local function safeSetAttribute(target, attributeName, value, contextLabel)
 	return ok, err
 end
 
-local function safeSetParent(target, newParent, contextLabel)
+function safeSetParent(target, newParent, contextLabel)
 	local ok, err = pcall(function()
 		target.Parent = newParent
 	end)
@@ -1215,7 +1215,7 @@ end
 
 local propertyNameCache = {}
 
-local function propertyNamesForInstance(instance)
+function propertyNamesForInstance(instance)
 	local className = instance.ClassName
 	local cached = propertyNameCache[className]
 	if cached then
@@ -1389,11 +1389,11 @@ local function propertyNamesForInstance(instance)
 	return propertyNames
 end
 
-local function isReservedAttributeName(attributeName)
+function isReservedAttributeName(attributeName)
 	return type(attributeName) == "string" and (string.sub(attributeName, 1, 3) == "RBX" or attributeName == "AmarilloId")
 end
 
-local function syncableAttributes(attributes)
+function syncableAttributes(attributes)
 	local filtered = {}
 	local hasAttributes = false
 	for attributeName, attributeValue in pairs(attributes or {}) do
@@ -1405,7 +1405,7 @@ local function syncableAttributes(attributes)
 	return filtered, hasAttributes
 end
 
-local function serializedSyncableAttributes(attributes)
+function serializedSyncableAttributes(attributes)
 	local filtered = {}
 	local hasAttributes = false
 	for attributeName, attributeValue in pairs(attributes or {}) do
@@ -1420,7 +1420,7 @@ local function serializedSyncableAttributes(attributes)
 	return filtered, hasAttributes
 end
 
-local function collectProperties(instance)
+function collectProperties(instance)
 	local propertyNames = propertyNamesForInstance(instance)
 	local properties = {}
 	for propertyName in pairs(propertyNames) do
@@ -1439,7 +1439,7 @@ local function collectProperties(instance)
 	return properties
 end
 
-local function collectModelDescriptorProperties(instance)
+function collectModelDescriptorProperties(instance)
 	local properties = collectProperties(instance)
 	local attributes, hasAttributes = serializedSyncableAttributes(instance:GetAttributes())
 	if hasAttributes then
@@ -1454,11 +1454,11 @@ end
 -- <<< src/plugin-src/30_values_properties.lua
 
 -- >>> src/plugin-src/40_snapshot_sync.lua
-local function collectOpenDocumentSources()
+function collectOpenDocumentSources()
 	return state.openDocumentCache
 end
 
-local function yieldSyncWork(controller)
+function yieldSyncWork(controller)
 	if not controller then
 		return
 	end
@@ -1470,7 +1470,7 @@ local function yieldSyncWork(controller)
 end
 
 -- Full refresh (used on watcher start / reconnect only)
-local function refreshOpenDocumentCache()
+function refreshOpenDocumentCache()
 	local sources = {}
 	if okScriptEditor and ScriptEditorService then
 		local okEditor, openDocs = pcall(function()
@@ -1501,7 +1501,7 @@ local function refreshOpenDocumentCache()
 	state.openDocumentCache = sources
 end
 
-local function readScriptSource(instance, openDocumentSources)
+function readScriptSource(instance, openDocumentSources)
 	if openDocumentSources and openDocumentSources[instance] ~= nil then
 		return openDocumentSources[instance]
 	end
@@ -1522,7 +1522,7 @@ local function readScriptSource(instance, openDocumentSources)
 	return nil
 end
 
-local function updateScriptSourceIfChanged(instance, desiredSource, openDocumentSources, force)
+function updateScriptSourceIfChanged(instance, desiredSource, openDocumentSources, force)
 	desiredSource = desiredSource or ""
 	local currentSource = readScriptSource(instance, openDocumentSources)
 	if not force and currentSource == desiredSource then
@@ -1557,7 +1557,7 @@ local function updateScriptSourceIfChanged(instance, desiredSource, openDocument
 	return false, false, updateErr or "source update failed"
 end
 
-local function indexDesiredChildren(children)
+function indexDesiredChildren(children)
 	local indexed = { _byId = {} }
 	for _, child in ipairs(children or {}) do
 		local childName = child.name or child.robloxName or ""
@@ -1574,11 +1574,11 @@ local function indexDesiredChildren(children)
 	return indexed
 end
 
-local function desiredNodeName(desiredNode)
+function desiredNodeName(desiredNode)
 	return desiredNode and (desiredNode.name or desiredNode.robloxName) or nil
 end
 
-local function getAmarilloId(instance)
+function getAmarilloId(instance)
 	if not instance then
 		return nil
 	end
@@ -1591,7 +1591,7 @@ local function getAmarilloId(instance)
 	return nil
 end
 
-local function setAmarilloId(instance, amarilloId, contextLabel)
+function setAmarilloId(instance, amarilloId, contextLabel)
 	if not instance or type(amarilloId) ~= "string" or amarilloId == "" then
 		return false
 	end
@@ -1602,7 +1602,7 @@ local function setAmarilloId(instance, amarilloId, contextLabel)
 	return ok == true
 end
 
-local function ensureAmarilloId(instance)
+function ensureAmarilloId(instance)
 	local existing = getAmarilloId(instance)
 	if existing then
 		return existing
@@ -1614,7 +1614,7 @@ local function ensureAmarilloId(instance)
 	return nil
 end
 
-local function reserveSnapshotAmarilloId(instance, options)
+function reserveSnapshotAmarilloId(instance, options)
 	local amarilloId = getAmarilloId(instance)
 	if not amarilloId then
 		return nil
@@ -1647,7 +1647,7 @@ local function reserveSnapshotAmarilloId(instance, options)
 	return amarilloId
 end
 
-local function childNameCounts(parent)
+function childNameCounts(parent)
 	local counts = {}
 	for _, child in ipairs(parent:GetChildren()) do
 		counts[child.Name] = (counts[child.Name] or 0) + 1
@@ -1655,11 +1655,11 @@ local function childNameCounts(parent)
 	return counts
 end
 
-local function mountKeyFromSegments(segments)
+function mountKeyFromSegments(segments)
 	return table.concat(segments or {}, "\0")
 end
 
-local function buildNestedMountChildIndex(mounts)
+function buildNestedMountChildIndex(mounts)
 	local indexed = {}
 	for _, mount in ipairs(mounts or {}) do
 		local segments = mount.segments
@@ -1681,12 +1681,12 @@ local function buildNestedMountChildIndex(mounts)
 	return indexed
 end
 
-local function isNestedMountChild(indexed, parentSegments, childName)
+function isNestedMountChild(indexed, parentSegments, childName)
 	local bucket = indexed and indexed[mountKeyFromSegments(parentSegments)]
 	return bucket and bucket[childName] == true
 end
 
-local function duplicateMountRootIssueForSnapshot(projectSnapshot)
+function duplicateMountRootIssueForSnapshot(projectSnapshot)
 	for _, mount in ipairs(projectSnapshot and projectSnapshot.mounts or {}) do
 		local segments = mount.segments
 		if (not segments or #segments == 0) and type(mount.path) == "string" then
@@ -1710,11 +1710,11 @@ local function duplicateMountRootIssueForSnapshot(projectSnapshot)
 	return nil
 end
 
-local function duplicateMountRootSnapshotMessage(issue)
+function duplicateMountRootSnapshotMessage(issue)
 	return "Project tree contains duplicate mount root '" .. tostring(issue.duplicateName) .. "' at '" .. tostring(issue.targetPath) .. "'. Put children directly under '" .. tostring(issue.expectedMountPath) .. "' instead."
 end
 
-local function findDesiredChildForInstance(instance, desiredChildIndex)
+function findDesiredChildForInstance(instance, desiredChildIndex)
 	local instanceId = getAmarilloId(instance)
 	if instanceId and desiredChildIndex and desiredChildIndex._byId and desiredChildIndex._byId[instanceId] then
 		return desiredChildIndex._byId[instanceId]
@@ -1731,12 +1731,12 @@ local function findDesiredChildForInstance(instance, desiredChildIndex)
 	return bucket[1]
 end
 
-local function hasDesiredChildNamed(desiredChildIndex, name)
+function hasDesiredChildNamed(desiredChildIndex, name)
 	return desiredChildIndex ~= nil and desiredChildIndex[name] ~= nil
 end
 
 -- Engine/player-owned instances cannot be safely rewritten by plugin threads.
-local function isPlayerControlledInstance(instance)
+function isPlayerControlledInstance(instance)
 	if not instance then
 		return false
 	end
@@ -1776,21 +1776,21 @@ local function isPlayerControlledInstance(instance)
 	return false
 end
 
-local function isProtectedSyncInstance(instance)
+function isProtectedSyncInstance(instance)
 	return instance and (instance:IsA("Terrain") or isPlayerControlledInstance(instance))
 end
 
-local function isModelDetectionEnabled(options)
+function isModelDetectionEnabled(options)
 	return state.detectModels == true and not (options and options.omitModels == true)
 end
 
-local function isOpaqueModelInstance(instance, options)
+function isOpaqueModelInstance(instance, options)
 	return instance and instance:IsA("Model") and not isModelDetectionEnabled(options)
 end
 
 local shouldDestroyUnexpectedChild = nil
 
-local function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
+function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
 	if parentDesiredNode and parentDesiredNode.keepUnknowns == true then
 		return true
 	end
@@ -1800,7 +1800,7 @@ local function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
 	return isProtectedSyncInstance(child)
 end
 
-local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
+function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
 	if isPlayerControlledInstance(instance) then
 		return false
 	end
@@ -1819,7 +1819,7 @@ local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredCh
 	return hasDesiredChildNamed(desiredChildIndex, instance.Name)
 end
 
-local function scriptFileKind(instance)
+function scriptFileKind(instance)
 	if instance:IsA("LocalScript") then
 		return "client"
 	elseif instance:IsA("ModuleScript") then
@@ -1836,7 +1836,7 @@ local function scriptFileKind(instance)
 	return nil
 end
 
-local function destroyUnexpectedChild(instance, contextLabel)
+function destroyUnexpectedChild(instance, contextLabel)
 	if isProtectedSyncInstance(instance) then
 		return false
 	end
@@ -1858,7 +1858,7 @@ local function destroyUnexpectedChild(instance, contextLabel)
 	return ok
 end
 
-local function describeInstanceForLog(instance)
+function describeInstanceForLog(instance)
 	local fullName = instance and instance.Name or "?"
 	pcall(function()
 		fullName = instance:GetFullName()
@@ -1866,7 +1866,7 @@ local function describeInstanceForLog(instance)
 	return fullName
 end
 
-local function countModelDescendants(instance)
+function countModelDescendants(instance)
 	local count = 0
 	for _, child in ipairs(instance:GetChildren()) do
 		count = count + 1 + countModelDescendants(child)
@@ -1874,7 +1874,7 @@ local function countModelDescendants(instance)
 	return count
 end
 
-local function relativeModelChildPath(model, child)
+function relativeModelChildPath(model, child)
 	if not model or not child then
 		return nil
 	end
@@ -1890,7 +1890,7 @@ local function relativeModelChildPath(model, child)
 	return table.concat(segments, ".")
 end
 
-local function snapshotModelDescriptor(instance, options)
+function snapshotModelDescriptor(instance, options)
 	local amarilloId = reserveSnapshotAmarilloId(instance, options)
 	local childSummary = {}
 	for _, child in ipairs(instance:GetChildren()) do
@@ -1938,7 +1938,7 @@ local function snapshotModelDescriptor(instance, options)
 	return node
 end
 
-local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	yieldSyncWork(options and options.yieldController)
 	if instance:IsA("Model") then
 		if isOpaqueModelInstance(instance, options) then
@@ -1987,7 +1987,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	return node
 end
 
-local function resolveMountContainer(segments)
+function resolveMountContainer(segments)
 	local current = game
 	for index, segment in ipairs(segments) do
 		if index == 1 then
@@ -2009,14 +2009,14 @@ local function resolveMountContainer(segments)
 	return current
 end
 
-local function mountPathLabel(segments)
+function mountPathLabel(segments)
 	if type(segments) ~= "table" or #segments == 0 then
 		return "<empty>"
 	end
 	return table.concat(segments, ".")
 end
 
-local function resolveMountRoot(segment)
+function resolveMountRoot(segment)
 	local ok, service = pcall(function()
 		return game:GetService(segment)
 	end)
@@ -2032,7 +2032,7 @@ local function resolveMountRoot(segment)
 	return nil, "missing"
 end
 
-local function validateMountContainerRecovery(segments)
+function validateMountContainerRecovery(segments)
 	if type(segments) ~= "table" or #segments == 0 then
 		return {
 			ok = true,
@@ -2085,7 +2085,7 @@ local function validateMountContainerRecovery(segments)
 	}
 end
 
-local function ensureRecoverableMountContainer(segments)
+function ensureRecoverableMountContainer(segments)
 	if type(segments) ~= "table" or #segments == 0 then
 		appendLog("Mount integrity ignored: <empty> (empty mount path)")
 		return nil, true, "ignored"
@@ -2129,7 +2129,7 @@ local function ensureRecoverableMountContainer(segments)
 	return current, true, nil
 end
 
-local function preflightProjectMounts(projectSnapshot)
+function preflightProjectMounts(projectSnapshot)
 	local checks = {}
 	local blocked = {}
 
@@ -2173,7 +2173,7 @@ local function preflightProjectMounts(projectSnapshot)
 	return true, nil, containers
 end
 
-local function snapshotCurrentProject(options)
+function snapshotCurrentProject(options)
 	if not state.project then
 		return nil
 	end
@@ -2289,7 +2289,7 @@ local function snapshotCurrentProject(options)
 	}
 end
 
-local function setProperty(instance, propertyName, rawValue)
+function setProperty(instance, propertyName, rawValue)
 	if propertyName == "Attributes" and type(rawValue) == "table" then
 		local okAttributes, currentAttributes = pcall(function()
 			return instance:GetAttributes()
@@ -2336,7 +2336,7 @@ local function setProperty(instance, propertyName, rawValue)
 	return ok, err
 end
 
-local function applyProperties(instance, properties)
+function applyProperties(instance, properties)
 	for propertyName, value in pairs(properties or {}) do
 		local ok, err = setProperty(instance, propertyName, value)
 		if not ok then
@@ -2346,7 +2346,7 @@ local function applyProperties(instance, properties)
 	return true
 end
 
-local function isImplicitFolderNode(desiredNode)
+function isImplicitFolderNode(desiredNode)
 	return desiredNode
 		and desiredNode.className == "Folder"
 		and desiredNode.classNameSource == "defaultFolder"
@@ -2354,7 +2354,7 @@ end
 
 -- Returns true if the desired node may contain Studio-only descendants
 -- that the daemon cannot fully represent on disk.
-local function mayContainStudioOnlyChildren(desiredNode)
+function mayContainStudioOnlyChildren(desiredNode)
 	if desiredNode and desiredNode.keepUnknowns == true then
 		return true
 	end
@@ -2381,7 +2381,7 @@ local NON_SYNCABLE_BASE_CLASSES = {
 	"Sound", "ParticleEmitter", "Beam", "Trail",
 	"ValueBase", "BodyMover", "JointInstance"
 }
-local function isNonSyncableInstance(instance)
+function isNonSyncableInstance(instance)
 	for _, baseClass in ipairs(NON_SYNCABLE_BASE_CLASSES) do
 		if instance:IsA(baseClass) then
 			return true
@@ -2390,7 +2390,7 @@ local function isNonSyncableInstance(instance)
 	return false
 end
 
-local function hasNonSyncableDescendant(instance)
+function hasNonSyncableDescendant(instance)
 	for _, descendant in ipairs(instance:GetDescendants()) do
 		if isProtectedSyncInstance(descendant) or isNonSyncableInstance(descendant) then
 			return true
@@ -2409,7 +2409,7 @@ shouldDestroyUnexpectedChild = function(child, desiredNode)
 	return true
 end
 
-local function findExistingChildForDesired(parent, desiredNode, claimedChildren)
+function findExistingChildForDesired(parent, desiredNode, claimedChildren)
 	if type(desiredNode.amarilloId) == "string" and desiredNode.amarilloId ~= "" then
 		for _, child in ipairs(parent:GetChildren()) do
 			if not (claimedChildren and claimedChildren[child]) and getAmarilloId(child) == desiredNode.amarilloId then
@@ -2430,7 +2430,7 @@ local function findExistingChildForDesired(parent, desiredNode, claimedChildren)
 	return sameName
 end
 
-local function ensureInstance(parent, desiredNode, claimedChildren)
+function ensureInstance(parent, desiredNode, claimedChildren)
 	local targetName = desiredNodeName(desiredNode)
 	local existing = findExistingChildForDesired(parent, desiredNode, claimedChildren)
 	local corrected = false
@@ -2494,13 +2494,13 @@ local function ensureInstance(parent, desiredNode, claimedChildren)
 	return existing, corrected
 end
 
-local function isModelDescriptorNode(desiredNode)
+function isModelDescriptorNode(desiredNode)
 	return type(desiredNode) == "table"
 		and desiredNode.modelDescriptor == true
 		and desiredNode.className == "Model"
 end
 
-local function applyModelDescriptor(parent, desiredNode, claimedSiblings)
+function applyModelDescriptor(parent, desiredNode, claimedSiblings)
 	local existing = findExistingChildForDesired(parent, desiredNode, claimedSiblings)
 	if existing and isPlayerControlledInstance(existing) then
 		appendLog("Model descriptor ignored player-controlled instance: " .. describeInstanceForLog(existing))
@@ -2521,7 +2521,7 @@ local function applyModelDescriptor(parent, desiredNode, claimedSiblings)
 	return not okProperties
 end
 
-local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings, yieldController)
+function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings, yieldController)
 	yieldSyncWork(yieldController)
 	if isModelDescriptorNode(desiredNode) then
 		return applyModelDescriptor(parent, desiredNode, claimedSiblings)
@@ -2565,7 +2565,7 @@ local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblin
 	return corrected
 end
 
-local function normalizeProjectSnapshotForCache(projectSnapshot)
+function normalizeProjectSnapshotForCache(projectSnapshot)
 	local mounts = {}
 	for _, mount in ipairs(projectSnapshot.mounts or {}) do
 		table.insert(mounts, {
@@ -2580,7 +2580,7 @@ local function normalizeProjectSnapshotForCache(projectSnapshot)
 	}
 end
 
-local function applySyncSummary(sessionSummary)
+function applySyncSummary(sessionSummary)
 	if type(sessionSummary) ~= "table" then
 		return
 	end
@@ -2610,7 +2610,7 @@ local function applySyncSummary(sessionSummary)
 	end
 end
 
-local function applyProjectSnapshot(projectSnapshot, command)
+function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
 	end
@@ -2695,7 +2695,7 @@ end
 -- <<< src/plugin-src/40_snapshot_sync.lua
 
 -- >>> src/plugin-src/50_commands.lua
-local function postCommandResult(commandId, okValue, payload)
+function postCommandResult(commandId, okValue, payload)
 	if not state.sessionId then
 		return
 	end
@@ -2724,7 +2724,7 @@ local function postCommandResult(commandId, okValue, payload)
 	return ok, response
 end
 
-local function executeLuau(code)
+function executeLuau(code)
 	local loader = loadstring or load
 	if not loader then
 		return false, "loadstring is unavailable in this Studio."
@@ -2756,7 +2756,7 @@ executeRunCode = function(command)
 	appendLog(ok and "Luau executed through the daemon." or ("Luau failed: " .. tostring(result)))
 end
 
-local function getSelectionSummary()
+function getSelectionSummary()
 	local selection = {}
 	for _, instance in ipairs(Selection:Get()) do
 		table.insert(selection, {
@@ -2768,7 +2768,7 @@ local function getSelectionSummary()
 	return selection
 end
 
-local function resolveInstanceByPath(pathString)
+function resolveInstanceByPath(pathString)
 	if type(pathString) ~= "string" or pathString == "" then
 		return nil
 	end
@@ -2857,7 +2857,7 @@ local COMMON_PROPERTIES = {
 	"Value",
 }
 
-local function collectAllProperties(instance)
+function collectAllProperties(instance)
 	local properties = {}
 
 	for _, propName in ipairs(COMMON_PROPERTIES) do
@@ -2899,7 +2899,7 @@ local function collectAllProperties(instance)
 	return properties
 end
 
-local function getDepthRelative(instance, root)
+function getDepthRelative(instance, root)
 	local depth = 0
 	local current = instance.Parent
 	while current and current ~= root do
@@ -2909,7 +2909,7 @@ local function getDepthRelative(instance, root)
 	return depth
 end
 
-local function handleCommand(command)
+function handleCommand(command)
 	if command.type == "apply_project_tree" then
 		local isInitialPcSync = state.awaitingInitialSync and command.payload and command.payload.reason == "initial_pc_truth"
 		local ok, message, appliedSnapshot, correctedDuringApply = applyProjectSnapshot(command.payload.project, command)
@@ -3368,7 +3368,7 @@ local function handleCommand(command)
 	})
 end
 
-local function handleCommandSafely(command)
+function handleCommandSafely(command)
 	local isInitialPcSync = command
 		and command.type == "apply_project_tree"
 		and command.payload
@@ -3410,7 +3410,7 @@ end
 -- <<< src/plugin-src/50_commands.lua
 
 -- >>> src/plugin-src/60_connection_flow.lua
-local function syncSnapshot(reason)
+function syncSnapshot(reason)
 	if not state.sessionId or not state.project or state.isApplyingRemote then
 		return
 	end
@@ -3465,7 +3465,7 @@ local function syncSnapshot(reason)
 	return ok, response
 end
 
-local function attemptInitialStudioSync(context, force)
+function attemptInitialStudioSync(context, force)
 	if not state.connected or not state.sessionId or not state.project or not state.awaitingInitialStudioSync then
 		return false
 	end
@@ -3520,7 +3520,7 @@ local function attemptInitialStudioSync(context, force)
 	return false, message
 end
 
-local function refreshTreePreview()
+function refreshTreePreview()
 	local snapshot = snapshotCurrentProject()
 	state.treeCache = snapshot
 	if state.ui.treeBox then
@@ -3566,7 +3566,7 @@ function resetSessionState(statusText)
 	updateProjectTargetSummary()
 end
 
-local function hideConnectionPrompt()
+function hideConnectionPrompt()
 	if state.ui.connectionPromptOverlay then
 		state.ui.connectionPromptOverlay.Visible = false
 	end
@@ -3576,7 +3576,7 @@ end
 
 -- >>> src/plugin-src/70_privileged_actions.lua
 -- ===== Privileged Action Confirmation System =====
-local function formatValueForDisplay(value)
+function formatValueForDisplay(value)
 	if type(value) == "table" then
 		local okEncode, encoded = pcall(function()
 			return HttpService:JSONEncode(value)
@@ -3591,7 +3591,7 @@ local function formatValueForDisplay(value)
 	return tostring(value)
 end
 
-local function postOutsideSyncMountResult(command, actionName, pathSegments)
+function postOutsideSyncMountResult(command, actionName, pathSegments)
 	local message = syncMountGuardMessage(actionName, pathSegments)
 	postCommandResult(command.id, false, {
 		error = message,
@@ -3603,7 +3603,7 @@ local function postOutsideSyncMountResult(command, actionName, pathSegments)
 	appendLog(message)
 end
 
-local function postDuplicateMountRootResult(command, actionName, pathSegments)
+function postDuplicateMountRootResult(command, actionName, pathSegments)
 	local message = duplicateMountRootGuardMessage(actionName, pathSegments)
 	postCommandResult(command.id, false, {
 		error = message,
@@ -3951,7 +3951,7 @@ executeDestructiveCommand = function(command)
 	end
 end
 
-local function destructiveConfirmationContent(command)
+function destructiveConfirmationContent(command)
 	if command.type == "run_code" then
 		local code = tostring(command.payload.code or "")
 		local preview = string.gsub(code, "\r", "")
@@ -4068,10 +4068,10 @@ end
 -- <<< src/plugin-src/70_privileged_actions.lua
 
 -- >>> src/plugin-src/80_ui.lua
-local function initializeUiModule()
+function initializeUiModule()
 state.uiActions = state.uiActions or {}
 
-local function openConnectionPrompt(context)
+function openConnectionPrompt(context)
 	state.pendingConnectionContext = context
 	if context.offerId then
 		state.seenOfferIds[context.offerId] = true
@@ -4093,7 +4093,7 @@ local function openConnectionPrompt(context)
 	appendLog("Connection request received. Waiting for your confirmation.")
 end
 
-local function showTruthSourcePrompt()
+function showTruthSourcePrompt()
 	if not state.pendingConnectionContext or not state.ui.connectionPromptOverlay then
 		return
 	end
@@ -4106,7 +4106,7 @@ local function showTruthSourcePrompt()
 	state.ui.connectionPromptChooseStudio.Visible = true
 end
 
-local function applyAcceptedSession(response, truthSource)
+function applyAcceptedSession(response, truthSource)
 	state.sessionId = response.session and response.session.id or nil
 	state.sessionToken = response.session and response.session.sessionToken or nil
 	flushPluginErrorReports(true)
@@ -4154,7 +4154,7 @@ local function applyAcceptedSession(response, truthSource)
 	end
 end
 
-local function acceptPendingConnection(truthSource)
+function acceptPendingConnection(truthSource)
 	local context = state.pendingConnectionContext
 	if not context then
 		return
@@ -4189,7 +4189,7 @@ local function acceptPendingConnection(truthSource)
 	applyAcceptedSession(response, truthSource)
 end
 
-local function connectSession()
+function connectSession()
 	if state.connected and state.sessionId then
 		appendLog("A session is already connected. Use Disconnect before opening another one.")
 		return
@@ -4222,7 +4222,7 @@ local function connectSession()
 	})
 end
 
-local function declinePendingConnection()
+function declinePendingConnection()
 	local context = state.pendingConnectionContext
 	if not context then
 		return
@@ -4244,25 +4244,25 @@ local function declinePendingConnection()
 	updateStatus("disconnected")
 end
 
-local function confirmPendingConnection()
+function confirmPendingConnection()
 	showTruthSourcePrompt()
 end
 
-local function handleDiffConfirm(truthSource)
+function handleDiffConfirm(truthSource)
 	if state.ui.diffOverlay then
 		state.ui.diffOverlay.Visible = false
 	end
 	acceptPendingConnection(truthSource)
 end
 
-local function cancelDiff()
+function cancelDiff()
 	if state.ui.diffOverlay then
 		state.ui.diffOverlay.Visible = false
 	end
 	showTruthSourcePrompt()
 end
 
-local function showDiffOverlay(truthSource, changes)
+function showDiffOverlay(truthSource, changes)
 	if state.ui.connectionPromptOverlay then
 		state.ui.connectionPromptOverlay.Visible = false
 	end
@@ -4308,7 +4308,7 @@ local function showDiffOverlay(truthSource, changes)
 	state.ui.diffOverlay.Visible = true
 end
 
-local function fetchAndShowDiff(truthSource)
+function fetchAndShowDiff(truthSource)
 	if state.ui.connectionPromptBody then
 		state.ui.connectionPromptBody.Text = "Calculating changes..."
 		state.ui.connectionPromptChoosePc.Visible = false
@@ -4346,11 +4346,11 @@ local function fetchAndShowDiff(truthSource)
 	end
 end
 
-local function choosePcTruth()
+function choosePcTruth()
 	acceptPendingConnection("pc")
 end
 
-local function chooseStudioTruth()
+function chooseStudioTruth()
 	acceptPendingConnection("studio")
 end
 
@@ -4370,7 +4370,7 @@ state.uiActions.pollConnectionOffer = function()
 	return true, response
 end
 
-local function disconnectSession()
+function disconnectSession()
 	pcall(disconnectWatcher)
 	hideConnectionPrompt()
 	if state.sessionId then
@@ -4383,7 +4383,7 @@ local function disconnectSession()
 	appendLog("Session closed.")
 end
 
-local function manualPull()
+function manualPull()
 	if not state.sessionId then
 		appendLog("Connect the plugin before receiving from PC.")
 		return
@@ -4397,7 +4397,7 @@ local function manualPull()
 	end
 end
 
-local function manualPush()
+function manualPush()
 	if not state.sessionId then
 		appendLog("Connect the plugin before sending to PC.")
 		return
@@ -4406,7 +4406,7 @@ local function manualPush()
 	appendLog(ok and "Sending files to PC..." or ("Send to PC failed: " .. tostring(response)))
 end
 
-local function manualRunCode()
+function manualRunCode()
 	if not state.sessionId then
 		appendLog("Connect the plugin before executing code.")
 		return
@@ -4428,7 +4428,7 @@ local function manualRunCode()
 	end
 end
 
-local function manualSelection()
+function manualSelection()
 	if not state.sessionId then
 		appendLog("Connect the plugin before requesting the selection.")
 		return
@@ -4445,7 +4445,7 @@ local function manualSelection()
 	end
 end
 
-local function sendPlaytest(mode)
+function sendPlaytest(mode)
 	if not state.sessionId then
 		appendLog("Connect the plugin before controlling playtest.")
 		return
@@ -4462,7 +4462,7 @@ local function sendPlaytest(mode)
 	end
 end
 
-local function pollCommands()
+function pollCommands()
 	if not state.sessionId then
 		return
 	end
@@ -4484,13 +4484,13 @@ local function pollCommands()
 	end
 end
 
-local function addCorner(instance, radius)
+function addCorner(instance, radius)
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = radius or UDim.new(0, 8)
 	safeSetParent(corner, instance, "UI corner parent")
 end
 
-local function addStroke(instance, color, thickness)
+function addStroke(instance, color, thickness)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = color or Color3.fromRGB(60, 60, 60)
 	stroke.Thickness = thickness or 1
@@ -4498,7 +4498,7 @@ local function addStroke(instance, color, thickness)
 	safeSetParent(stroke, instance, "UI stroke parent")
 end
 
-local function makeTextLabel(parent, text, size, position, textSize)
+function makeTextLabel(parent, text, size, position, textSize)
 	local label = Instance.new("TextLabel")
 	label.BackgroundTransparency = 1
 	label.TextColor3 = Color3.fromRGB(204, 204, 204)
@@ -4514,7 +4514,7 @@ local function makeTextLabel(parent, text, size, position, textSize)
 	return label
 end
 
-local function makeButton(parent, text, size, position, callback)
+function makeButton(parent, text, size, position, callback)
 	local button = Instance.new("TextButton")
 	button.Text = text
 	button.Font = Enum.Font.GothamSemibold
@@ -4532,7 +4532,7 @@ local function makeButton(parent, text, size, position, callback)
 	return button
 end
 
-local function makeTextBox(parent, placeholder, size, position, multiline)
+function makeTextBox(parent, placeholder, size, position, multiline)
 	local box = Instance.new("TextBox")
 	box.Text = ""
 	box.PlaceholderText = placeholder
@@ -4554,7 +4554,7 @@ local function makeTextBox(parent, placeholder, size, position, multiline)
 	return box
 end
 
-local function makeCard(parent, size, position, color)
+function makeCard(parent, size, position, color)
 	local card = Instance.new("Frame")
 	card.BackgroundColor3 = color or Color3.fromRGB(37, 37, 38)
 	card.BorderSizePixel = 0
@@ -4566,7 +4566,7 @@ local function makeCard(parent, size, position, color)
 	return card
 end
 
-local function setButtonStyle(button, styleName)
+function setButtonStyle(button, styleName)
 	if styleName == "secondary" then
 		button.BackgroundColor3 = Color3.fromRGB(48, 54, 61)
 		button.TextColor3 = Color3.fromRGB(201, 209, 217)
@@ -4600,7 +4600,7 @@ setPrivilegedActionConfirmation = function(enabled, source)
 	end
 end
 
-local function togglePrivilegedActionConfirmation()
+function togglePrivilegedActionConfirmation()
 	setPrivilegedActionConfirmation(not state.confirmPrivilegedActions, "Studio")
 end
 
@@ -4632,7 +4632,7 @@ setWorkspaceSyncEnabled = function(enabled, source)
 	appendLog("Workspace sync " .. (state.syncTargets.Workspace and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
 end
 
-local function toggleWorkspaceSync()
+function toggleWorkspaceSync()
 	setWorkspaceSyncEnabled(not (state.syncTargets and state.syncTargets.Workspace == true), "Studio")
 end
 
@@ -4663,11 +4663,11 @@ setModelDetectionEnabled = function(enabled, source)
 	appendLog("Model detection " .. (state.detectModels and "enabled" or "disabled") .. (source and (" by " .. tostring(source)) or "") .. ".")
 end
 
-local function toggleModelDetection()
+function toggleModelDetection()
 	setModelDetectionEnabled(not (state.detectModels == true), "Studio")
 end
 
-local function showView(viewName)
+function showView(viewName)
 	state.currentView = viewName
 	if state.ui.homePage then
 		state.ui.homePage.Visible = viewName == "home"
@@ -4683,7 +4683,7 @@ local function showView(viewName)
 	end
 end
 
-local function renderProjectList()
+function renderProjectList()
 	if not state.ui.projectList then
 		return
 	end
@@ -4727,15 +4727,15 @@ local function renderProjectList()
 	end
 end
 
-local function openHomeView()
+function openHomeView()
 	showView("home")
 end
 
-local function openAdvancedView()
+function openAdvancedView()
 	showView("advanced")
 end
 
-local function openSettingsView()
+function openSettingsView()
 	if state.ui.settingsHostBox then
 		state.ui.settingsHostBox.Text = state.host
 	end
@@ -4767,7 +4767,7 @@ local function openSettingsView()
 	showView("settings")
 end
 
-local function saveSettingsFromView()
+function saveSettingsFromView()
 	local nextHost = state.ui.settingsHostBox and state.ui.settingsHostBox.Text or state.host
 	nextHost = string.gsub(nextHost, "^%s+", "")
 	nextHost = string.gsub(nextHost, "%s+$", "")
@@ -4822,7 +4822,7 @@ end
 
 local toolbarButton = nil
 
-local function buildPluginShell()
+function buildPluginShell()
 	local toolbar = plugin:CreateToolbar("Amarillo")
 	toolbarButton = toolbar:CreateButton("Amarillo", "Open the Roblox <-> workspace bridge", "rbxassetid://92705629884726")
 	toolbarButton.ClickableWhenViewportHidden = true
@@ -4875,7 +4875,7 @@ local function buildPluginShell()
 	return root
 end
 
-local function buildHomePage()
+function buildHomePage()
 local homeHero = makeCard(state.ui.homePage, UDim2.new(1, -20, 0, 160), UDim2.fromOffset(10, 12))
 local homeTitle = makeTextLabel(homeHero, "Amarillo v" .. PLUGIN_VERSION, UDim2.new(1, -120, 0, 28), UDim2.fromOffset(16, 14), 24)
 homeTitle.Font = Enum.Font.GothamBold
@@ -4915,7 +4915,7 @@ homeConfirmHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 state.ui.homeConfirmPropToggle = makeButton(homeSafety, state.confirmPrivilegedActions and "Enabled" or "Disabled", UDim2.fromOffset(132, 32), UDim2.new(1, -148, 0, 20), togglePrivilegedActionConfirmation)
 end
 
-local function buildSettingsPage()
+function buildSettingsPage()
 local settingsHeader = makeCard(state.ui.settingsPage, UDim2.new(1, -20, 0, 68), UDim2.fromOffset(10, 12))
 local settingsBackButton = makeButton(settingsHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 18), openHomeView)
 setButtonStyle(settingsBackButton, "secondary")
@@ -5003,7 +5003,7 @@ local settingsHint = makeTextLabel(state.ui.settingsPage, "Changing the endpoint
 settingsHint.TextColor3 = Color3.fromRGB(139, 148, 158)
 end
 
-local function buildAdvancedPage()
+function buildAdvancedPage()
 local advancedHeader = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 72), UDim2.fromOffset(10, 12))
 local advancedBackButton = makeButton(advancedHeader, "Back", UDim2.fromOffset(76, 30), UDim2.fromOffset(16, 20), openHomeView)
 setButtonStyle(advancedBackButton, "secondary")
@@ -5044,7 +5044,7 @@ state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(
 state.ui.logBox.TextEditable = false
 end
 
-local function buildPlaceSetupPage()
+function buildPlaceSetupPage()
 -- Place Setup page state
 local placeSetupServices = {
 	ServerScriptService = true,
@@ -5059,7 +5059,7 @@ local placeSetupIncludeBase = true
 local placeSetupKeepUnknowns = true
 local serviceCheckboxes = {}
 
-local function updateCheckboxStyle(button, enabled, serviceName)
+function updateCheckboxStyle(button, enabled, serviceName)
 	if enabled then
 		button.Text = "☑ " .. serviceName
 		setButtonStyle(button, "primary")
@@ -5069,7 +5069,7 @@ local function updateCheckboxStyle(button, enabled, serviceName)
 	end
 end
 
-local function updateBaseToggleStyle(button, enabled)
+function updateBaseToggleStyle(button, enabled)
 	button.Text = enabled and "Enabled" or "Disabled"
 	setButtonStyle(button, enabled and "primary" or "secondary")
 end
@@ -5240,7 +5240,7 @@ createButton.Font = Enum.Font.GothamSemibold
 createButton.TextSize = 14
 end
 
-local function buildConnectionPromptOverlay(root)
+function buildConnectionPromptOverlay(root)
 state.ui.connectionPromptOverlay = Instance.new("Frame")
 state.ui.connectionPromptOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.connectionPromptOverlay.BackgroundTransparency = 0.28
@@ -5276,7 +5276,7 @@ state.ui.connectionPromptChooseStudio.ZIndex = 22
 end
 
 -- ===== Privileged Action Confirmation Overlay =====
-local function buildPrivilegedActionConfirmationOverlay(root)
+function buildPrivilegedActionConfirmationOverlay(root)
 state.ui.propertyConfirmOverlay = Instance.new("Frame")
 state.ui.propertyConfirmOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.propertyConfirmOverlay.BackgroundTransparency = 0.28
@@ -5319,7 +5319,7 @@ propertyDeclineBtn.ZIndex = 32
 end
 
 -- ===== Diff Confirmation Overlay =====
-local function buildDiffOverlay(root)
+function buildDiffOverlay(root)
 state.ui.diffOverlay = Instance.new("Frame")
 state.ui.diffOverlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 state.ui.diffOverlay.BackgroundTransparency = 0.28
@@ -5373,7 +5373,7 @@ setButtonStyle(diffCancelBtn, "secondary")
 diffCancelBtn.ZIndex = 42
 end
 
-local function startWidgetAutoHide()
+function startWidgetAutoHide()
 	task.spawn(function()
 		while true do
 			task.wait(0.25)
@@ -5384,7 +5384,7 @@ local function startWidgetAutoHide()
 	end)
 end
 
-local function createPluginUi()
+function createPluginUi()
 	local root = buildPluginShell()
 	buildHomePage()
 	buildSettingsPage()
