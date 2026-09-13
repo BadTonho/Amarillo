@@ -36,6 +36,26 @@ const WINDOWS_RESERVED_FS_NAMES = new Set([
   "LPT8",
   "LPT9"
 ]);
+const TRANSIENT_FILESYSTEM_ERROR_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+function isTransientFilesystemError(error) {
+  return Boolean(error && TRANSIENT_FILESYSTEM_ERROR_CODES.has(error.code));
+}
+
+async function retryTransientFilesystemOperation(operation, options: any = {}) {
+  const attempts = Number.isInteger(options.attempts) ? Math.max(0, options.attempts) : 5;
+  const initialDelayMs = Number.isFinite(options.initialDelayMs) ? Math.max(1, options.initialDelayMs) : 50;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientFilesystemError(error) || attempt >= attempts) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, initialDelayMs * (2 ** attempt)));
+    }
+  }
+}
 
 // ===== Lightweight glob matching (no external dependency) =====
 function globToRegex(glob) {
@@ -2203,8 +2223,12 @@ async function writeTextFileIfChangedAsync(filePath, value, options: any = {}) {
       throw error;
     }
   }
-  await fsp.mkdir(path.dirname(targetPath), { recursive: true });
-  await fsp.writeFile(targetPath, value, "utf8");
+  await retryTransientFilesystemOperation(
+    () => fsp.mkdir(path.dirname(targetPath), { recursive: true })
+  );
+  await retryTransientFilesystemOperation(
+    () => fsp.writeFile(targetPath, value, "utf8")
+  );
   notifyFileChange(options, {
     action: existed ? "modify" : "create",
     filePath: targetPath,
@@ -2249,7 +2273,9 @@ async function removePathAsync(targetPath, options: any = {}) {
   if (removedFiles.length === 0 && !await pathExistsAsync(resolvedTarget)) {
     return;
   }
-  await fsp.rm(resolvedTarget, { recursive: true, force: true });
+  await retryTransientFilesystemOperation(
+    () => fsp.rm(resolvedTarget, { recursive: true, force: true })
+  );
   for (const file of removedFiles) {
     notifyFileChange(options, {
       action: "delete",

@@ -317,7 +317,8 @@ test("Roblox plugin verifies apply snapshots against the applied tree without pr
   assert.match(pluginSource, /local function shouldPreserveUnknownChildDuringApply\(child, parentDesiredNode\)/);
   assert.match(pluginSource, /options and options\.omitPreservedUnknowns == true and shouldPreserveUnknownChildDuringApply/);
   assert.match(pluginSource, /local referenceSnapshot = options\.desiredSnapshot or state\.treeCache/);
-  assert.match(pluginSource, /appliedSnapshot = snapshotCurrentProject\(\{\s+desiredSnapshot = projectSnapshot,\s+omitPreservedUnknowns = true\s+\}\)/);
+  assert.match(pluginSource, /appliedSnapshot = snapshotCurrentProject\(\{\s+desiredSnapshot = projectSnapshot,\s+omitPreservedUnknowns = true,\s+yieldController = yieldController\s+\}\)/);
+  assert.match(pluginSource, /refreshOpenDocumentCache\(\)\s+appliedSnapshot = snapshotCurrentProject/);
 });
 
 test("Roblox plugin supports optional compact Model descriptors", () => {

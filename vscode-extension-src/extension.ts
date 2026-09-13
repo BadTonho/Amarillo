@@ -235,6 +235,16 @@ async function filesMatch(leftPath, rightPath) {
   }
 }
 
+async function readRobloxPluginVersion(filePath) {
+  try {
+    const source = await fs.readFile(filePath, "utf8");
+    const match = source.match(/local\s+PLUGIN_VERSION\s*=\s*["']([^"']+)["']/);
+    return match ? match[1] : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
 function getActiveSessionId() {
   return extensionContext?.workspaceState.get("amarillo.activeSessionId") || null;
 }
@@ -1357,11 +1367,12 @@ function resolveRobloxPluginInstallPaths(context) {
   const pluginsDir = path.join(localAppData, "Roblox", "Plugins");
   const targetPath = path.join(pluginsDir, "Amarillo.lua");
 
-  let sourcePath = null;
+  const bundledSourcePath = runtimePath(context, "plugin", "Amarillo.lua");
+  let sourcePath = syncFs.existsSync(bundledSourcePath) ? bundledSourcePath : null;
   try {
     const workspaceRoot = resolveWorkspaceRoot();
     const workspaceSource = path.join(workspaceRoot, "src", "plugin", "Amarillo.lua");
-    if (syncFs.existsSync(workspaceSource)) {
+    if (!sourcePath && syncFs.existsSync(workspaceSource)) {
       sourcePath = workspaceSource;
     }
   } catch (_error) {
@@ -1378,23 +1389,35 @@ function resolveRobloxPluginInstallPaths(context) {
 async function copyBundledRobloxPlugin(context, options: { force?: boolean } = {}) {
   const { pluginsDir, sourcePath, targetPath } = resolveRobloxPluginInstallPaths(context);
   await ensurePathExists(sourcePath, "Plugin Amarillo");
+  const sourceVersion = await readRobloxPluginVersion(sourcePath);
   const targetExists = syncFs.existsSync(targetPath);
   if (!options.force && targetExists && await filesMatch(sourcePath, targetPath)) {
     return {
       ok: true,
       status: "up_to_date",
       sourcePath,
-      targetPath
+      targetPath,
+      sourceVersion,
+      installedVersion: await readRobloxPluginVersion(targetPath)
     };
   }
 
   await fs.mkdir(pluginsDir, { recursive: true });
   await fs.copyFile(sourcePath, targetPath);
+  if (!await filesMatch(sourcePath, targetPath)) {
+    throw new Error(`Plugin copy verification failed at: ${targetPath}`);
+  }
+  const installedVersion = await readRobloxPluginVersion(targetPath);
+  if (sourceVersion && installedVersion !== sourceVersion) {
+    throw new Error(`Plugin version verification failed: expected ${sourceVersion}, installed ${installedVersion || "unknown"}.`);
+  }
   return {
     ok: true,
     status: targetExists ? "updated" : "installed",
     sourcePath,
-    targetPath
+    targetPath,
+    sourceVersion,
+    installedVersion
   };
 }
 
@@ -2202,9 +2225,30 @@ function scheduleExistingWorkspaceSourcemapOnActivate(context) {
 
 async function installRobloxPlugin(context) {
   const result = await copyBundledRobloxPlugin(context, { force: true });
-  log(`Plugin copiado para ${result.targetPath} (source: ${path.basename(path.dirname(result.sourcePath))})`);
+  log(`Plugin copiado para ${result.targetPath} (source: ${result.sourcePath}, version: ${result.installedVersion || "unknown"})`);
   refreshSidebar();
-  vscode.window.showInformationMessage(`Amarillo installed in Roblox Studio: ${result.targetPath}. Reload or reopen Roblox Studio if it was already open.`);
+  let activeSession = null;
+  try {
+    const settings = getBridgeSettings();
+    const health = await fetchDaemonHealth({ timeout: 1500 });
+    if (daemonMatchesWorkspace(settings, health)) {
+      activeSession = resolveActiveSessionFromHealth(health);
+    }
+  } catch (_error) {
+    // Installing the file must still work when the daemon is offline.
+  }
+
+  if (activeSession && result.sourceVersion && activeSession.pluginVersion !== result.sourceVersion) {
+    const runningVersion = activeSession.pluginVersion || "unknown";
+    const message = `Plugin ${result.sourceVersion} installed, but Roblox Studio is still running ${runningVersion} in memory. Close and reopen Roblox Studio to load the new plugin.`;
+    logWarn(message, true);
+    vscode.window.showWarningMessage(message);
+    return;
+  }
+
+  vscode.window.showInformationMessage(
+    `Amarillo plugin ${result.installedVersion || "unknown"} installed at ${result.targetPath}. Restart Roblox Studio if it was already open.`
+  );
 }
 
 async function ensureBridgeStarted(context, options: BridgeStartOptions = {}) {
@@ -3324,7 +3368,7 @@ async function silentPluginInstall(context) {
       log(`Plugin Amarillo auto-install: up_to_date at ${result.targetPath}`);
       return result;
     }
-    log(`Plugin Amarillo auto-install: ${result.status} at ${result.targetPath} (source: ${path.basename(path.dirname(result.sourcePath))})`);
+    log(`Plugin Amarillo auto-install: ${result.status} at ${result.targetPath} (source: ${result.sourcePath}, version: ${result.installedVersion || "unknown"})`);
     return result;
   } catch (error) {
     log(`Plugin auto-install failed: ${error.message}`);

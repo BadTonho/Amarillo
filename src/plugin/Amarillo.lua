@@ -1458,6 +1458,17 @@ local function collectOpenDocumentSources()
 	return state.openDocumentCache
 end
 
+local function yieldSyncWork(controller)
+	if not controller then
+		return
+	end
+	controller.count = (controller.count or 0) + 1
+	if controller.count >= (controller.interval or 100) then
+		controller.count = 0
+		task.wait()
+	end
+end
+
 -- Full refresh (used on watcher start / reconnect only)
 local function refreshOpenDocumentCache()
 	local sources = {}
@@ -1928,6 +1939,7 @@ local function snapshotModelDescriptor(instance, options)
 end
 
 local function snapshotNode(instance, openDocumentSources, desiredNode, options)
+	yieldSyncWork(options and options.yieldController)
 	if instance:IsA("Model") then
 		if isOpaqueModelInstance(instance, options) then
 			return nil
@@ -2166,6 +2178,7 @@ local function snapshotCurrentProject(options)
 		return nil
 	end
 	options = options or {}
+	options.yieldController = options.yieldController or { count = 0, interval = 100 }
 	options.seenAmarilloIds = {}
 	options.duplicateAmarilloIdsCorrected = false
 	local openDocumentSources = collectOpenDocumentSources()
@@ -2508,7 +2521,8 @@ local function applyModelDescriptor(parent, desiredNode, claimedSiblings)
 	return not okProperties
 end
 
-local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings)
+local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblings, yieldController)
+	yieldSyncWork(yieldController)
 	if isModelDescriptorNode(desiredNode) then
 		return applyModelDescriptor(parent, desiredNode, claimedSiblings)
 	end
@@ -2522,18 +2536,23 @@ local function applyNode(parent, desiredNode, openDocumentSources, claimedSiblin
 	end
 
 	if desiredNode.fileKind and desiredNode.source ~= nil then
-		updateScriptSourceIfChanged(instance, desiredNode.source, openDocumentSources)
+		local _, sourceOk, sourceErr = updateScriptSourceIfChanged(instance, desiredNode.source, openDocumentSources)
+		if not sourceOk then
+			appendLog("Failed to update script source during project sync: " .. describeInstanceForLog(instance) .. " -> " .. tostring(sourceErr))
+			corrected = true
+		end
 	end
 
 	local appliedChildren = {}
 	for _, child in ipairs(desiredNode.children or {}) do
-		if applyNode(instance, child, openDocumentSources, appliedChildren) then
+		if applyNode(instance, child, openDocumentSources, appliedChildren, yieldController) then
 			corrected = true
 		end
 	end
 
 	if desiredNode.keepUnknowns ~= true then
 		for _, child in ipairs(instance:GetChildren()) do
+			yieldSyncWork(yieldController)
 			if not appliedChildren[child] then
 				-- Preserve Studio-only objects, but remove syncable scripts/folders
 				-- that disappeared from the desired tree so moves do not duplicate.
@@ -2607,6 +2626,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 	local appliedSnapshot = nil
 	local safeSetCycle = beginSafeSetFailureAggregation(command)
 	local nestedMountChildIndex = buildNestedMountChildIndex(projectSnapshot.mounts or {})
+	local yieldController = { count = 0, interval = 100 }
 
 	local okApply, applyError = xpcall(function()
 		ChangeHistoryService:SetWaypoint("Amarillo Sync Start")
@@ -2622,12 +2642,13 @@ local function applyProjectSnapshot(projectSnapshot, command)
 			if container then
 				local appliedChildren = {}
 				for _, child in ipairs(mount.children or {}) do
-					if applyNode(container, child, openDocumentSources, appliedChildren) then
+					if applyNode(container, child, openDocumentSources, appliedChildren, yieldController) then
 						correctedDuringApply = true
 					end
 				end
 				if mount.keepUnknowns ~= true then
 					for _, child in ipairs(container:GetChildren()) do
+						yieldSyncWork(yieldController)
 						if not appliedChildren[child] then
 							-- Never destroy non-syncable instances (GUIs, Parts,
 							-- Cameras, etc.) during mount cleanup. The daemon
@@ -2643,9 +2664,14 @@ local function applyProjectSnapshot(projectSnapshot, command)
 
 		ChangeHistoryService:SetWaypoint("Amarillo Sync End")
 		
+		-- ScriptEditorService can keep an open document cache older than the
+		-- source just applied. Refresh it before verification so the hash uses
+		-- the source that Studio is actually displaying.
+		refreshOpenDocumentCache()
 		appliedSnapshot = snapshotCurrentProject({
 			desiredSnapshot = projectSnapshot,
-			omitPreservedUnknowns = true
+			omitPreservedUnknowns = true,
+			yieldController = yieldController
 		})
 		if correctedDuringApply then
 			appendLog("Studio classes preserved; sending corrected snapshot to daemon.")

@@ -16,3 +16,15 @@ Data do registro: 2026-09-13
 - Models antigos sem `modelDescriptor` continuam sendo tratados como objetos opacos.
 - `search_instances`, `get_descendants` e `get_instance_info` continuam consultando Models independentemente da opção.
 - Regenerado `src/plugin/Amarillo.lua`.
+
+## Versao 1.2.3 — Correcoes identificadas nos testes
+
+Data do registro: 2026-09-13
+
+- A instalacao do plugin agora verifica o hash e a versao do `Amarillo.lua` realmente copiado para a pasta de plugins do Roblox.
+- O runtime empacotado passa a ter prioridade sobre um `Amarillo.lua` antigo dentro do workspace.
+- A instalacao informa quando o Studio ainda esta executando uma versao antiga em memoria e orienta reiniciar o Studio.
+- O plugin atualiza o cache do ScriptEditorService antes de validar o snapshot aplicado, evitando divergencias de Source causadas por texto aberto desatualizado.
+- Snapshots e aplicacoes grandes cedem o processamento periodicamente para reduzir timeouts do Studio.
+- Escritas e remocoes da sincronizacao local repetem erros transitorios do Windows, incluindo `EBUSY`, `EPERM`, `EACCES` e `ENOTEMPTY`.
+- Regenerado `src/plugin/Amarillo.lua` e validado com a suite completa: 307 testes aprovados.

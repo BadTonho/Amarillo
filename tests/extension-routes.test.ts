@@ -69,6 +69,17 @@ test("VS Code healthcheck reports Roblox Studio plugin status", () => {
   assert.match(extensionSource, /Plugin: connected to/);
 });
 
+test("VS Code plugin installation verifies the copied version and detects stale Studio memory", () => {
+  const extensionSource = readGeneratedExtensionFile("extension.js");
+
+  assert.match(extensionSource, /readRobloxPluginVersion/);
+  assert.match(extensionSource, /Plugin copy verification failed/);
+  assert.match(extensionSource, /installedVersion/);
+  assert.match(extensionSource, /still running .*in memory/);
+  assert.match(extensionSource, /Close and reopen Roblox Studio/);
+  assert.match(extensionSource, /bundledSourcePath/);
+});
+
 test("VS Code healthcheck probes safe daemon routes", () => {
   const extensionSource = fs.readFileSync(
     path.join(__dirname, "..", "vscode-extension", "extension.js"),
