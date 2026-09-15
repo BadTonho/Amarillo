@@ -320,7 +320,7 @@ function getDefaultPropertiesForClass(className: string): Record<string, any> {
   if (className === "ProximityPrompt") {
     defaults.ActionText = "Interact";
     defaults.AutoLocalize = true;
-    defaults.ClickablePrompt = false;
+    defaults.ClickablePrompt = true;
     defaults.Enabled = true;
     defaults.Exclusivity = "OnePerButton";
     defaults.GamepadKeyCode = "ButtonX";

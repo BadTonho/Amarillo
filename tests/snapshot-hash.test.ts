@@ -31,7 +31,7 @@ function proximityPromptSnapshot(properties) {
 const proximityPromptDefaults = {
   ActionText: "Interact",
   AutoLocalize: true,
-  ClickablePrompt: false,
+  ClickablePrompt: true,
   Enabled: true,
   Exclusivity: "OnePerButton",
   GamepadKeyCode: "ButtonX",
@@ -221,6 +221,14 @@ test("ProximityPrompt defaults do not mismatch explicit local metadata", () => {
   });
 
   assert.equal(snapshotsMatch(local, studio), true);
+
+  const explicitFalse = normalizeSnapshot(
+    proximityPromptSnapshot({ ClickablePrompt: false })
+  );
+  assert.equal(
+    explicitFalse.mounts[0].children[0].properties.ClickablePrompt,
+    false
+  );
 });
 
 test("ProximityPrompt property changes produce semantic diffs", () => {
@@ -228,6 +236,7 @@ test("ProximityPrompt property changes produce semantic diffs", () => {
   const changes: Array<[string, unknown]> = [
     ["ActionText", "Outra acao"],
     ["ObjectText", "Outro objeto"],
+    ["ClickablePrompt", false],
     ["MaxActivationDistance", 13],
     ["HoldDuration", 1],
     ["Exclusivity", "AlwaysShow"],

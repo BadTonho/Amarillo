@@ -1,5 +1,13 @@
 # Update Logs
 
+## Versao 1.2.3 - Ajuste do default de ClickablePrompt
+
+Data do registro: 2026-09-15
+
+- Ajustado o default semântico de `ProximityPrompt.ClickablePrompt` para `true`, alinhando snapshots locais sem esse campo ao valor retornado pelo Studio.
+- Mantidos valores explícitos locais, incluindo `ClickablePrompt = false`, como diferenças reais de sincronização.
+- Adicionados testes para ausência, preservação explícita e diff da propriedade.
+
 ## Versao 1.2.3 - Suporte a ProximityPrompt
 
 Data do registro: 2026-09-15
