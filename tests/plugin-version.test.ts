@@ -241,6 +241,64 @@ test("Roblox plugin caches property metadata while reading live values", () => {
   assert.match(pluginSource, /for propertyName in pairs\(propertyNames\) do\s+local value = safeGetProperty\(instance, propertyName\)/);
 });
 
+test("Roblox plugin supports ProximityPrompt properties in snapshots and MCP inspection", () => {
+  const promptProperties = [
+    "ActionText",
+    "AutoLocalize",
+    "ClickablePrompt",
+    "Enabled",
+    "Exclusivity",
+    "GamepadKeyCode",
+    "HoldDuration",
+    "KeyboardKeyCode",
+    "MaxActivationDistance",
+    "MaxIndicatorDistance",
+    "ObjectText",
+    "RequiresLineOfSight",
+    "Style",
+    "UIOffset"
+  ];
+
+  const promptBlockStart = pluginSource.indexOf(
+    'if instance:IsA("ProximityPrompt") then'
+  );
+  const promptBlockEnd = pluginSource.indexOf(
+    'if instance:IsA("ScreenGui") then',
+    promptBlockStart
+  );
+
+  assert.ok(promptBlockStart >= 0, "ProximityPrompt snapshot rule is missing");
+  assert.ok(promptBlockEnd > promptBlockStart, "ProximityPrompt rule boundary is missing");
+
+  const promptBlock = pluginSource.slice(promptBlockStart, promptBlockEnd);
+  for (const propertyName of promptProperties) {
+    assert.match(
+      promptBlock,
+      new RegExp(`propertyNames\\.${propertyName} = true`),
+      `${propertyName} is missing from ProximityPrompt snapshots`
+    );
+  }
+  assert.doesNotMatch(promptBlock, /RootLocalizationTable/);
+
+  const commandsStart = pluginSource.indexOf("local COMMON_PROPERTIES = {");
+  const commandsEnd = pluginSource.indexOf(
+    "function collectAllProperties",
+    commandsStart
+  );
+  assert.ok(commandsStart >= 0, "MCP common property list is missing");
+  assert.ok(commandsEnd > commandsStart, "MCP common property list boundary is missing");
+
+  const commandsBlock = pluginSource.slice(commandsStart, commandsEnd);
+  for (const propertyName of promptProperties) {
+    assert.match(
+      commandsBlock,
+      new RegExp(`"${propertyName}"`),
+      `${propertyName} is missing from MCP inspection`
+    );
+  }
+  assert.doesNotMatch(commandsBlock, /RootLocalizationTable/);
+});
+
 test("Roblox plugin filters reserved RBX attributes during sync", () => {
   assert.match(pluginSource, /function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId" or attributeName == "AmarilloSync"\)\s+end/);
   assert.match(pluginSource, /function syncableAttributes\(attributes\)/);

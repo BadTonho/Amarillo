@@ -1,5 +1,13 @@
 # Update Logs
 
+## Versao 1.2.3 - Suporte a ProximityPrompt
+
+Data do registro: 2026-09-15
+
+- Adicionadas as propriedades serializaveis de `ProximityPrompt` aos snapshots e a inspecao pelo MCP.
+- A normalizacao do hash agora trata os valores padrao do `ProximityPrompt` sem ignorar alteracoes explicitas.
+- Regenerado `src/plugin/Amarillo.lua` e adicionados testes de snapshot, diff e propriedades do MCP.
+
 ## Versao 1.2.3 - Blacklist persistente para subarvores do Studio
 
 Data do registro: 2026-09-15

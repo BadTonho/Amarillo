@@ -121,6 +121,11 @@ local COMMON_PROPERTIES = {
 	"MeshId", "TextureID", "RenderFidelity",
 	-- Scripts
 	"Source", "Enabled", "RunContext",
+	-- ProximityPrompt
+	"ActionText", "AutoLocalize", "ClickablePrompt", "Exclusivity",
+	"GamepadKeyCode", "HoldDuration", "KeyboardKeyCode",
+	"MaxActivationDistance", "MaxIndicatorDistance", "ObjectText",
+	"RequiresLineOfSight", "Style", "UIOffset",
 	-- GuiObject
 	"AbsolutePosition", "AbsoluteSize", "AbsoluteRotation",
 	"AnchorPoint", "BackgroundColor3", "BackgroundTransparency",

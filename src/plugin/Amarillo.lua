@@ -1302,6 +1302,22 @@ function propertyNamesForInstance(instance)
 	if instance:IsA("Script") or instance:IsA("LocalScript") or instance:IsA("ModuleScript") then
 		propertyNames.Enabled = true
 	end
+	if instance:IsA("ProximityPrompt") then
+		propertyNames.ActionText = true
+		propertyNames.AutoLocalize = true
+		propertyNames.ClickablePrompt = true
+		propertyNames.Enabled = true
+		propertyNames.Exclusivity = true
+		propertyNames.GamepadKeyCode = true
+		propertyNames.HoldDuration = true
+		propertyNames.KeyboardKeyCode = true
+		propertyNames.MaxActivationDistance = true
+		propertyNames.MaxIndicatorDistance = true
+		propertyNames.ObjectText = true
+		propertyNames.RequiresLineOfSight = true
+		propertyNames.Style = true
+		propertyNames.UIOffset = true
+	end
 	if instance:IsA("ScreenGui") then
 		propertyNames.ResetOnSpawn = true
 		propertyNames.IgnoreGuiInset = true
@@ -2918,6 +2934,11 @@ local COMMON_PROPERTIES = {
 	"MeshId", "TextureID", "RenderFidelity",
 	-- Scripts
 	"Source", "Enabled", "RunContext",
+	-- ProximityPrompt
+	"ActionText", "AutoLocalize", "ClickablePrompt", "Exclusivity",
+	"GamepadKeyCode", "HoldDuration", "KeyboardKeyCode",
+	"MaxActivationDistance", "MaxIndicatorDistance", "ObjectText",
+	"RequiresLineOfSight", "Style", "UIOffset",
 	-- GuiObject
 	"AbsolutePosition", "AbsoluteSize", "AbsoluteRotation",
 	"AnchorPoint", "BackgroundColor3", "BackgroundTransparency",

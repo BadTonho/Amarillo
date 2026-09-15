@@ -8,6 +8,43 @@ const {
   snapshotsMatch
 } = require("../src/daemon/lib/snapshot-hash");
 
+function proximityPromptSnapshot(properties) {
+  return {
+    projectId: "test-project",
+    mounts: [
+      {
+        id: "mount-1",
+        segments: ["Workspace"],
+        children: [
+          {
+            name: "ProximityPrompt",
+            className: "ProximityPrompt",
+            properties,
+            children: []
+          }
+        ]
+      }
+    ]
+  };
+}
+
+const proximityPromptDefaults = {
+  ActionText: "Interact",
+  AutoLocalize: true,
+  ClickablePrompt: false,
+  Enabled: true,
+  Exclusivity: "OnePerButton",
+  GamepadKeyCode: "ButtonX",
+  HoldDuration: 0,
+  KeyboardKeyCode: "E",
+  MaxActivationDistance: 10,
+  MaxIndicatorDistance: 0,
+  ObjectText: "",
+  RequiresLineOfSight: true,
+  Style: "Default",
+  UIOffset: { __type: "Vector2", x: 0, y: 0 }
+};
+
 test("snapshot-hash normalizes properties with Roblox defaults", () => {
   const localSnapshot = {
     projectId: "test-project",
@@ -163,4 +200,51 @@ test("snapshotsMatch detects real mismatches in non-default values", () => {
   };
 
   assert.equal(snapshotsMatch(expectedSnapshot, observedSnapshot), false);
+});
+
+test("ProximityPrompt defaults do not mismatch explicit local metadata", () => {
+  const local = proximityPromptSnapshot({
+    ActionText: "Abrir Star",
+    ObjectText: "Star",
+    MaxActivationDistance: 12,
+    RequiresLineOfSight: false,
+    HoldDuration: 0
+  });
+
+  const studio = proximityPromptSnapshot({
+    ...proximityPromptDefaults,
+    ActionText: "Abrir Star",
+    ObjectText: "Star",
+    MaxActivationDistance: 12,
+    RequiresLineOfSight: false,
+    HoldDuration: 0
+  });
+
+  assert.equal(snapshotsMatch(local, studio), true);
+});
+
+test("ProximityPrompt property changes produce semantic diffs", () => {
+  const base = proximityPromptSnapshot({ ...proximityPromptDefaults });
+  const changes: Array<[string, unknown]> = [
+    ["ActionText", "Outra acao"],
+    ["ObjectText", "Outro objeto"],
+    ["MaxActivationDistance", 13],
+    ["HoldDuration", 1],
+    ["Exclusivity", "AlwaysShow"],
+    ["KeyboardKeyCode", "F"],
+    ["UIOffset", { __type: "Vector2", x: 4, y: -2 }]
+  ];
+
+  for (const [propertyName, value] of changes) {
+    const changed = proximityPromptSnapshot({
+      ...proximityPromptDefaults,
+      [propertyName]: value
+    });
+
+    assert.equal(
+      snapshotsMatch(base, changed),
+      false,
+      `${propertyName} should produce a diff`
+    );
+  }
 });

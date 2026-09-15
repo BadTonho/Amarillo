@@ -317,6 +317,23 @@ function getDefaultPropertiesForClass(className: string): Record<string, any> {
     defaults.RenderFidelity = "File";
   }
 
+  if (className === "ProximityPrompt") {
+    defaults.ActionText = "Interact";
+    defaults.AutoLocalize = true;
+    defaults.ClickablePrompt = false;
+    defaults.Enabled = true;
+    defaults.Exclusivity = "OnePerButton";
+    defaults.GamepadKeyCode = "ButtonX";
+    defaults.HoldDuration = 0;
+    defaults.KeyboardKeyCode = "E";
+    defaults.MaxActivationDistance = 10;
+    defaults.MaxIndicatorDistance = 0;
+    defaults.ObjectText = "";
+    defaults.RequiresLineOfSight = true;
+    defaults.Style = "Default";
+    defaults.UIOffset = { __type: "Vector2", x: 0, y: 0 };
+  }
+
   return defaults;
 }
 
