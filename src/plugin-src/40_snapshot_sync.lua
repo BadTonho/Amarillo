@@ -345,6 +345,9 @@ local function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
 end
 
 local function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
+	if isBlacklistedInstance(instance) then
+		return false
+	end
 	if isPlayerControlledInstance(instance) then
 		return false
 	end
@@ -381,7 +384,7 @@ local function scriptFileKind(instance)
 end
 
 local function destroyUnexpectedChild(instance, contextLabel)
-	if isProtectedSyncInstance(instance) then
+	if isProtectedSyncInstance(instance) or isBlacklistedInstance(instance) then
 		return false
 	end
 
@@ -484,6 +487,20 @@ end
 
 local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	yieldSyncWork(options and options.yieldController)
+	if isBlacklistedInstance(instance) then
+		local node = {
+			name = instance.Name,
+			className = instance.ClassName,
+			classNameSource = "studio",
+			blacklisted = true,
+			children = {}
+		}
+		local amarilloId = reserveSnapshotAmarilloId(instance, options)
+		if amarilloId then
+			node.amarilloId = amarilloId
+		end
+		return node
+	end
 	if instance:IsA("Model") then
 		if isOpaqueModelInstance(instance, options) then
 			return nil
@@ -514,6 +531,7 @@ local function snapshotNode(instance, openDocumentSources, desiredNode, options)
 		if (nameCounts[child.Name] or 0) > 1 then
 			ensureAmarilloId(child)
 		end
+		reserveSnapshotAmarilloId(child, options)
 		local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 		if shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredNode, options) then
 			local childSnapshot = snapshotNode(child, openDocumentSources, desiredChild, options)
@@ -773,6 +791,7 @@ local function snapshotCurrentProject(options)
 			if (nameCounts[child.Name] or 0) > 1 then
 				ensureAmarilloId(child)
 			end
+			reserveSnapshotAmarilloId(child, options)
 			local matchedMountId = nil
 			local childSnapshot = nil
 			local bestDesiredChild = nil
@@ -944,7 +963,7 @@ local function hasNonSyncableDescendant(instance)
 end
 
 shouldDestroyUnexpectedChild = function(child, desiredNode)
-	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) then
+	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) or isBlacklistedInstance(child) then
 		return false
 	end
 	if mayContainStudioOnlyChildren(desiredNode) and hasNonSyncableDescendant(child) then
@@ -995,7 +1014,7 @@ local function ensureInstance(parent, desiredNode, claimedChildren)
 		-- etc.) due to class mismatch. The daemon may produce an approximate
 		-- class that doesn't match the real Studio class. Preserve what
 		-- Studio already has to avoid duplicating/losing instances.
-		if isNonSyncableInstance(existing) then
+	if isNonSyncableInstance(existing) then
 			appendLog("Preserved non-syncable Studio instance: " .. describeInstanceForLog(existing) .. " (" .. existing.ClassName .. " vs desired " .. tostring(desiredNode.className) .. ")")
 			return existing, true
 		end
@@ -1128,6 +1147,9 @@ local function applySyncSummary(sessionSummary)
 	if type(sessionSummary) ~= "table" then
 		return
 	end
+	if state.project and sessionSummary.syncBlacklist then
+		state.project.syncBlacklist = sessionSummary.syncBlacklist
+	end
 	state.syncState = sessionSummary.syncState or "ready"
 	state.syncMessage = sessionSummary.syncMessage
 	state.versionState = sessionSummary.versionState or state.versionState
@@ -1157,6 +1179,9 @@ end
 local function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
+	end
+	if type(command) == "table" and type(command.payload) == "table" and state.project then
+		state.project.syncBlacklist = command.payload.syncBlacklist or state.project.syncBlacklist or {}
 	end
 	projectSnapshot = filterSnapshotForSync(projectSnapshot)
 	local duplicateIssue = duplicateMountRootIssueForSnapshot(projectSnapshot)
@@ -1197,7 +1222,7 @@ local function applyProjectSnapshot(projectSnapshot, command)
 							-- Never destroy non-syncable instances (GUIs, Parts,
 							-- Cameras, etc.) during mount cleanup. The daemon
 							-- cannot represent these in the filesystem.
-							if not isNestedMountChild(nestedMountChildIndex, mount.segments or {}, child.Name) and not isNonSyncableInstance(child) then
+							if not isNestedMountChild(nestedMountChildIndex, mount.segments or {}, child.Name) and not isNonSyncableInstance(child) and not isBlacklistedInstance(child) then
 								destroyUnexpectedChild(child, "mount cleanup")
 							end
 						end

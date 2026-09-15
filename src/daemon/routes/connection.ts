@@ -23,6 +23,7 @@ import { STUDIO_SYNC_MAX_JSON_BODY_BYTES, jsonResponse, readJsonBody } from "../
 
 const { readLocalProjectStateAsync } = require("../project");
 const { filterSnapshotBySyncTargets, normalizeSyncTargets } = require("../sync-targets");
+const { filterSnapshotBySyncBlacklist } = require("../sync-blacklist");
 
 interface ConnectionProject {
   id?: string;
@@ -50,7 +51,7 @@ interface ConnectionApp {
   resolveProject(placeId: number, preferredProjectId?: string | null): ConnectionProject | null;
   requiresPlaceSetup?(placeId: number, projectId?: string | null): boolean;
   rememberPendingPlaceSetup?(placeId: number, placeName?: string | null): unknown;
-  calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource): string[];
+  calculateDiff(studioSnapshot: StudioSnapshot, pcSnapshot: StudioSnapshot, truthSource: TruthSource, syncBlacklist?: unknown): string[];
   projectForSync?(project: ConnectionProject, syncTargets: Record<string, unknown>): ConnectionProject;
   readLocalProjectStateAsyncWithPerf?(project: ConnectionProject, options?: Record<string, unknown>): Promise<StudioSnapshot>;
 }
@@ -129,8 +130,12 @@ async function handleConnectionRoutes(
     const pcSnapshot = app.readLocalProjectStateAsyncWithPerf
       ? await app.readLocalProjectStateAsyncWithPerf(project, { syncTargets })
       : await readLocalProjectStateAsync(app.projectForSync ? app.projectForSync(project, syncTargets) : project) as StudioSnapshot;
-    const studioSnapshot = filterSnapshotBySyncTargets(body.studioSnapshot, syncTargets);
-    const changes = app.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource);
+    const studioSnapshot = filterSnapshotBySyncBlacklist(
+      filterSnapshotBySyncTargets(body.studioSnapshot, syncTargets),
+      project.syncBlacklist,
+      "studio"
+    );
+    const changes = app.calculateDiff(studioSnapshot, pcSnapshot, body.truthSource, project.syncBlacklist);
     jsonResponse(response, 200, {
       ok: true,
       changes

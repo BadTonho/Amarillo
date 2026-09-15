@@ -511,7 +511,7 @@ local function propertyNamesForInstance(instance)
 end
 
 local function isReservedAttributeName(attributeName)
-	return type(attributeName) == "string" and (string.sub(attributeName, 1, 3) == "RBX" or attributeName == "AmarilloId")
+	return type(attributeName) == "string" and (string.sub(attributeName, 1, 3) == "RBX" or attributeName == "AmarilloId" or attributeName == "AmarilloSync")
 end
 
 local function syncableAttributes(attributes)

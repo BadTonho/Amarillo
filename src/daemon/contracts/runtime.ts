@@ -2,6 +2,9 @@
 
 import type { ConnectionOfferStatus, TruthSource } from "./connection";
 import type { RuntimeSnapshotNode, StudioSnapshot } from "./studio";
+import type { SyncBlacklistEntry } from "../sync-blacklist";
+
+export type { SyncBlacklistEntry } from "../sync-blacklist";
 
 export type { RuntimeSnapshotNode, StudioSnapshot } from "./studio";
 
@@ -28,6 +31,7 @@ export interface RuntimeProject {
   abstract?: boolean;
   placeIds?: number[];
   mounts?: RuntimeMount[];
+  syncBlacklist?: SyncBlacklistEntry[];
   inheritanceIds?: string[];
   extendsProjectId?: string | null;
   extendsProjectPath?: string | null;
@@ -86,6 +90,7 @@ export interface SyncState {
 export interface SyncCommandPayload extends Record<string, unknown> {
   path?: string[];
   project?: StudioSnapshot;
+  syncBlacklist?: SyncBlacklistEntry[];
   reason?: string;
 }
 

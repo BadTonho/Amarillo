@@ -41,6 +41,9 @@ local function applyAcceptedSession(response, truthSource)
 	state.sessionToken = response.session and response.session.sessionToken or nil
 	flushPluginErrorReports(true)
 	state.project = response.project
+	if state.project and response.session and response.session.syncBlacklist then
+		state.project.syncBlacklist = response.session.syncBlacklist
+	end
 	state.projectSelectionReason = response.session and response.session.projectSelectionReason or nil
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
 	state.connected = state.sessionId ~= nil
@@ -100,7 +103,8 @@ local function acceptPendingConnection(truthSource)
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
 		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
 		detectModels = state.detectModels == true,
-		syncTargets = syncTargetsPayload()
+		syncTargets = syncTargetsPayload(),
+		syncBlacklist = state.project and state.project.syncBlacklist or {}
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -373,6 +377,166 @@ local function manualSelection()
 			route = "/session/selection"
 		}, "warning")
 	end
+end
+
+local function selectedBlacklistRoots()
+	local roots = {}
+	for _, instance in ipairs(Selection:Get()) do
+		local path = normalizeInstancePathSegments(instance:GetFullName())
+		if not isPathInsideActiveSyncMount(path) then
+			return nil, "Select an instance inside an active sync mount."
+		end
+		if #path == 0 then
+			return nil, "The selected instance is not a valid sync root."
+		end
+		table.insert(roots, { instance = instance, path = path })
+	end
+	if #roots == 0 then
+		return nil, "Select at least one instance to blacklist."
+	end
+	table.sort(roots, function(left, right)
+		return #left.path < #right.path
+	end)
+	local filtered = {}
+	for _, root in ipairs(roots) do
+		local alreadyCovered = false
+		for _, parent in ipairs(filtered) do
+			if pathSegmentsHavePrefix(root.path, parent.path) then
+				alreadyCovered = true
+				break
+			end
+		end
+		if not alreadyCovered then
+			table.insert(filtered, root)
+		end
+	end
+	return filtered
+end
+
+local function blacklistSelection()
+	if not state.sessionId or not state.project then
+		appendLog("Connect the plugin before changing the blacklist.")
+		return
+	end
+	local roots, selectionError = selectedBlacklistRoots()
+	if not roots then
+		appendLog(selectionError)
+		return
+	end
+	local entries = {}
+	local marked = {}
+	for _, root in ipairs(roots) do
+		local mountPath = nil
+		for _, mount in ipairs(state.project.mounts or {}) do
+			local segments = normalizeInstancePathSegments(mount.segments or mount.path or mount.id)
+			if isMountSyncEnabled(mount) and pathSegmentsHavePrefix(root.path, segments) and (#root.path > #segments) then
+				mountPath = segments
+				break
+			end
+		end
+		if not mountPath then
+			appendLog("Blacklist blocked: select a descendant of an active mount.")
+			return
+		end
+		local amarilloId = ensureAmarilloId(root.instance)
+		if not amarilloId then
+			appendLog("Blacklist blocked: could not assign AmarilloId to " .. tostring(root.instance.Name) .. ".")
+			return
+		end
+		local okMarker, markerError = safeSetAttribute(root.instance, "AmarilloSync", "Blacklist", "blacklist selection")
+		if not okMarker then
+			appendLog("Blacklist blocked: " .. tostring(markerError))
+			return
+		end
+		table.insert(entries, {
+			id = amarilloId,
+			path = table.concat(root.path, "."),
+			name = root.instance.Name,
+			className = root.instance.ClassName
+		})
+		table.insert(marked, root.instance)
+	end
+	local ok, response = request("POST", "/session/" .. state.sessionId .. "/sync-blacklist", {
+		action = "add",
+		entries = entries
+	})
+	if not ok or not response or response.ok ~= true then
+		for _, instance in ipairs(marked) do
+			safeSetAttribute(instance, "AmarilloSync", nil, "blacklist rollback")
+		end
+		appendLog("Failed to save blacklist: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SYNC-BLACKLIST", { route = "/session/sync-blacklist", action = "add" }, "warning")
+		return
+	end
+	state.project = response.project or state.project
+	appendLog("Blacklist saved for " .. tostring(#entries) .. " Studio subtree(s).")
+	updateProjectTargetSummary()
+	refreshTreePreview()
+end
+
+local function findBlacklistedSelectionRoot(instance)
+	local current = instance
+	while current and current ~= game do
+		local okMarker, marker = pcall(function()
+			return current:GetAttribute("AmarilloSync")
+		end)
+		local currentId = getAmarilloId(current)
+		local configured = false
+		for _, entry in ipairs(state.project and state.project.syncBlacklist or {}) do
+			if type(entry) == "table" and entry.id == currentId then
+				configured = true
+				break
+			end
+		end
+		if (okMarker and marker == "Blacklist") or configured then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function unblacklistSelection()
+	if not state.sessionId or not state.project then
+		appendLog("Connect the plugin before changing the blacklist.")
+		return
+	end
+	local roots = {}
+	local seenIds = {}
+	for _, selected in ipairs(Selection:Get()) do
+		local root = findBlacklistedSelectionRoot(selected)
+		if root then
+			local id = getAmarilloId(root)
+			if id and not seenIds[id] then
+				seenIds[id] = true
+				table.insert(roots, { instance = root, id = id })
+			end
+		end
+	end
+	if #roots == 0 then
+		appendLog("Select a blacklisted root or one of its descendants to unblacklist it.")
+		return
+	end
+	local entries = {}
+	for _, root in ipairs(roots) do
+		table.insert(entries, { id = root.id })
+	end
+	local ok, response = request("POST", "/session/" .. state.sessionId .. "/sync-blacklist", {
+		action = "remove",
+		entries = entries
+	})
+	if not ok or not response or response.ok ~= true then
+		appendLog("Failed to remove blacklist: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SYNC-BLACKLIST", { route = "/session/sync-blacklist", action = "remove" }, "warning")
+		return
+	end
+	for _, root in ipairs(roots) do
+		safeSetAttribute(root.instance, "AmarilloSync", nil, "unblacklist selection")
+	end
+	state.project = response.project or state.project
+	appendLog("Blacklist removed for " .. tostring(#roots) .. " Studio subtree(s).")
+	updateProjectTargetSummary()
+	refreshTreePreview()
 end
 
 local function sendPlaytest(mode)
@@ -951,26 +1115,29 @@ state.ui.advancedSessionLabel = makeTextLabel(advancedSummary, "Session: -", UDi
 state.ui.advancedQueueLabel = makeTextLabel(advancedSummary, "Queue: -", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(16, 80), 13)
 state.ui.advancedConflictLabel = makeTextLabel(advancedSummary, "Conflicts: 0", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(210, 80), 13)
 
-local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 214))
+local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 120), UDim2.fromOffset(10, 214))
 local previewTreeButton = makeButton(advancedActions, "Preview Tree", UDim2.fromOffset(100, 30), UDim2.fromOffset(16, 16), refreshTreePreview)
 local selectionButton = makeButton(advancedActions, "Selection", UDim2.fromOffset(92, 30), UDim2.fromOffset(124, 16), manualSelection)
 setButtonStyle(selectionButton, "secondary")
-local playStartButton = makeButton(advancedActions, "Play Start", UDim2.fromOffset(92, 30), UDim2.fromOffset(224, 16), function()
+local blacklistButton = makeButton(advancedActions, "Blacklist Selection", UDim2.fromOffset(130, 30), UDim2.fromOffset(224, 16), blacklistSelection)
+local unblacklistButton = makeButton(advancedActions, "Unblacklist Selection", UDim2.fromOffset(136, 30), UDim2.fromOffset(364, 16), unblacklistSelection)
+setButtonStyle(unblacklistButton, "secondary")
+local playStartButton = makeButton(advancedActions, "Play Start", UDim2.fromOffset(92, 30), UDim2.fromOffset(16, 58), function()
 	sendPlaytest("start")
 end)
-local playStopButton = makeButton(advancedActions, "Play Stop", UDim2.fromOffset(92, 30), UDim2.fromOffset(324, 16), function()
+local playStopButton = makeButton(advancedActions, "Play Stop", UDim2.fromOffset(92, 30), UDim2.fromOffset(116, 58), function()
 	sendPlaytest("stop")
 end)
 setButtonStyle(playStopButton, "secondary")
-local advancedSendButton = makeButton(advancedActions, "Receive from PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(16, 50), manualPull)
-local advancedReceiveButton = makeButton(advancedActions, "Send to PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(176, 50), manualPush)
+local advancedSendButton = makeButton(advancedActions, "Receive from PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(216, 58), manualPull)
+local advancedReceiveButton = makeButton(advancedActions, "Send to PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(376, 58), manualPush)
 setButtonStyle(advancedReceiveButton, "secondary")
 
-state.ui.codeBox = makeTextBox(state.ui.advancedPage, "Paste Luau here to execute in Studio...", UDim2.new(1, -20, 0, 112), UDim2.fromOffset(10, 312), true)
-local runCodeButton = makeButton(state.ui.advancedPage, "Run Luau", UDim2.fromOffset(132, 30), UDim2.fromOffset(10, 432), manualRunCode)
-state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection / results...", UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 472), true)
+state.ui.codeBox = makeTextBox(state.ui.advancedPage, "Paste Luau here to execute in Studio...", UDim2.new(1, -20, 0, 112), UDim2.fromOffset(10, 346), true)
+local runCodeButton = makeButton(state.ui.advancedPage, "Run Luau", UDim2.fromOffset(132, 30), UDim2.fromOffset(10, 466), manualRunCode)
+state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection / results...", UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 506), true)
 state.ui.treeBox.TextEditable = false
-state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 566), true)
+state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 600), true)
 state.ui.logBox.TextEditable = false
 end
 

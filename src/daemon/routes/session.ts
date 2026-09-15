@@ -37,7 +37,7 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
     return true;
   }
 
-  const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance|insert-model)$/);
+  const sessionActionMatch = requestUrl.pathname.match(/^\/session\/([^/]+)\/(status|pull|push|resync|tree|exec|selection|playtest|properties|descendants|search|services|instance-info|output-log|modify-property|create-instance|delete-instance|insert-model|sync-blacklist)$/);
   if (!sessionActionMatch) {
     return false;
   }
@@ -68,6 +68,21 @@ async function handleSessionRoutes(app, request, response, requestUrl) {
       code: "PROJECT_NOT_FOUND",
       error: "The project associated with this Studio session is no longer available."
     }, request);
+    return true;
+  }
+
+  if (request.method === "POST" && action === "sync-blacklist") {
+    if (!app.isSessionRequestAuthorized(request, session)) {
+      jsonResponse(response, 401, { ok: false, code: "UNAUTHORIZED", error: "Missing or invalid Studio session token." }, request);
+      return true;
+    }
+    const body = await readJsonBody(request);
+    const result = app.updateProjectSyncBlacklist(
+      project.id,
+      body.action,
+      body.entries
+    );
+    jsonResponse(response, 200, result);
     return true;
   }
 

@@ -48,6 +48,13 @@ const {
   writeStudioProjectState
 } = require("./project");
 const { ErrorTracker } = require("./lib/error-tracker");
+const {
+  filterSnapshotBySyncBlacklist,
+  isInstancePathBlacklisted,
+  isLocalFilePathBlacklisted,
+  normalizeSyncBlacklist,
+  normalizePathSegments
+} = require("./sync-blacklist");
 const { ActivityLog, getFileInfo } = require("./lib/activity-log");
 const { McpAuditLog } = require("./lib/mcp-audit-log");
 const { RateLimiter } = require("./lib/rate-limiter");
@@ -1311,11 +1318,18 @@ class PluginRobloxApp {
   }
 
   snapshotForSync(snapshot, syncTargets = this.syncTargets) {
-    return filterSnapshotBySyncTargets(snapshot, normalizeSyncTargets(syncTargets));
+    const filtered = filterSnapshotBySyncTargets(snapshot, normalizeSyncTargets(syncTargets));
+    const project = this.getProjectById(filtered?.projectId || snapshot?.projectId);
+    return filterSnapshotBySyncBlacklist(filtered, project?.syncBlacklist, "studio");
   }
 
   isInstancePathSyncEnabled(session, instanceSegments) {
     return isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session));
+  }
+
+  isInstancePathBlacklisted(session, instanceSegments) {
+    const project = this.getProjectById(session?.projectId);
+    return isInstancePathBlacklisted(instanceSegments, project?.syncBlacklist);
   }
 
   readLocalProjectStateWithPerf(project, options: any = {}) {
@@ -2334,6 +2348,14 @@ class PluginRobloxApp {
   }
 
   scheduleScriptFilePatch(session, project, filePath, instanceSegments) {
+    if (isInstancePathBlacklisted(instanceSegments, project?.syncBlacklist)) {
+      logSync("enqueue_apply_file_patch_skipped", {
+        sessionId: session.id,
+        reason: "sync_blacklist",
+        path: instanceSegments.join(".")
+      });
+      return;
+    }
     if (!isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session))) {
       logSync("enqueue_apply_file_patch_skipped", {
         sessionId: session.id,
@@ -2420,6 +2442,10 @@ class PluginRobloxApp {
   }
 
   snapshotHasScriptInstance(session, instanceSegments) {
+    const project = this.getProjectById(session.projectId);
+    if (isInstancePathBlacklisted(instanceSegments, project?.syncBlacklist)) {
+      return false;
+    }
     if (!isMountSyncEnabled(instanceSegments, this.syncTargetsForSession(session))) {
       return false;
     }
@@ -2566,6 +2592,19 @@ class PluginRobloxApp {
         });
         continue;
       }
+      if (isLocalFilePathBlacklisted(
+        normalizedChangedPath,
+        mount.absolutePath,
+        mount.segments,
+        project.syncBlacklist
+      )) {
+        logSync("disk_file_change_sync_blacklist", {
+          sessionId: session.id,
+          path: normalizedChangedPath,
+          mountId: mount.id
+        });
+        continue;
+      }
       const duplicateMountIssue = this.duplicateMountRootIssueForWorkspacePath(session, project, mount, normalizedChangedPath);
       if (duplicateMountIssue) {
         this.projectTreeInvalidError(session, [duplicateMountIssue], { commandType: "workspace_watcher" });
@@ -2649,6 +2688,7 @@ class PluginRobloxApp {
       extendsProjectId: project.extendsProjectId || null,
       extendsProjectPath: project.extendsProjectPath || null,
       placeIds: project.placeIds,
+      syncBlacklist: normalizeSyncBlacklist(project.syncBlacklist),
       mountCount: project.mounts.length,
       placeSync: buildProjectPlaceSyncPayload(project),
       mounts: project.mounts.map((mount) => ({
@@ -2671,6 +2711,7 @@ class PluginRobloxApp {
       extendsProjectId: project.extendsProjectId || null,
       extendsProjectPath: project.extendsProjectPath || null,
       placeIds: project.placeIds,
+      syncBlacklist: normalizeSyncBlacklist(project.syncBlacklist),
       placeSync: buildProjectPlaceSyncPayload(project),
       mounts: project.mounts.map((mount) => ({
         id: mount.id,
@@ -2875,6 +2916,87 @@ class PluginRobloxApp {
       ok: true,
       project: this.projectPayload(this.getProjectById(projectId)),
       placeIds
+    };
+  }
+
+  updateProjectSyncBlacklist(projectId, action, entriesInput = []) {
+    const project = this.getProjectById(projectId);
+    if (!project) {
+      const error = new Error(`Project '${projectId}' not found.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 404;
+      error.code = "PROJECT_NOT_FOUND";
+      throw error;
+    }
+
+    const raw = this.readRawProject(project);
+    if (!raw) {
+      const error = new Error(`Project '${projectId}' could not be read.`) as Error & { statusCode?: number; code?: string };
+      error.statusCode = 500;
+      error.code = "PROJECT_READ_FAILED";
+      throw error;
+    }
+
+    const normalizedAction = action === "remove" ? "remove" : action === "add" ? "add" : null;
+    if (!normalizedAction) {
+      const error = new Error("Blacklist action must be 'add' or 'remove'.") as Error & { statusCode?: number; code?: string };
+      error.statusCode = 400;
+      error.code = "SYNC_BLACKLIST_ACTION_INVALID";
+      throw error;
+    }
+
+    const inputEntries = Array.isArray(entriesInput) ? entriesInput : [];
+    if (inputEntries.length === 0) {
+      const error = new Error("At least one blacklist entry is required.") as Error & { statusCode?: number; code?: string };
+      error.statusCode = 400;
+      error.code = "SYNC_BLACKLIST_ENTRY_REQUIRED";
+      throw error;
+    }
+
+    if (normalizedAction === "remove") {
+      const ids = new Set(inputEntries.map((entry) => {
+        if (typeof entry === "string") return entry.trim();
+        return typeof entry?.id === "string" ? entry.id.trim() : "";
+      }).filter(Boolean));
+      const current = normalizeSyncBlacklist(raw.syncBlacklist);
+      raw.syncBlacklist = current.filter((entry) => !ids.has(entry.id));
+    } else {
+      const candidates = normalizeSyncBlacklist(inputEntries);
+      if (candidates.length !== inputEntries.length) {
+        const error = new Error("Each blacklist entry needs a unique id and a non-empty path.") as Error & { statusCode?: number; code?: string };
+        error.statusCode = 400;
+        error.code = "SYNC_BLACKLIST_ENTRY_INVALID";
+        throw error;
+      }
+      const mounts = project.mounts || [];
+      for (const entry of candidates) {
+        const target = normalizePathSegments(entry.path);
+        const activeMount = mounts.some((mount) => {
+          const mountPath = normalizePathSegments(mount.segments || mount.id);
+          return mountPath.length > 0
+            && mountPath.length <= target.length
+            && mountPath.every((segment, index) => segment === target[index]);
+        });
+        if (!activeMount) {
+          const error = new Error(`Blacklist path '${entry.path}' is outside the project mounts.`) as Error & { statusCode?: number; code?: string };
+          error.statusCode = 400;
+          error.code = "SYNC_BLACKLIST_OUTSIDE_MOUNT";
+          throw error;
+        }
+      }
+      raw.syncBlacklist = normalizeSyncBlacklist([
+        ...normalizeSyncBlacklist(raw.syncBlacklist),
+        ...candidates
+      ]);
+    }
+
+    fs.writeFileSync(project.projectPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+    this.refreshWorkspace();
+    const refreshedProject = this.getProjectById(projectId);
+    return {
+      ok: true,
+      action: normalizedAction,
+      syncBlacklist: normalizeSyncBlacklist(refreshedProject?.syncBlacklist),
+      project: this.projectPayload(refreshedProject)
     };
   }
 
@@ -3131,6 +3253,7 @@ class PluginRobloxApp {
     privilegedActionConfirmationEnabled = null,
     detectModels = null,
     syncTargets = null,
+    syncBlacklist = null,
     requirePluginVersion = false
   }) {
     if (offerId) {
@@ -3578,9 +3701,11 @@ class PluginRobloxApp {
     }
     const syncTargets = this.syncTargetsForSession(session);
     if (type === "apply_project_tree" && payload?.project) {
+      const project = this.getProjectById(session.projectId);
       payload = {
         ...payload,
         project: this.snapshotForSync(payload.project, syncTargets),
+        syncBlacklist: normalizeSyncBlacklist(project?.syncBlacklist),
         syncTargets
       };
     }
@@ -3593,6 +3718,15 @@ class PluginRobloxApp {
         syncTargets
       });
       return Promise.resolve({ ok: true, skipped: true, reason: "sync_target_disabled" });
+    }
+    if (type === "apply_file_patch" && Array.isArray(payload?.path) && this.isInstancePathBlacklisted(session, payload.path)) {
+      logSync("enqueue_command_skipped", {
+        sessionId,
+        type,
+        reason: "sync_blacklist",
+        path: payload.path.join(".")
+      });
+      return Promise.resolve({ ok: true, skipped: true, reason: "sync_blacklist" });
     }
     if (type === "apply_file_patch" && Array.isArray(payload?.path)) {
       const project = this.getProjectById(session.projectId);
@@ -4302,6 +4436,7 @@ class PluginRobloxApp {
       privilegedActionMessage: privileged.allowed ? null : privileged.message,
       privilegedActionConfirmationEnabled: session.privilegedActionConfirmationEnabled ?? null,
       detectModels: session.detectModels === true,
+      syncBlacklist: normalizeSyncBlacklist(project?.syncBlacklist),
       syncTargets: this.syncTargetsForSession(session),
       destructiveConfirmationPending: session.destructiveConfirmationPending === true,
       destructiveConfirmationType: session.destructiveConfirmationType || null,
@@ -4314,7 +4449,9 @@ class PluginRobloxApp {
     return this.doctorService.report();
   }
 
-  calculateDiff(studioSnapshot, pcSnapshot, truthSource) {
+  calculateDiff(studioSnapshot, pcSnapshot, truthSource, syncBlacklist = null) {
+    studioSnapshot = filterSnapshotBySyncBlacklist(studioSnapshot, syncBlacklist, "studio");
+    pcSnapshot = filterSnapshotBySyncBlacklist(pcSnapshot, syncBlacklist, "local");
     const changes = [];
     const maxChanges = 50;
     let changeCount = 0;

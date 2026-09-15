@@ -237,6 +237,15 @@ async function handleStudioRoutes(app, request, response, requestUrl) {
       return true;
     }
 
+    if (app.isInstancePathBlacklisted && app.isInstancePathBlacklisted(session, body.path)) {
+      jsonResponse(response, 200, {
+        ok: true,
+        skipped: true,
+        reason: "sync_blacklist"
+      });
+      return true;
+    }
+
     app.lastDiskWriteTime = Date.now();
     const result = patchStudioFileSource(project, body.path, body.source, {
       project,

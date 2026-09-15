@@ -6,10 +6,16 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const projectResolver = require("./project-resolver");
 const { resolveWorkspaceProjectRoot } = require("./project-roots");
+const {
+  filterSnapshotBySyncBlacklist,
+  isLocalFilePathBlacklisted,
+  normalizeSyncBlacklist
+} = require("./sync-blacklist");
 
 const PROJECT_SUFFIX = ".project.json";
 const META_SUFFIX = ".meta.json";
 const AMARILLO_ID_ATTRIBUTE = "AmarilloId";
+const AMARILLO_SYNC_ATTRIBUTE = "AmarilloSync";
 const DUPLICATE_FS_SUFFIX = ".amarillo-";
 const DUPLICATE_MOUNT_ROOT_CODE = "DUPLICATE_MOUNT_ROOT";
 const WINDOWS_RESERVED_FS_NAMES = new Set([
@@ -121,7 +127,9 @@ function isPlainObject(value) {
 
 function isReservedAttributeName(attributeName) {
   return typeof attributeName === "string"
-    && (attributeName.startsWith("RBX") || attributeName === AMARILLO_ID_ATTRIBUTE);
+    && (attributeName.startsWith("RBX")
+      || attributeName === AMARILLO_ID_ATTRIBUTE
+      || attributeName === AMARILLO_SYNC_ATTRIBUTE);
 }
 
 function sanitizeSyncAttributes(attributes) {
@@ -314,6 +322,7 @@ function parseProjectFile(projectPath, workspaceRoot) {
       ignoreClasses: raw.syncback?.ignoreClasses || [],
       ignoreProperties: raw.syncback?.ignoreProperties || []
     },
+    syncBlacklist: normalizeSyncBlacklist(raw.syncBlacklist),
     syncRules: raw.syncRules || [],
     raw
   };
@@ -1355,6 +1364,10 @@ function readLocalProjectState(project, extraOptions: any = {}) {
       const children = listDirectoryEntries(mount.absolutePath)
         .filter((entry) => !entry.isFile() || !entry.name.endsWith(META_SUFFIX))
         .filter((entry) => {
+          const fullPath = path.join(mount.absolutePath, entry.name);
+          if (isLocalFilePathBlacklisted(fullPath, mount.absolutePath, mount.segments, project.syncBlacklist)) {
+            return false;
+          }
           if (mountOptions.ignoreGlobs.length === 0) return true;
           return !matchesAnyGlob(entry.name, mountOptions.ignoreGlobs);
         })
@@ -1383,7 +1396,11 @@ function readLocalProjectState(project, extraOptions: any = {}) {
       };
     })
   };
-  return normalizeSnapshotAmarilloIds(snapshot);
+  return filterSnapshotBySyncBlacklist(
+    normalizeSnapshotAmarilloIds(snapshot),
+    project.syncBlacklist,
+    "local"
+  );
 }
 
 // OPT-006: Async version that reads script files in parallel instead of blocking the event loop
@@ -1619,6 +1636,10 @@ async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
     const entries = listDirectoryEntries(mount.absolutePath)
       .filter((entry) => !entry.isFile() || !entry.name.endsWith(META_SUFFIX))
       .filter((entry) => {
+        const fullPath = path.join(mount.absolutePath, entry.name);
+        if (isLocalFilePathBlacklisted(fullPath, mount.absolutePath, mount.segments, project.syncBlacklist)) {
+          return false;
+        }
         if (mountOptions.ignoreGlobs.length === 0) {
           return true;
         }
@@ -1659,7 +1680,11 @@ async function readLocalProjectStateAsync(project, extraOptions: any = {}) {
     placeIds: project.placeIds,
     mounts: await Promise.all(mountPromises)
   };
-  return normalizeSnapshotAmarilloIds(snapshot);
+  return filterSnapshotBySyncBlacklist(
+    normalizeSnapshotAmarilloIds(snapshot),
+    project.syncBlacklist,
+    "local"
+  );
 }
 
 function serializePropertyValue(value) {
@@ -1939,6 +1964,14 @@ function syncbackEntryBaseName(entryName) {
 }
 
 function shouldPreserveSyncbackEntry(fullPath, entryName, options: any = {}) {
+  if (isLocalFilePathBlacklisted(
+    fullPath,
+    options.mount?.absolutePath || options.mount?.rootPath || "",
+    options.mount?.segments || options.mount?.id,
+    options.project?.syncBlacklist
+  )) {
+    return true;
+  }
   if (isOpaqueModelEntry(fullPath, entryName) || isModelDescriptorEntry(fullPath, entryName)) {
     return true;
   }
@@ -2170,7 +2203,11 @@ function writeMountSnapshot(mount, children, options: any = {}) {
 
 function writeStudioProjectState(project, snapshot, options: any = {}) {
   const changes = [];
-  const normalizedSnapshot = normalizeSnapshotAmarilloIds(snapshot || {});
+  const normalizedSnapshot = filterSnapshotBySyncBlacklist(
+    normalizeSnapshotAmarilloIds(snapshot || {}),
+    project.syncBlacklist,
+    "studio"
+  );
   const writeOptions = {
     ...options,
     syncback: project.syncback || {},
@@ -2287,6 +2324,14 @@ async function removePathAsync(targetPath, options: any = {}) {
 }
 
 async function shouldPreserveSyncbackEntryAsync(fullPath, entryName, options: any = {}) {
+  if (isLocalFilePathBlacklisted(
+    fullPath,
+    options.mount?.absolutePath || options.mount?.rootPath || "",
+    options.mount?.segments || options.mount?.id,
+    options.project?.syncBlacklist
+  )) {
+    return true;
+  }
   if (isOpaqueModelEntry(fullPath, entryName) || isModelDescriptorEntry(fullPath, entryName)) {
     return true;
   }
@@ -2440,7 +2485,11 @@ async function writeMountSnapshotAsync(mount, children, options: any = {}) {
 
 async function writeStudioProjectStateAsync(project, snapshot, options: any = {}) {
   const changes = [];
-  const normalizedSnapshot = normalizeSnapshotAmarilloIds(snapshot || {});
+  const normalizedSnapshot = filterSnapshotBySyncBlacklist(
+    normalizeSnapshotAmarilloIds(snapshot || {}),
+    project.syncBlacklist,
+    "studio"
+  );
   const writeOptions = {
     ...options,
     syncback: project.syncback || {},

@@ -173,6 +173,31 @@
         }
       }
     },
+    "syncBlacklist": {
+      "type": "array",
+      "description": "Studio instance subtrees that remain in Studio and are ignored by filesystem synchronization.",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Persistent AmarilloId of the Studio instance."
+          },
+          "path": {
+            "type": "string",
+            "description": "Original full instance path used to locate the local representation."
+          },
+          "name": {
+            "type": "string"
+          },
+          "className": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "legacyScripts": {
       "type": "boolean",
       "title": "Legacy Scripts",

@@ -1,6 +1,8 @@
 "use strict";
 
 import type { StudioSnapshot } from "./studio";
+import type { SyncBlacklistEntry } from "../sync-blacklist";
+const { normalizeSyncBlacklist } = require("../sync-blacklist");
 
 export type { StudioSnapshot } from "./studio";
 
@@ -34,6 +36,7 @@ export interface ConnectionAcceptBody {
   privilegedActionConfirmationEnabled?: unknown;
   detectModels?: unknown;
   syncTargets?: unknown;
+  syncBlacklist?: unknown;
 }
 
 export interface ConnectionDiffBody {
@@ -44,6 +47,7 @@ export interface ConnectionDiffBody {
   truthSource?: unknown;
   detectModels?: unknown;
   syncTargets?: unknown;
+  syncBlacklist?: unknown;
 }
 
 export interface NormalizedConnectionRequest {
@@ -67,6 +71,7 @@ export interface NormalizedConnectionAccept {
   privilegedActionConfirmationEnabled: boolean | null;
   detectModels: boolean | null;
   syncTargets: SyncTargetsPayload;
+  syncBlacklist: SyncBlacklistEntry[];
 }
 
 export interface NormalizedConnectionDiff {
@@ -77,6 +82,7 @@ export interface NormalizedConnectionDiff {
   truthSource: TruthSource;
   detectModels: boolean | null;
   syncTargets: SyncTargetsPayload;
+  syncBlacklist: SyncBlacklistEntry[];
 }
 
 export interface ConnectionOfferSummary {
@@ -194,7 +200,8 @@ export function normalizeConnectionAcceptBody(body: ConnectionAcceptBody): Norma
     pluginProtocolVersion: optionalVersion(body.pluginProtocolVersion),
     privilegedActionConfirmationEnabled: optionalBoolean(body.privilegedActionConfirmationEnabled),
     detectModels: optionalBoolean(body.detectModels),
-    syncTargets: optionalObject(body.syncTargets)
+    syncTargets: optionalObject(body.syncTargets),
+    syncBlacklist: normalizeSyncBlacklist(body.syncBlacklist)
   };
 }
 
@@ -206,6 +213,7 @@ export function normalizeConnectionDiffBody(body: ConnectionDiffBody): Normalize
     studioSnapshot: normalizeStudioSnapshot(body.studioSnapshot),
     truthSource: normalizeTruthSource(body.truthSource),
     detectModels: optionalBoolean(body.detectModels),
-    syncTargets: optionalObject(body.syncTargets)
+    syncTargets: optionalObject(body.syncTargets),
+    syncBlacklist: normalizeSyncBlacklist(body.syncBlacklist)
   };
 }

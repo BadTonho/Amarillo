@@ -185,6 +185,7 @@ function addVersionPayload(body)
 	body.syncTargets = {
 		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
 	}
+	body.syncBlacklist = state.project and state.project.syncBlacklist or {}
 	addDestructiveConfirmationPayload(body)
 	return body
 end
@@ -347,6 +348,75 @@ function duplicateMountRootGuardMessage(actionName, pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. issue.targetPath .. "' would create or mutate duplicate mount root '" .. tostring(issue.duplicateName) .. "' inside active mount '" .. issue.expectedMountPath .. "'. Put children directly under '" .. issue.expectedMountPath .. "' instead."
 end
 
+function syncBlacklistEntries()
+	return state.project and state.project.syncBlacklist or {}
+end
+
+function isBlacklistedInstance(instance, instanceSegments)
+	if not instance then
+		return false
+	end
+	local current = instance
+	while current and current ~= game do
+		local okMarker, marker = pcall(function()
+			return current:GetAttribute("AmarilloSync")
+		end)
+		local currentId = getAmarilloId and getAmarilloId(current) or nil
+		local idIsBlacklisted = false
+		for _, entry in ipairs(syncBlacklistEntries()) do
+			if type(entry) == "table" and type(entry.id) == "string" and entry.id ~= "" and entry.id == currentId then
+				idIsBlacklisted = true
+				break
+			end
+		end
+		if idIsBlacklisted or (okMarker and marker == "Blacklist" and not currentId) then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
+end
+
+function isBlacklistedSnapshotNode(node, instanceSegments)
+	if type(node) ~= "table" then
+		return false
+	end
+	if node.blacklisted == true then
+		return true
+	end
+	local attributes = node.properties and node.properties.Attributes
+	if type(attributes) == "table" and attributes.AmarilloSync == "Blacklist" then
+		return true
+	end
+	local nodeId = type(node.amarilloId) == "string" and node.amarilloId or nil
+	for _, entry in ipairs(syncBlacklistEntries()) do
+		if type(entry) == "table" and entry.id == nodeId then
+			return true
+		end
+	end
+	return false
+end
+
+function filterBlacklistChildren(children, parentSegments)
+	local filtered = {}
+	for _, child in ipairs(children or {}) do
+		local childSegments = {}
+		for _, segment in ipairs(parentSegments or {}) do
+			table.insert(childSegments, segment)
+		end
+		table.insert(childSegments, child.name or child.robloxName or "")
+		if not isBlacklistedSnapshotNode(child, childSegments) then
+			local nextChild = {}
+			for key, value in pairs(child) do
+				nextChild[key] = value
+			end
+			nextChild.children = filterBlacklistChildren(child.children, childSegments)
+			table.insert(filtered, nextChild)
+		end
+	end
+	return filtered
+end
+
 function filterSnapshotForSync(snapshot)
 	if type(snapshot) ~= "table" then
 		return {
@@ -362,7 +432,12 @@ function filterSnapshotForSync(snapshot)
 	filtered.mounts = {}
 	for _, mount in ipairs(snapshot.mounts or {}) do
 		if isMountSyncEnabled(mount) then
-			table.insert(filtered.mounts, mount)
+			local nextMount = {}
+			for key, value in pairs(mount) do
+				nextMount[key] = value
+			end
+			nextMount.children = filterBlacklistChildren(mount.children, normalizeInstancePathSegments(mount.segments or mount.path or mount.id))
+			table.insert(filtered.mounts, nextMount)
 		end
 	end
 	return filtered
@@ -1390,7 +1465,7 @@ function propertyNamesForInstance(instance)
 end
 
 function isReservedAttributeName(attributeName)
-	return type(attributeName) == "string" and (string.sub(attributeName, 1, 3) == "RBX" or attributeName == "AmarilloId")
+	return type(attributeName) == "string" and (string.sub(attributeName, 1, 3) == "RBX" or attributeName == "AmarilloId" or attributeName == "AmarilloSync")
 end
 
 function syncableAttributes(attributes)
@@ -1801,6 +1876,9 @@ function shouldPreserveUnknownChildDuringApply(child, parentDesiredNode)
 end
 
 function shouldIncludeSnapshotChild(instance, desiredChildIndex, desiredChild, parentDesiredNode, options)
+	if isBlacklistedInstance(instance) then
+		return false
+	end
 	if isPlayerControlledInstance(instance) then
 		return false
 	end
@@ -1837,7 +1915,7 @@ function scriptFileKind(instance)
 end
 
 function destroyUnexpectedChild(instance, contextLabel)
-	if isProtectedSyncInstance(instance) then
+	if isProtectedSyncInstance(instance) or isBlacklistedInstance(instance) then
 		return false
 	end
 
@@ -1940,6 +2018,20 @@ end
 
 function snapshotNode(instance, openDocumentSources, desiredNode, options)
 	yieldSyncWork(options and options.yieldController)
+	if isBlacklistedInstance(instance) then
+		local node = {
+			name = instance.Name,
+			className = instance.ClassName,
+			classNameSource = "studio",
+			blacklisted = true,
+			children = {}
+		}
+		local amarilloId = reserveSnapshotAmarilloId(instance, options)
+		if amarilloId then
+			node.amarilloId = amarilloId
+		end
+		return node
+	end
 	if instance:IsA("Model") then
 		if isOpaqueModelInstance(instance, options) then
 			return nil
@@ -1970,6 +2062,7 @@ function snapshotNode(instance, openDocumentSources, desiredNode, options)
 		if (nameCounts[child.Name] or 0) > 1 then
 			ensureAmarilloId(child)
 		end
+		reserveSnapshotAmarilloId(child, options)
 		local desiredChild = findDesiredChildForInstance(child, desiredChildIndex)
 		if shouldIncludeSnapshotChild(child, desiredChildIndex, desiredChild, desiredNode, options) then
 			local childSnapshot = snapshotNode(child, openDocumentSources, desiredChild, options)
@@ -2229,6 +2322,7 @@ function snapshotCurrentProject(options)
 			if (nameCounts[child.Name] or 0) > 1 then
 				ensureAmarilloId(child)
 			end
+			reserveSnapshotAmarilloId(child, options)
 			local matchedMountId = nil
 			local childSnapshot = nil
 			local bestDesiredChild = nil
@@ -2400,7 +2494,7 @@ function hasNonSyncableDescendant(instance)
 end
 
 shouldDestroyUnexpectedChild = function(child, desiredNode)
-	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) then
+	if isProtectedSyncInstance(child) or isNonSyncableInstance(child) or isBlacklistedInstance(child) then
 		return false
 	end
 	if mayContainStudioOnlyChildren(desiredNode) and hasNonSyncableDescendant(child) then
@@ -2451,7 +2545,7 @@ function ensureInstance(parent, desiredNode, claimedChildren)
 		-- etc.) due to class mismatch. The daemon may produce an approximate
 		-- class that doesn't match the real Studio class. Preserve what
 		-- Studio already has to avoid duplicating/losing instances.
-		if isNonSyncableInstance(existing) then
+	if isNonSyncableInstance(existing) then
 			appendLog("Preserved non-syncable Studio instance: " .. describeInstanceForLog(existing) .. " (" .. existing.ClassName .. " vs desired " .. tostring(desiredNode.className) .. ")")
 			return existing, true
 		end
@@ -2584,6 +2678,9 @@ function applySyncSummary(sessionSummary)
 	if type(sessionSummary) ~= "table" then
 		return
 	end
+	if state.project and sessionSummary.syncBlacklist then
+		state.project.syncBlacklist = sessionSummary.syncBlacklist
+	end
 	state.syncState = sessionSummary.syncState or "ready"
 	state.syncMessage = sessionSummary.syncMessage
 	state.versionState = sessionSummary.versionState or state.versionState
@@ -2613,6 +2710,9 @@ end
 function applyProjectSnapshot(projectSnapshot, command)
 	if not projectSnapshot then
 		return false, "Snapshot vazio"
+	end
+	if type(command) == "table" and type(command.payload) == "table" and state.project then
+		state.project.syncBlacklist = command.payload.syncBlacklist or state.project.syncBlacklist or {}
 	end
 	projectSnapshot = filterSnapshotForSync(projectSnapshot)
 	local duplicateIssue = duplicateMountRootIssueForSnapshot(projectSnapshot)
@@ -2653,7 +2753,7 @@ function applyProjectSnapshot(projectSnapshot, command)
 							-- Never destroy non-syncable instances (GUIs, Parts,
 							-- Cameras, etc.) during mount cleanup. The daemon
 							-- cannot represent these in the filesystem.
-							if not isNestedMountChild(nestedMountChildIndex, mount.segments or {}, child.Name) and not isNonSyncableInstance(child) then
+							if not isNestedMountChild(nestedMountChildIndex, mount.segments or {}, child.Name) and not isNonSyncableInstance(child) and not isBlacklistedInstance(child) then
 								destroyUnexpectedChild(child, "mount cleanup")
 							end
 						end
@@ -2769,11 +2869,11 @@ function getSelectionSummary()
 end
 
 function resolveInstanceByPath(pathString)
-	if type(pathString) ~= "string" or pathString == "" then
+	if type(pathString) ~= "string" and type(pathString) ~= "table" then
 		return nil
 	end
 
-	local segments = string.split(pathString, ".")
+	local segments = type(pathString) == "table" and pathString or string.split(pathString, ".")
 	if #segments == 0 then
 		return nil
 	end
@@ -2944,6 +3044,15 @@ function handleCommand(command)
 	end
 
 	if command.type == "apply_file_patch" then
+		if command.payload and isBlacklistedInstance(resolveInstanceByPath(command.payload.path)) then
+			postCommandResult(command.id, true, {
+				result = "Patch ignorado porque a instância está na blacklist.",
+				snapshot = snapshotCurrentProject(),
+				skipped = true,
+				reasonCode = "SYNC_BLACKLIST"
+			})
+			return
+		end
 		if command.payload and not isMountSyncEnabled(command.payload.path) then
 			postCommandResult(command.id, true, {
 				result = "Patch skipped because this sync target is disabled.",
@@ -4111,6 +4220,9 @@ function applyAcceptedSession(response, truthSource)
 	state.sessionToken = response.session and response.session.sessionToken or nil
 	flushPluginErrorReports(true)
 	state.project = response.project
+	if state.project and response.session and response.session.syncBlacklist then
+		state.project.syncBlacklist = response.session.syncBlacklist
+	end
 	state.projectSelectionReason = response.session and response.session.projectSelectionReason or nil
 	state.projectSelectionMessage = response.session and response.session.projectSelectionMessage or nil
 	state.connected = state.sessionId ~= nil
@@ -4170,7 +4282,8 @@ function acceptPendingConnection(truthSource)
 		pluginProtocolVersion = AMARILLO_PROTOCOL_VERSION,
 		privilegedActionConfirmationEnabled = state.confirmPrivilegedActions == true,
 		detectModels = state.detectModels == true,
-		syncTargets = syncTargetsPayload()
+		syncTargets = syncTargetsPayload(),
+		syncBlacklist = state.project and state.project.syncBlacklist or {}
 	})
 	if not ok or not response or response.ok ~= true then
 		if type(response) == "table" and response.offer and response.offer.status and response.offer.status ~= "pending" then
@@ -4443,6 +4556,166 @@ function manualSelection()
 			route = "/session/selection"
 		}, "warning")
 	end
+end
+
+function selectedBlacklistRoots()
+	local roots = {}
+	for _, instance in ipairs(Selection:Get()) do
+		local path = normalizeInstancePathSegments(instance:GetFullName())
+		if not isPathInsideActiveSyncMount(path) then
+			return nil, "Select an instance inside an active sync mount."
+		end
+		if #path == 0 then
+			return nil, "The selected instance is not a valid sync root."
+		end
+		table.insert(roots, { instance = instance, path = path })
+	end
+	if #roots == 0 then
+		return nil, "Select at least one instance to blacklist."
+	end
+	table.sort(roots, function(left, right)
+		return #left.path < #right.path
+	end)
+	local filtered = {}
+	for _, root in ipairs(roots) do
+		local alreadyCovered = false
+		for _, parent in ipairs(filtered) do
+			if pathSegmentsHavePrefix(root.path, parent.path) then
+				alreadyCovered = true
+				break
+			end
+		end
+		if not alreadyCovered then
+			table.insert(filtered, root)
+		end
+	end
+	return filtered
+end
+
+function blacklistSelection()
+	if not state.sessionId or not state.project then
+		appendLog("Connect the plugin before changing the blacklist.")
+		return
+	end
+	local roots, selectionError = selectedBlacklistRoots()
+	if not roots then
+		appendLog(selectionError)
+		return
+	end
+	local entries = {}
+	local marked = {}
+	for _, root in ipairs(roots) do
+		local mountPath = nil
+		for _, mount in ipairs(state.project.mounts or {}) do
+			local segments = normalizeInstancePathSegments(mount.segments or mount.path or mount.id)
+			if isMountSyncEnabled(mount) and pathSegmentsHavePrefix(root.path, segments) and (#root.path > #segments) then
+				mountPath = segments
+				break
+			end
+		end
+		if not mountPath then
+			appendLog("Blacklist blocked: select a descendant of an active mount.")
+			return
+		end
+		local amarilloId = ensureAmarilloId(root.instance)
+		if not amarilloId then
+			appendLog("Blacklist blocked: could not assign AmarilloId to " .. tostring(root.instance.Name) .. ".")
+			return
+		end
+		local okMarker, markerError = safeSetAttribute(root.instance, "AmarilloSync", "Blacklist", "blacklist selection")
+		if not okMarker then
+			appendLog("Blacklist blocked: " .. tostring(markerError))
+			return
+		end
+		table.insert(entries, {
+			id = amarilloId,
+			path = table.concat(root.path, "."),
+			name = root.instance.Name,
+			className = root.instance.ClassName
+		})
+		table.insert(marked, root.instance)
+	end
+	local ok, response = request("POST", "/session/" .. state.sessionId .. "/sync-blacklist", {
+		action = "add",
+		entries = entries
+	})
+	if not ok or not response or response.ok ~= true then
+		for _, instance in ipairs(marked) do
+			safeSetAttribute(instance, "AmarilloSync", nil, "blacklist rollback")
+		end
+		appendLog("Failed to save blacklist: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SYNC-BLACKLIST", { route = "/session/sync-blacklist", action = "add" }, "warning")
+		return
+	end
+	state.project = response.project or state.project
+	appendLog("Blacklist saved for " .. tostring(#entries) .. " Studio subtree(s).")
+	updateProjectTargetSummary()
+	refreshTreePreview()
+end
+
+function findBlacklistedSelectionRoot(instance)
+	local current = instance
+	while current and current ~= game do
+		local okMarker, marker = pcall(function()
+			return current:GetAttribute("AmarilloSync")
+		end)
+		local currentId = getAmarilloId(current)
+		local configured = false
+		for _, entry in ipairs(state.project and state.project.syncBlacklist or {}) do
+			if type(entry) == "table" and entry.id == currentId then
+				configured = true
+				break
+			end
+		end
+		if (okMarker and marker == "Blacklist") or configured then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+function unblacklistSelection()
+	if not state.sessionId or not state.project then
+		appendLog("Connect the plugin before changing the blacklist.")
+		return
+	end
+	local roots = {}
+	local seenIds = {}
+	for _, selected in ipairs(Selection:Get()) do
+		local root = findBlacklistedSelectionRoot(selected)
+		if root then
+			local id = getAmarilloId(root)
+			if id and not seenIds[id] then
+				seenIds[id] = true
+				table.insert(roots, { instance = root, id = id })
+			end
+		end
+	end
+	if #roots == 0 then
+		appendLog("Select a blacklisted root or one of its descendants to unblacklist it.")
+		return
+	end
+	local entries = {}
+	for _, root in ipairs(roots) do
+		table.insert(entries, { id = root.id })
+	end
+	local ok, response = request("POST", "/session/" .. state.sessionId .. "/sync-blacklist", {
+		action = "remove",
+		entries = entries
+	})
+	if not ok or not response or response.ok ~= true then
+		appendLog("Failed to remove blacklist: " .. tostring(response))
+		reportPluginError(response, "PLUGIN-SYNC-BLACKLIST", { route = "/session/sync-blacklist", action = "remove" }, "warning")
+		return
+	end
+	for _, root in ipairs(roots) do
+		safeSetAttribute(root.instance, "AmarilloSync", nil, "unblacklist selection")
+	end
+	state.project = response.project or state.project
+	appendLog("Blacklist removed for " .. tostring(#roots) .. " Studio subtree(s).")
+	updateProjectTargetSummary()
+	refreshTreePreview()
 end
 
 function sendPlaytest(mode)
@@ -5021,26 +5294,29 @@ state.ui.advancedSessionLabel = makeTextLabel(advancedSummary, "Session: -", UDi
 state.ui.advancedQueueLabel = makeTextLabel(advancedSummary, "Queue: -", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(16, 80), 13)
 state.ui.advancedConflictLabel = makeTextLabel(advancedSummary, "Conflicts: 0", UDim2.new(0.5, -20, 0, 18), UDim2.fromOffset(210, 80), 13)
 
-local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 214))
+local advancedActions = makeCard(state.ui.advancedPage, UDim2.new(1, -20, 0, 120), UDim2.fromOffset(10, 214))
 local previewTreeButton = makeButton(advancedActions, "Preview Tree", UDim2.fromOffset(100, 30), UDim2.fromOffset(16, 16), refreshTreePreview)
 local selectionButton = makeButton(advancedActions, "Selection", UDim2.fromOffset(92, 30), UDim2.fromOffset(124, 16), manualSelection)
 setButtonStyle(selectionButton, "secondary")
-local playStartButton = makeButton(advancedActions, "Play Start", UDim2.fromOffset(92, 30), UDim2.fromOffset(224, 16), function()
+local blacklistButton = makeButton(advancedActions, "Blacklist Selection", UDim2.fromOffset(130, 30), UDim2.fromOffset(224, 16), blacklistSelection)
+local unblacklistButton = makeButton(advancedActions, "Unblacklist Selection", UDim2.fromOffset(136, 30), UDim2.fromOffset(364, 16), unblacklistSelection)
+setButtonStyle(unblacklistButton, "secondary")
+local playStartButton = makeButton(advancedActions, "Play Start", UDim2.fromOffset(92, 30), UDim2.fromOffset(16, 58), function()
 	sendPlaytest("start")
 end)
-local playStopButton = makeButton(advancedActions, "Play Stop", UDim2.fromOffset(92, 30), UDim2.fromOffset(324, 16), function()
+local playStopButton = makeButton(advancedActions, "Play Stop", UDim2.fromOffset(92, 30), UDim2.fromOffset(116, 58), function()
 	sendPlaytest("stop")
 end)
 setButtonStyle(playStopButton, "secondary")
-local advancedSendButton = makeButton(advancedActions, "Receive from PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(16, 50), manualPull)
-local advancedReceiveButton = makeButton(advancedActions, "Send to PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(176, 50), manualPush)
+local advancedSendButton = makeButton(advancedActions, "Receive from PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(216, 58), manualPull)
+local advancedReceiveButton = makeButton(advancedActions, "Send to PC", UDim2.fromOffset(150, 30), UDim2.fromOffset(376, 58), manualPush)
 setButtonStyle(advancedReceiveButton, "secondary")
 
-state.ui.codeBox = makeTextBox(state.ui.advancedPage, "Paste Luau here to execute in Studio...", UDim2.new(1, -20, 0, 112), UDim2.fromOffset(10, 312), true)
-local runCodeButton = makeButton(state.ui.advancedPage, "Run Luau", UDim2.fromOffset(132, 30), UDim2.fromOffset(10, 432), manualRunCode)
-state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection / results...", UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 472), true)
+state.ui.codeBox = makeTextBox(state.ui.advancedPage, "Paste Luau here to execute in Studio...", UDim2.new(1, -20, 0, 112), UDim2.fromOffset(10, 346), true)
+local runCodeButton = makeButton(state.ui.advancedPage, "Run Luau", UDim2.fromOffset(132, 30), UDim2.fromOffset(10, 466), manualRunCode)
+state.ui.treeBox = makeTextBox(state.ui.advancedPage, "Tree preview / selection / results...", UDim2.new(1, -20, 0, 86), UDim2.fromOffset(10, 506), true)
 state.ui.treeBox.TextEditable = false
-state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 566), true)
+state.ui.logBox = makeTextBox(state.ui.advancedPage, "Plugin log...", UDim2.new(1, -20, 0, 62), UDim2.fromOffset(10, 600), true)
 state.ui.logBox.TextEditable = false
 end
 
@@ -5445,8 +5721,11 @@ disconnectWatcher = function()
 	state.openDocumentCache = {}
 end
 
-state.watchers.markDirty = function()
+state.watchers.markDirty = function(changedInstance)
 	if state.isApplyingRemote or state.awaitingInitialSync then
+		return
+	end
+	if changedInstance and isBlacklistedInstance(changedInstance) then
 		return
 	end
 	state.watcherDirty = true
@@ -5459,6 +5738,9 @@ state.watchers.sendScriptPatch = function(path, source)
 		return false
 	end
 	if not isMountSyncEnabled(path) then
+		return true
+	end
+	if isBlacklistedInstance(resolveInstanceByPath(path)) then
 		return true
 	end
 	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
@@ -5491,6 +5773,9 @@ state.watchers.scheduleScriptPatch = function(pathSegments, source)
 	if not isMountSyncEnabled(pathSegments) then
 		return
 	end
+	if isBlacklistedInstance(resolveInstanceByPath(pathSegments)) then
+		return
+	end
 	local key = table.concat(pathSegments, "\0")
 	local current = state.pendingScriptPatches[key]
 	local version = current and current.version + 1 or 1
@@ -5521,7 +5806,7 @@ state.watchers.connectToPropertyChanges = function(instance)
 			state.watcherConnections[instance] = {}
 		end
 		table.insert(state.watcherConnections[instance], instance.Changed:Connect(function()
-			state.watchers.markDirty()
+			state.watchers.markDirty(instance)
 		end))
 	end)
 end
@@ -5550,18 +5835,18 @@ state.watchers.connectMountWatcher = function(container)
 	-- Listen for any descendant added (covers all new children recursively)
 	table.insert(conns, container.DescendantAdded:Connect(function(descendant)
 		state.watchers.connectToPropertyChanges(descendant)
-		state.watchers.markDirty()
+		state.watchers.markDirty(descendant)
 	end))
 
 	-- Listen for any descendant being removed
 	table.insert(conns, container.DescendantRemoving:Connect(function(descendant)
 		state.watchers.disconnectFromInstance(descendant)
-		state.watchers.markDirty()
+		state.watchers.markDirty(descendant)
 	end))
 
 	-- Listen for direct property changes on the container itself
-	table.insert(conns, container.Changed:Connect(function()
-		state.watchers.markDirty()
+	 table.insert(conns, container.Changed:Connect(function()
+		state.watchers.markDirty(container)
 	end))
 
 	-- For EXISTING descendants, connect their Changed events (only once, outside the DescendantAdded loop)

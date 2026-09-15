@@ -228,7 +228,7 @@ test("Roblox plugin backs off disconnected offer polling while idle", () => {
 test("Roblox plugin watcher module avoids top-level locals", () => {
   assert.doesNotMatch(watcherSource, /^local(?:\s+function|\s+)/m);
   assert.match(watcherSource, /state\.watchers = state\.watchers or \{\}/);
-  assert.match(watcherSource, /state\.watchers\.markDirty = function\(\)/);
+  assert.match(watcherSource, /state\.watchers\.markDirty = function\(changedInstance\)/);
   assert.match(watcherSource, /state\.watchers\.connectScriptEditorWatcher = function\(\)/);
 });
 
@@ -242,12 +242,24 @@ test("Roblox plugin caches property metadata while reading live values", () => {
 });
 
 test("Roblox plugin filters reserved RBX attributes during sync", () => {
-  assert.match(pluginSource, /function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId"\)\s+end/);
+  assert.match(pluginSource, /function isReservedAttributeName\(attributeName\)\s+return type\(attributeName\) == "string" and \(string\.sub\(attributeName, 1, 3\) == "RBX" or attributeName == "AmarilloId" or attributeName == "AmarilloSync"\)\s+end/);
   assert.match(pluginSource, /function syncableAttributes\(attributes\)/);
   assert.equal((pluginSource.match(/syncableAttributes\(instance:GetAttributes\(\)\)/g) || []).length, 2);
   assert.match(pluginSource, /local desiredAttributes = syncableAttributes\(rawValue\)/);
   assert.match(pluginSource, /not isReservedAttributeName\(attributeName\) and desiredAttributes\[attributeName\] == nil/);
   assert.match(pluginSource, /for attributeName, attributeValue in pairs\(desiredAttributes\) do/);
+});
+
+test("Roblox plugin exposes persistent blacklist actions and protects blacklisted subtrees", () => {
+  assert.match(pluginSource, /function isBlacklistedInstance\(instance, instanceSegments\)/);
+  assert.match(pluginSource, /function filterBlacklistChildren\(children, parentSegments\)/);
+  assert.match(pluginSource, /AmarilloSync.*Blacklist/);
+  assert.match(pluginSource, /function blacklistSelection\(\)/);
+  assert.match(pluginSource, /function unblacklistSelection\(\)/);
+  assert.match(pluginSource, /\/session\/" \.\. state\.sessionId \.\. "\/sync-blacklist/);
+  assert.match(pluginSource, /Blacklist Selection/);
+  assert.match(pluginSource, /Unblacklist Selection/);
+  assert.match(pluginSource, /and not isBlacklistedInstance\(child\)/);
 });
 
 test("Roblox plugin wraps mutating Studio writes in defensive helpers", () => {

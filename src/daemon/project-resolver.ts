@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { isIgnoredProjectDiscoveryDirectoryName } = require("./project-discovery");
 const { resolveWorkspaceProjectRoot } = require("./project-roots");
+const { normalizeSyncBlacklist } = require("./sync-blacklist");
 
 const PROJECT_SUFFIX = ".project.json";
 
@@ -324,6 +325,13 @@ function concatSyncback(parentSyncback, childSyncback) {
   };
 }
 
+function concatSyncBlacklist(parentBlacklist, childBlacklist) {
+  return normalizeSyncBlacklist([
+    ...(parentBlacklist || []),
+    ...(childBlacklist || [])
+  ]);
+}
+
 function createProjectDescriptor(projectPath, workspaceRoot) {
   const raw = parseJsonFile(projectPath);
   if (!isPlainObject(raw)) {
@@ -353,6 +361,7 @@ function createProjectDescriptor(projectPath, workspaceRoot) {
     placeIds,
     ignoreGlobs: normalizeStringArray(raw.ignoreGlobs || raw.globIgnorePaths),
     syncRules: Array.isArray(raw.syncRules) ? cloneJson(raw.syncRules) : [],
+    syncBlacklist: normalizeSyncBlacklist(raw.syncBlacklist),
     syncback: normalizeSyncback(raw.syncback),
     legacyScriptsExplicit,
     legacyScripts: legacyScriptsExplicit
@@ -418,6 +427,7 @@ function buildResolvedProject(descriptor, parentProject, workspaceRoot) {
     ignoreGlobs: [...(parentProject?.ignoreGlobs || []), ...descriptor.ignoreGlobs],
     syncback: concatSyncback(parentProject?.syncback, descriptor.syncback),
     syncRules: [...(parentProject?.syncRules || []), ...descriptor.syncRules],
+    syncBlacklist: concatSyncBlacklist(parentProject?.syncBlacklist, descriptor.syncBlacklist),
     raw: cloneJson(descriptor.raw)
   };
 }

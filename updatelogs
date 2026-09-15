@@ -1,5 +1,16 @@
 # Update Logs
 
+## Versao 1.2.3 - Blacklist persistente para subarvores do Studio
+
+Data do registro: 2026-09-15
+
+- Adicionado `syncBlacklist` ao projeto, com heranca e deduplicacao por `AmarilloId`.
+- O daemon ignora subarvores blacklisted nos snapshots locais e do Studio, hashes, diffs, watchers e patches de script.
+- O syncback preserva os arquivos locais blacklisted durante aplicacoes e limpeza de mounts.
+- O plugin grava o atributo reservado `AmarilloSync = "Blacklist"`, acompanha movimentos e renomeacoes pelo `AmarilloId` e oferece `Blacklist Selection` e `Unblacklist Selection`.
+- Adicionada rota autenticada de sessao para persistir e remover regras da blacklist.
+- Adicionados testes de snapshots, hash/diff, preservacao, watcher, patches, heranca e deduplicacao.
+
 ## Versão 1.2.3 — Detecção opcional de Models
 
 Data do registro: 2026-09-13

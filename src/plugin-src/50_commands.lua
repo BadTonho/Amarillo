@@ -72,11 +72,11 @@ local function getSelectionSummary()
 end
 
 local function resolveInstanceByPath(pathString)
-	if type(pathString) ~= "string" or pathString == "" then
+	if type(pathString) ~= "string" and type(pathString) ~= "table" then
 		return nil
 	end
 
-	local segments = string.split(pathString, ".")
+	local segments = type(pathString) == "table" and pathString or string.split(pathString, ".")
 	if #segments == 0 then
 		return nil
 	end
@@ -247,6 +247,15 @@ local function handleCommand(command)
 	end
 
 	if command.type == "apply_file_patch" then
+		if command.payload and isBlacklistedInstance(resolveInstanceByPath(command.payload.path)) then
+			postCommandResult(command.id, true, {
+				result = "Patch ignorado porque a instância está na blacklist.",
+				snapshot = snapshotCurrentProject(),
+				skipped = true,
+				reasonCode = "SYNC_BLACKLIST"
+			})
+			return
+		end
 		if command.payload and not isMountSyncEnabled(command.payload.path) then
 			postCommandResult(command.id, true, {
 				result = "Patch skipped because this sync target is disabled.",

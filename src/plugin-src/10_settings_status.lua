@@ -35,6 +35,7 @@ local function addVersionPayload(body)
 	body.syncTargets = {
 		Workspace = state.syncTargets and state.syncTargets.Workspace == true or false
 	}
+	body.syncBlacklist = state.project and state.project.syncBlacklist or {}
 	addDestructiveConfirmationPayload(body)
 	return body
 end
@@ -197,6 +198,75 @@ local function duplicateMountRootGuardMessage(actionName, pathSegments)
 	return tostring(actionName) .. " blocked: target path '" .. issue.targetPath .. "' would create or mutate duplicate mount root '" .. tostring(issue.duplicateName) .. "' inside active mount '" .. issue.expectedMountPath .. "'. Put children directly under '" .. issue.expectedMountPath .. "' instead."
 end
 
+local function syncBlacklistEntries()
+	return state.project and state.project.syncBlacklist or {}
+end
+
+local function isBlacklistedInstance(instance, instanceSegments)
+	if not instance then
+		return false
+	end
+	local current = instance
+	while current and current ~= game do
+		local okMarker, marker = pcall(function()
+			return current:GetAttribute("AmarilloSync")
+		end)
+		local currentId = getAmarilloId and getAmarilloId(current) or nil
+		local idIsBlacklisted = false
+		for _, entry in ipairs(syncBlacklistEntries()) do
+			if type(entry) == "table" and type(entry.id) == "string" and entry.id ~= "" and entry.id == currentId then
+				idIsBlacklisted = true
+				break
+			end
+		end
+		if idIsBlacklisted or (okMarker and marker == "Blacklist" and not currentId) then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
+end
+
+local function isBlacklistedSnapshotNode(node, instanceSegments)
+	if type(node) ~= "table" then
+		return false
+	end
+	if node.blacklisted == true then
+		return true
+	end
+	local attributes = node.properties and node.properties.Attributes
+	if type(attributes) == "table" and attributes.AmarilloSync == "Blacklist" then
+		return true
+	end
+	local nodeId = type(node.amarilloId) == "string" and node.amarilloId or nil
+	for _, entry in ipairs(syncBlacklistEntries()) do
+		if type(entry) == "table" and entry.id == nodeId then
+			return true
+		end
+	end
+	return false
+end
+
+local function filterBlacklistChildren(children, parentSegments)
+	local filtered = {}
+	for _, child in ipairs(children or {}) do
+		local childSegments = {}
+		for _, segment in ipairs(parentSegments or {}) do
+			table.insert(childSegments, segment)
+		end
+		table.insert(childSegments, child.name or child.robloxName or "")
+		if not isBlacklistedSnapshotNode(child, childSegments) then
+			local nextChild = {}
+			for key, value in pairs(child) do
+				nextChild[key] = value
+			end
+			nextChild.children = filterBlacklistChildren(child.children, childSegments)
+			table.insert(filtered, nextChild)
+		end
+	end
+	return filtered
+end
+
 local function filterSnapshotForSync(snapshot)
 	if type(snapshot) ~= "table" then
 		return {
@@ -212,7 +282,12 @@ local function filterSnapshotForSync(snapshot)
 	filtered.mounts = {}
 	for _, mount in ipairs(snapshot.mounts or {}) do
 		if isMountSyncEnabled(mount) then
-			table.insert(filtered.mounts, mount)
+			local nextMount = {}
+			for key, value in pairs(mount) do
+				nextMount[key] = value
+			end
+			nextMount.children = filterBlacklistChildren(mount.children, normalizeInstancePathSegments(mount.segments or mount.path or mount.id))
+			table.insert(filtered.mounts, nextMount)
 		end
 	end
 	return filtered

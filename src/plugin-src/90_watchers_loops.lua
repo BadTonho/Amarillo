@@ -21,8 +21,11 @@ disconnectWatcher = function()
 	state.openDocumentCache = {}
 end
 
-state.watchers.markDirty = function()
+state.watchers.markDirty = function(changedInstance)
 	if state.isApplyingRemote or state.awaitingInitialSync then
+		return
+	end
+	if changedInstance and isBlacklistedInstance(changedInstance) then
 		return
 	end
 	state.watcherDirty = true
@@ -35,6 +38,9 @@ state.watchers.sendScriptPatch = function(path, source)
 		return false
 	end
 	if not isMountSyncEnabled(path) then
+		return true
+	end
+	if isBlacklistedInstance(resolveInstanceByPath(path)) then
 		return true
 	end
 	local pathLabel = type(path) == "table" and table.concat(path, ".") or tostring(path)
@@ -67,6 +73,9 @@ state.watchers.scheduleScriptPatch = function(pathSegments, source)
 	if not isMountSyncEnabled(pathSegments) then
 		return
 	end
+	if isBlacklistedInstance(resolveInstanceByPath(pathSegments)) then
+		return
+	end
 	local key = table.concat(pathSegments, "\0")
 	local current = state.pendingScriptPatches[key]
 	local version = current and current.version + 1 or 1
@@ -97,7 +106,7 @@ state.watchers.connectToPropertyChanges = function(instance)
 			state.watcherConnections[instance] = {}
 		end
 		table.insert(state.watcherConnections[instance], instance.Changed:Connect(function()
-			state.watchers.markDirty()
+			state.watchers.markDirty(instance)
 		end))
 	end)
 end
@@ -126,18 +135,18 @@ state.watchers.connectMountWatcher = function(container)
 	-- Listen for any descendant added (covers all new children recursively)
 	table.insert(conns, container.DescendantAdded:Connect(function(descendant)
 		state.watchers.connectToPropertyChanges(descendant)
-		state.watchers.markDirty()
+		state.watchers.markDirty(descendant)
 	end))
 
 	-- Listen for any descendant being removed
 	table.insert(conns, container.DescendantRemoving:Connect(function(descendant)
 		state.watchers.disconnectFromInstance(descendant)
-		state.watchers.markDirty()
+		state.watchers.markDirty(descendant)
 	end))
 
 	-- Listen for direct property changes on the container itself
-	table.insert(conns, container.Changed:Connect(function()
-		state.watchers.markDirty()
+	 table.insert(conns, container.Changed:Connect(function()
+		state.watchers.markDirty(container)
 	end))
 
 	-- For EXISTING descendants, connect their Changed events (only once, outside the DescendantAdded loop)

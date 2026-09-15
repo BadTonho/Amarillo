@@ -242,6 +242,13 @@ export interface WorkspaceFilesChangedResponse {
 
 // ----- Project -----
 
+export interface SyncBlacklistEntry {
+  id: string;
+  path: string;
+  name?: string;
+  className?: string;
+}
+
 export interface ProjectPayload {
   id: string;
   name: string;
@@ -251,6 +258,7 @@ export interface ProjectPayload {
   extendsProjectId?: string | null;
   extendsProjectPath?: string | null;
   placeIds?: number[];
+  syncBlacklist?: SyncBlacklistEntry[];
   mountCount?: number;
   mounts?: {
     id: string;
